@@ -69,17 +69,24 @@ def fetch_tours(country_id: str) -> str:
 
 # ─── Claude helpers ─────────────────────────────────────────────────────────────
 def analyze_intent(user_message: str) -> str:
-    """Claude Round 1 — จำแนก Track A (ทัวร์ไฟไหม้) หรือ Track B (ทัวร์ทั่วไป)"""
+    """Claude Round 1 — จำแนก Track A / B / C"""
     resp = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
         system=(
-            "คุณคือระบบ AI วิเคราะห์ข้อความลูกค้า Facebook Messenger สำหรับรวมทัวร์ไฟไหม้\n\n"
-            "วิเคราะห์ข้อความและตอบในรูปแบบที่กำหนดเท่านั้น:\n\n"
-            "Track A (ทัวร์ไฟไหม้): ตอบ [NOTIFY_ADMIN] ชื่อทัวร์=X, จำนวนคน=Y, วันที่=Z\n"
-            "Track B (ทัวร์ทั่วไป): ตอบ [SEARCH_TOURS] country_id=X\n"
-            "ID: ญี่ปุ่น=2, เกาหลี=1, เวียดนาม=7, จีน=5, ฮ่องกง=3, สิงคโปร์=4, มาเลเซีย=6, ไต้หวัน=19\n\n"
-            "กฎ: ตอบเฉพาะ Signal Format เท่านั้น ไม่ต้องมีข้อความอื่น"
+            "คุณคือระบบ AI วิเคราะห์ข้อความลูกค้า สำหรับเพจ 'รวมทัวร์ไฟไหม้'\n\n"
+            "ตอบในรูปแบบที่กำหนดเท่านั้น ห้ามมีข้อความอื่น:\n\n"
+            "Track A — ลูกค้าถามถึง 'ทัวร์ไฟไหม้' หรือโปรโมชั่นพิเศษ/ดีลร้อนแรง:\n"
+            "  → [NOTIFY_ADMIN]\n\n"
+            "Track B — ลูกค้าถามทัวร์และระบุประเทศ/จุดหมาย:\n"
+            "  → [SEARCH_TOURS] country_id=X\n"
+            "  ID: ญี่ปุ่น=2, เกาหลี=1, เวียดนาม=7, จีน=5, ฮ่องกง=3, สิงคโปร์=4, มาเลเซีย=6, ไต้หวัน=19\n\n"
+            "Track C — ลูกค้าทักทาย/ถามทั่วไป/ยังไม่ระบุประเทศ:\n"
+            "  → [ASK_COUNTRY]\n\n"
+            "ตัวอย่าง:\n"
+            "'มีทัวร์ไฟไหม้ไหม' → [NOTIFY_ADMIN]\n"
+            "'อยากไปญี่ปุ่น' → [SEARCH_TOURS] country_id=2\n"
+            "'สวัสดี' หรือ 'มีทัวร์ไหม' → [ASK_COUNTRY]"
         ),
         messages=[{"role": "user", "content": user_message}],
     )
@@ -125,7 +132,7 @@ def process_message(sender_id: str, text: str):
         logger.info(f"Signal: {signal}")
 
         if "[NOTIFY_ADMIN]" in signal:
-            # Track A — ทัวร์ไฟไหม้
+            # Track A — ทัวร์ไฟไหม้ (flash sale)
             reply = (
                 "ขอบคุณที่สนใจทัวร์ไฟไหม้นะคะ 🔥 "
                 "เจ้าหน้าที่ได้รับข้อมูลแล้ว "
@@ -133,8 +140,19 @@ def process_message(sender_id: str, text: str):
             )
             send_message(sender_id, reply)
 
+        elif "[ASK_COUNTRY]" in signal:
+            # Track C — ไม่ระบุประเทศ ถามกลับ
+            reply = (
+                "สวัสดีค่ะ ยินดีต้อนรับสู่รวมทัวร์ไฟไหม้ 🔥\n\n"
+                "อยากไปประเทศไหนคะ? มีทัวร์หลายเส้นทางเลย เช่น\n"
+                "🇯🇵 ญี่ปุ่น | 🇰🇷 เกาหลี | 🇨🇳 จีน\n"
+                "🇻🇳 เวียดนาม | 🇭🇰 ฮ่องกง | 🇸🇬 สิงคโปร์\n\n"
+                "บอกประเทศที่สนใจได้เลยนะคะ 😊"
+            )
+            send_message(sender_id, reply)
+
         elif "[SEARCH_TOURS]" in signal:
-            # Track B — ทัวร์ทั่วไป
+            # Track B — ทัวร์ทั่วไป ระบุประเทศ
             match = re.search(r"country_id=(\d+)", signal)
             if not match:
                 raise ValueError(f"Cannot parse country_id from: {signal}")
