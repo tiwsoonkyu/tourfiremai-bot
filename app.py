@@ -8,6 +8,7 @@ import re
 import json
 import logging
 import threading
+from datetime import date
 from flask import Flask, request, jsonify, abort
 import anthropic
 import requests
@@ -54,22 +55,46 @@ def send_message(recipient_id: str, text: str):
 
 # ─── Tour data fetcher ──────────────────────────────────────────────────────────
 def fetch_tours(country_id: str) -> str:
-    """ดึงข้อมูลทัวร์จาก tourfiremai.com แล้ว strip HTML"""
-    url = f"https://www.tourfiremai.com/intertour/{country_id}/"
+    """ดึงข้อมูลทัวร์จาก tourfiremai.com พร้อม URL ของแต่ละโปรแกรม"""
+    listing_url = f"https://www.tourfiremai.com/intertour/{country_id}/"
     headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
-    resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+    resp = requests.get(listing_url, headers=headers, timeout=20, allow_redirects=True)
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    for tag in soup(["script", "style"]):
+    base_url = "https://www.tourfiremai.com"
+
+    # แทน <a> tags ที่เป็น tour detail links ด้วย text + URL
+    # (เก็บเฉพาะ links ที่ยาวกว่า listing page = น่าจะเป็น individual tour page)
+    for a_tag in soup.find_all('a', href=True):
+        href = a_tag.get('href', '').strip()
+        if not href or href.startswith('#') or href.startswith('javascript'):
+            a_tag.replace_with(a_tag.get_text(strip=True))
+            continue
+        if href.startswith('/'):
+            full_url = base_url + href
+        elif href.startswith('http'):
+            full_url = href
+        else:
+            a_tag.replace_with(a_tag.get_text(strip=True))
+            continue
+        # เก็บเฉพาะ individual tour detail links: /tour/apXXXXXX
+        if re.match(r'https://www\.tourfiremai\.com/tour/ap\w+$', full_url):
+            link_text = a_tag.get_text(strip=True)
+            a_tag.replace_with(f"{link_text} [LINK:{full_url}]" if link_text else f"[LINK:{full_url}]")
+        else:
+            a_tag.replace_with(a_tag.get_text(strip=True))
+
+    for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
+
     text = soup.get_text(separator=" ")
     text = re.sub(r"\s+", " ", text).strip()
-    return text[:6000]
+    return text[:8000]
 
 # ─── Claude helpers ─────────────────────────────────────────────────────────────
 def analyze_intent(user_message: str) -> str:
-    """Claude Round 1 — จำแนก Track A / B / C"""
+    """Claude Round 1 — จำแนก Track A / B / B2 / C"""
     resp = claude.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=200,
@@ -78,14 +103,19 @@ def analyze_intent(user_message: str) -> str:
             "ตอบในรูปแบบที่กำหนดเท่านั้น ห้ามมีข้อความอื่น:\n\n"
             "Track A — ลูกค้าถามถึง 'ทัวร์ไฟไหม้' หรือโปรโมชั่นพิเศษ/ดีลร้อนแรง:\n"
             "  → [NOTIFY_ADMIN]\n\n"
-            "Track B — ลูกค้าถามทัวร์และระบุประเทศ/จุดหมาย:\n"
+            "Track B — ลูกค้าถามทัวร์ทั่วไปและระบุประเทศ/จุดหมาย (ต้องการดูหลายโปรแกรม):\n"
             "  → [SEARCH_TOURS] country_id=X\n"
             "  ID: ญี่ปุ่น=2, เกาหลี=1, เวียดนาม=7, จีน=5, ฮ่องกง=3, สิงคโปร์=4, มาเลเซีย=6, ไต้หวัน=19\n\n"
+            "Track B2 — ลูกค้าต้องการรายละเอียดเต็มของโปรแกรมเดียว:\n"
+            "  (เช่น ระบุชื่อทัวร์, 'โปรแกรมที่ 1', 'ขอแค่ 1 ตัว', 'ขอดูรายละเอียด'):\n"
+            "  → [TOUR_DETAIL] country_id=X\n\n"
             "Track C — ลูกค้าทักทาย/ถามทั่วไป/ยังไม่ระบุประเทศ:\n"
             "  → [ASK_COUNTRY]\n\n"
             "ตัวอย่าง:\n"
             "'มีทัวร์ไฟไหม้ไหม' → [NOTIFY_ADMIN]\n"
             "'อยากไปญี่ปุ่น' → [SEARCH_TOURS] country_id=2\n"
+            "'ขอรายละเอียดทัวร์โตเกียว DOUBLE FREEDAY' → [TOUR_DETAIL] country_id=2\n"
+            "'โปรแกรมที่ 1 หน่อยค่ะ' → [TOUR_DETAIL] country_id=2\n"
             "'สวัสดี' หรือ 'มีทัวร์ไหม' → [ASK_COUNTRY]"
         ),
         messages=[{"role": "user", "content": user_message}],
@@ -94,27 +124,72 @@ def analyze_intent(user_message: str) -> str:
 
 
 def get_recommendations(user_message: str, tour_data: str) -> str:
-    """Claude Round 2 — แนะนำ Top 3 ทัวร์"""
+    """Claude Round 2 — แนะนำ Top 3 ทัวร์ พร้อม link แต่ละโปรแกรม"""
+    today = date.today().strftime("%-d %B %Y")
     resp = claude.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=350,
+        max_tokens=600,
         system=(
-            "คุณคือแอดมินรวมทัวร์ไฟไหม้ ตอบสั้นมากๆ เหมือน SMS ไม่ใช่โบรชัวร์\n\n"
-            "วิธีอ่านวันเดินทาง (สำคัญมาก):\n"
-            "- '18 มิ.ย. 69 - 23 มิ.ย. 69' = ทริปเดียว ออกเดินทาง 18 มิ.ย. กลับ 23 มิ.ย.\n"
-            "- ให้แสดงเป็น 'เดินทาง 18-23 มิ.ย.' (ไม่ใช่ 2 วันแยกกัน)\n"
-            "- ถ้ามีหลายทริปในเดือนเดียวกัน ให้เลือกทริปที่ใกล้กับที่ลูกค้าถามมากที่สุด\n\n"
-            "ตอบตามรูปแบบนี้เท่านั้น:\n\n"
+            "คุณคือแอดมินรวมทัวร์ไฟไหม้ ตอบแบบ Messenger ไม่ใช่โบรชัวร์\n\n"
+            f"วันนี้คือ {today}\n\n"
+            "กฎการแสดงวันเดินทาง (สำคัญมาก):\n"
+            "- start กับ end ต่างกัน ≤ 30 วัน = ทริปเดียว → แสดงวันจริง เช่น 'เดินทาง 18-23 มิ.ย. 69'\n"
+            "- start กับ end ต่างกัน > 30 วัน = มีหลายรอบ → แสดงแค่เดือน เช่น 'เดินทาง เม.ย.-พ.ย. 69'\n"
+            "- ถ้ารอบเดินทางผ่านวันนี้ไปแล้ว ให้ข้าม\n\n"
+            "ข้อมูลทัวร์มี [LINK:URL] ต่อท้ายแต่ละโปรแกรม ให้นำ URL ตรงนั้นมาใส่เลย ห้ามเปลี่ยน\n\n"
+            "รูปแบบที่ต้องตอบ (ห้ามเพิ่ม/ลดฟิลด์):\n\n"
             "มีแนะนำ 3 โปรแกรมค่ะ 😊\n\n"
             "1. [ชื่อทัวร์] [จำนวนวัน]\n"
-            "ราคา [XXX] บ. | เดินทาง [วันออก]-[วันกลับ] [เดือน]\n\n"
+            "✈️ [สายการบิน] | ราคา [XXX] บ.\n"
+            "เดินทาง [วันหรือเดือนตามกฎด้านบน]\n"
+            "🔗 [URL]\n\n"
             "2. [ชื่อทัวร์] [จำนวนวัน]\n"
-            "ราคา [XXX] บ. | เดินทาง [วันออก]-[วันกลับ] [เดือน]\n\n"
+            "✈️ [สายการบิน] | ราคา [XXX] บ.\n"
+            "เดินทาง [วันหรือเดือน]\n"
+            "🔗 [URL]\n\n"
             "3. [ชื่อทัวร์] [จำนวนวัน]\n"
-            "ราคา [XXX] บ. | เดินทาง [วันออก]-[วันกลับ] [เดือน]\n\n"
-            "ดูเพิ่มเติม: [link]\n\n"
+            "✈️ [สายการบิน] | ราคา [XXX] บ.\n"
+            "เดินทาง [วันหรือเดือน]\n"
+            "🔗 [URL]\n\n"
             "[คำถาม 1 ข้อ เช่น 'ไปกี่คนคะ?']\n\n"
-            "ห้ามเด็ดขาด: ไฮไลต์, บรรยายสถานที่, ค่าทิป, ราคามัดจำ, หมายเหตุ, ข้อมูลพิเศษใดๆ"
+            "ห้ามเด็ดขาด: บรรยายสถานที่, ค่าทิป, ราคามัดจำ, ลิ้งค์รวม/ดูเพิ่มเติม"
+        ),
+        messages=[{
+            "role": "user",
+            "content": f"ลูกค้าถาม: {user_message}\n\nรายการทัวร์:\n{tour_data}",
+        }],
+    )
+    return resp.content[0].text.strip()
+
+
+def get_tour_detail(user_message: str, tour_data: str) -> str:
+    """Claude Round 2B — รายละเอียดเต็มของ 1 ทัวร์ที่ลูกค้าเลือก"""
+    today = date.today().strftime("%-d %B %Y")
+    resp = claude.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=700,
+        system=(
+            "คุณคือแอดมินรวมทัวร์ไฟไหม้ ลูกค้าขอดูรายละเอียดเต็มของทัวร์ที่สนใจ\n\n"
+            f"วันนี้คือ {today}\n\n"
+            "เลือกโปรแกรมที่ตรงกับที่ลูกค้าถามมากที่สุด 1 โปรแกรม\n\n"
+            "กฎวันเดินทาง:\n"
+            "- start/end ต่างกัน ≤ 30 วัน → แสดงวันจริง เช่น '18-23 มิ.ย. 69'\n"
+            "- start/end ต่างกัน > 30 วัน → แสดงเดือน เช่น 'พ.ค.-ก.ค. 69' + '(สอบถามวันที่สะดวกได้ค่ะ)'\n"
+            "- ข้ามรอบที่ผ่านวันนี้ไปแล้ว\n\n"
+            "ข้อมูลทัวร์มี [LINK:URL] ให้นำ URL ตรงนั้นมาใส่เลย ห้ามเปลี่ยน\n\n"
+            "รูปแบบที่ต้องตอบ:\n\n"
+            "[ชื่อทัวร์] [จำนวนวัน]\n"
+            "✈️ [สายการบิน] ([สนามบินออกเดินทาง])\n"
+            "เดินทาง [วันหรือเดือนตามกฎ]\n"
+            "ราคา [XXX] บ./ท่าน\n\n"
+            "ไฮไลต์:\n"
+            "- [สั้นๆ เช่น 'อิสระ 1 วันเต็ม']\n"
+            "- [สั้นๆ เช่น 'พักออนเซ็น 1 คืน']\n"
+            "- [สั้นๆ เช่น 'ไม่มีร้านช้อปบังคับ']\n\n"
+            "[ถ้ามีค่าทิปในข้อมูล: 'หมายเหตุ: ไม่รวมค่าทิป XXX บ.']\n\n"
+            "🔗 [URL]\n\n"
+            "[คำถาม 1 ข้อ เช่น 'ไปกี่คนคะ?' หรือ 'มีวันไหนสะดวกคะ?']\n\n"
+            "ห้าม: ใช้ * หรือ ** (bold), ราคาพักเดี่ยว"
         ),
         messages=[{
             "role": "user",
@@ -163,6 +238,20 @@ def process_message(sender_id: str, text: str):
 
             tour_data = fetch_tours(country_id)
             reply = get_recommendations(text, tour_data)
+            send_message(sender_id, reply)
+
+        elif "[TOUR_DETAIL]" in signal:
+            # Track B2 — ขอรายละเอียดโปรแกรมเดียว
+            match = re.search(r"country_id=(\d+)", signal)
+            if not match:
+                raise ValueError(f"Cannot parse country_id from: {signal}")
+
+            country_id = match.group(1)
+            country_name = COUNTRY_MAP.get(country_id, country_id)
+            logger.info(f"Tour detail: {country_name} (id={country_id})")
+
+            tour_data = fetch_tours(country_id)
+            reply = get_tour_detail(text, tour_data)
             send_message(sender_id, reply)
 
         else:
