@@ -1552,15 +1552,35 @@ def generate_response(user_message: str, history: list, tour_data: str = "",
         messages.append({"role": msg["role"], "content": msg["content"]})
 
     if tour_data:
-        user_content = (
-            f"{user_message}\n\n"
-            "--- ข้อมูลทัวร์จากเว็บ tourfiremai.com (ดึงตอนนี้) ---\n"
-            f"{tour_data[:4000]}\n"
-            "---\n"
-            "ใช้ข้อมูลทัวร์ด้านบนในการตอบ คัดเลือก 1-3 โปรแกรมที่เหมาะที่สุดกับความต้องการลูกค้า "
-            "พร้อมเหตุผล 1 ประโยคต่อตัวเลือก"
-            + (f"\n[งบลูกค้า {ctx['budget_per_person']} บาท: คัดเฉพาะที่ราคาไม่เกินงบก่อน ถ้าไม่มีให้โชว์ถูกสุดและบอกว่าเกินเท่าไหร่]" if ctx and ctx.get("budget_per_person") else "")
-        )
+        if action == "flash_sale":
+            # faimai context — ห้ามล็อกงบ ราคาเหล่านี้คือ special แล้ว
+            faimai_has_result = "ขณะนี้ยังไม่มี" not in tour_data and "ไม่ได้ตอนนี้" not in tour_data
+            no_result_hint = ""
+            if not faimai_has_result:
+                no_result_hint = (
+                    "\n[ไม่พบทัวร์ไฟไหม้ตรงกับที่ค้นหา: บอกลูกค้าตรงๆ ว่าช่วงนี้ยังไม่มีโปรแกรมไฟไหม้สำหรับประเทศนั้น "
+                    "แล้วแนะนำให้ดูทัวร์ปกติหรือให้ติดตามโปรแกรมใหม่ที่ /faimai]"
+                )
+            user_content = (
+                f"{user_message}\n\n"
+                "--- ทัวร์ไฟไหม้จาก tourfiremai.com/faimai (ราคาพิเศษอยู่แล้ว อย่าล็อกงบ) ---\n"
+                f"{tour_data[:4000]}\n"
+                "---\n"
+                "คำแนะนำ: เสนอ 2-3 โปรแกรมที่น่าสนใจจากข้อมูลด้านบน ถ้าลูกค้าระบุประเทศแต่ไม่มีในหน้าไฟไหม้ "
+                "ให้บอกตรงๆ และแนะนำประเทศอื่นที่มีในหน้าไฟไหม้แทน "
+                "ห้ามเปรียบเทียบกับราคาปกติหรือแนะนำให้เพิ่มงบ"
+                + no_result_hint
+            )
+        else:
+            user_content = (
+                f"{user_message}\n\n"
+                "--- ข้อมูลทัวร์จากเว็บ tourfiremai.com (ดึงตอนนี้) ---\n"
+                f"{tour_data[:4000]}\n"
+                "---\n"
+                "ใช้ข้อมูลทัวร์ด้านบนในการตอบ คัดเลือก 1-3 โปรแกรมที่เหมาะที่สุดกับความต้องการลูกค้า "
+                "พร้อมเหตุผล 1 ประโยคต่อตัวเลือก"
+                + (f"\n[งบลูกค้า {ctx['budget_per_person']} บาท: คัดเฉพาะที่ราคาไม่เกินงบก่อน ถ้าไม่มีให้โชว์ถูกสุดและบอกว่าเกินเท่าไหร่]" if ctx and ctx.get("budget_per_person") else "")
+            )
     elif is_handoff:
         user_content = (
             f"{user_message}\n\n"
@@ -1731,6 +1751,18 @@ def process_message(sender_id: str, text: str):
             action = "search"
             logger.info(f"Continuation detected → search country_id={country_id}")
 
+        # ── Flash sale context override ────────────────────────────────────
+        # ถ้ายังอยู่ใน flash_sale context และ action=search/reply → ดึง faimai แทน
+        if ctx.get("pending_action") == "flash_sale" and action in ("search", "reply"):
+            if action == "search" and country_id:
+                # ลูกค้าระบุประเทศใหม่ใน flash_sale context → กรองใน faimai
+                action = "flash_sale"
+                logger.info(f"Flash sale context: redirecting search({country_id}) to faimai")
+            elif action == "reply" and not country_id:
+                # ยังถามอยู่ใน topic เดิม → ดึง faimai ต่อ
+                action = "flash_sale"
+                logger.info("Flash sale context: maintaining flash_sale for reply")
+
         # Fetch tour data if needed
         if action in ("search", "detail") and country_id:
             country_name = COUNTRY_MAP.get(country_id, country_id)
@@ -1792,9 +1824,13 @@ def process_message(sender_id: str, text: str):
         # Notify admin
         if action == "flash_sale":
             # ดึงทัวร์ไฟไหม้จากหน้า /faimai
-            country_hint = ctx.get("country_name") or ""
-            tour_data = fetch_faimai_tours(country_filter=country_hint if country_hint else None)
-            logger.info(f"flash_sale: fetched faimai tours ({len(tour_data)} chars)")
+            faimai_country = (
+                action_data.get("country_name") or
+                COUNTRY_MAP.get(action_data.get("country_id") or "", "") or
+                ctx.get("country_name") or ""
+            )
+            tour_data = fetch_faimai_tours(country_filter=faimai_country if faimai_country else None)
+            logger.info(f"flash_sale: country_filter={faimai_country!r}, fetched {len(tour_data)} chars")
         elif action == "handoff":
             is_handoff = True
             stage_emoji = {"hot": "🔔", "booking": "📋", "warm": "💬", "paid": "💳"}.get(lead_stage, "📩")
@@ -1832,7 +1868,7 @@ def process_message(sender_id: str, text: str):
         elif action == "handoff":
             ctx["pending_action"] = "handoff_sent"
         elif action == "flash_sale":
-            ctx["pending_action"] = "flash_sale_notified"
+            ctx["pending_action"] = "flash_sale"  # maintain context for next turn
         else:
             ctx["pending_action"] = None
         ctx["last_bot_message"] = reply[:600]
