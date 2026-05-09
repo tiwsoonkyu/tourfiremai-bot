@@ -477,8 +477,8 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) 
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    def _enrich_and_format(cards: list, url_key: str = "url", max_detail: int = 4) -> str:
-        """Fetch detail pages for top N cards and format output."""
+    def _enrich_and_format(cards: list, url_key: str = "url", max_detail: int = 4):
+        """Fetch detail pages for top N cards and format output. Returns (str, list[dict])."""
         def _get_detail(t):
             link = t.get(url_key) or t.get("link") or t.get("url", "")
             if link:
@@ -492,7 +492,8 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) 
             results = list(ex.map(_get_detail, cards[:max_detail]))
 
         parts = []
-        for t in results:
+        meta = []
+        for i, t in enumerate(results):
             link = t.get(url_key) or t.get("link") or t.get("url", "")
             line = f"📌 {t['name']}"
             if t.get("airline"):
@@ -504,7 +505,14 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) 
             if link:
                 line += f"\n   [LINK:{link}]"
             parts.append(line)
-        return "\n\n".join(parts)
+            meta.append({
+                "index": i + 1,
+                "tour_code": t.get("tour_code", ""),
+                "name": t["name"],
+                "price_min": t.get("price_min"),
+                "url": link,
+            })
+        return "\n\n".join(parts), meta
 
     # ── 1. Try Supabase DB ────────────────────────────────────────────────────
     db_tours = fetch_tours_from_db(country_id, city_hint=city_hint, budget_max=budget_max)
@@ -515,7 +523,8 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) 
         if has_price_data:
             # Format directly from DB — no detail page fetching needed
             parts = []
-            for t in db_tours[:6]:
+            meta = []
+            for i, t in enumerate(db_tours[:6]):
                 price_str = f"{t['price_min']:,} บาท" if t.get("price_min") else "ติดต่อสอบถาม"
                 dates_str = t.get("departure_dates") or "ติดต่อเช็กวัน"
                 airline_str = t.get("airline") or ""
@@ -526,9 +535,16 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) 
                 line += f"\n   📅 วันเดินทาง: {dates_str}"
                 line += f"\n   🔗 [LINK:{t['url']}]"
                 parts.append(line)
-            return "\n\n".join(parts)
+                meta.append({
+                    "index": i + 1,
+                    "tour_code": t.get("tour_code", ""),
+                    "name": t["name"],
+                    "price_min": t.get("price_min"),
+                    "url": t.get("url", ""),
+                })
+            return "\n\n".join(parts), meta
         # DB has no price data yet → fallback to detail fetch
-        return _enrich_and_format(db_tours, url_key="url", max_detail=12)
+        return _enrich_and_format(db_tours, url_key="url", max_detail=12), []
 
     # ── 2. DB miss → fall back to web scraping ────────────────────────────────
     logger.info(f"DB miss for country={country_id} city={city_hint} → scraping web")
@@ -763,6 +779,12 @@ def _system_prompt(ctx: dict = None) -> str:
 → ถ้าหา "ตัวที่ X" จาก history ได้ → แสดงรายละเอียดโปรแกรมนั้นทันที
 → ถ้าหาจาก history ไม่ได้จริงๆ → ถามประเทศ/ปลายทาง อย่าบอกว่าไม่มีข้อมูล
 
+⚠️ กฎ single-option (สำคัญมาก):
+ถ้า AI เพิ่งเสนอโปรแกรม **แค่ 1 รายการ** และลูกค้าพิมพ์ "สนใจ" / "สนใจครับ" / "สนใจค่ะ" / "โอเค" / "ได้เลย" / "เอาเลย"
+→ ถือว่าลูกค้าสนใจโปรแกรมนั้นทันที ห้ามถามว่า "สนใจตัวไหนคะ"
+→ ให้ยืนยันโปรแกรมนั้นและถามจำนวนผู้เดินทาง
+→ ตัวอย่าง: "สนใจฮอกไกโด [ชื่อ] ใช่ไหมคะ 😊 ราคาเริ่ม X บาท อยากทราบว่าจะไปกี่ท่านคะ"
+
 ══════════════════════════════════
 กฎงบประมาณ — สำคัญมาก
 ══════════════════════════════════
@@ -930,15 +952,17 @@ AI: ขอค้นหาโอซาก้าให้นะคะ
 
 
 # ─── AI — Call 1: Decide Action ───────────────────────────────────────────────
-def decide_action(user_message: str, history: list) -> dict:
+def decide_action(user_message: str, history: list, last_options_count: int = 0) -> dict:
     history_text = ""
     for msg in history[-10:]:
         role = "ลูกค้า" if msg["role"] == "user" else "AI"
         history_text += f"{role}: {msg['content'][:250]}\n"
 
+    last_opts_hint = f"\n⚠️ last_options_count={last_options_count} (จำนวนทัวร์ที่เสนอล่าสุดใน context)" if last_options_count > 0 else ""
     prompt = (
         f"บทสนทนาที่ผ่านมา:\n{history_text}\n"
-        f"--- ข้อความล่าสุดของลูกค้า (สำคัญที่สุด): {user_message} ---\n\n"
+        f"--- ข้อความล่าสุดของลูกค้า (สำคัญที่สุด): {user_message} ---\n"
+        f"{last_opts_hint}\n\n"
 
         "ตอบเป็น JSON เท่านั้น (ห้ามมีข้อความอื่น):\n"
         "{\n"
@@ -952,6 +976,12 @@ def decide_action(user_message: str, history: list) -> dict:
 
         "=== กฎ action (เรียงตามความสำคัญ) ===\n\n"
 
+        "⚠️ กฎ SINGLE-OPTION — ตรวจสอบก่อนทุกกฎอื่น:\n"
+        "ถ้า last_options_count == 1 AND ข้อความล่าสุดมีคำว่า สนใจ/สนใจครับ/สนใจค่ะ/เอาตัวนี้/เช็กที่นั่ง/ขอรายละเอียด/จองเลย/โอเค/ได้เลย\n"
+        "→ action=detail, uses_previous_option=true, selected_option_index=1, lead_stage=hot\n"
+        "→ ห้ามถามว่าสนใจตัวไหน เพราะมีแค่ตัวเดียว\n\n"
+        "ถ้า last_options_count > 1 AND ข้อความล่าสุดพูดว่า สนใจ (ไม่ระบุเลข)\n"
+        "→ action=reply (ให้ถามว่าสนใจตัวที่เท่าไหร่)\n\n"
         "⚠️ กฎ CONTINUATION — ตรวจสอบก่อนทุกกฎอื่น:\n"
         "ถ้าข้อความล่าสุดเป็น คำสั้นๆ เช่น 'ไหน', 'ไหนครับ', 'ไหนคะ', 'ได้ยัง', 'รออยู่', 'ส่งมา', 'มีไหม', 'หาได้ไหม', 'ดูให้หน่อย', 'แล้วไง', 'ยังไง'\n"
         "AND ใน history ก่อนหน้า AI เคยบอกว่าจะค้นหา/เช็ก/ดึงข้อมูล/รอสักครู่\n"
@@ -1070,7 +1100,8 @@ def process_message(sender_id: str, text: str):
         history = list(get_history(sender_id))
         ctx = get_context(sender_id)
 
-        action_data = decide_action(text, history)
+        _last_opts_count = len(ctx.get("last_options", []))
+        action_data = decide_action(text, history, last_options_count=_last_opts_count)
         action               = action_data.get("action", "reply")
         country_id           = action_data.get("country_id")
         selected_option_idx  = action_data.get("selected_option_index")
@@ -1115,10 +1146,21 @@ def process_message(sender_id: str, text: str):
                         budget_max = int(b)
                     except Exception:
                         pass
-                tour_data = fetch_tours(country_id, city_hint=city_hint, budget_max=budget_max)
+                result = fetch_tours(country_id, city_hint=city_hint, budget_max=budget_max)
+                if isinstance(result, tuple):
+                    tour_data, tour_meta = result
+                else:
+                    tour_data, tour_meta = result, []
+                # อัพเดท last_options ใน Redis ทันที — ไม่รอ background thread
+                if tour_meta:
+                    ctx["last_options"] = tour_meta
+                    if city_hint:
+                        ctx["city_hint"] = city_hint
+                    save_context(sender_id, ctx)
+                    logger.info(f"last_options updated immediately: {len(tour_meta)} tours")
             except Exception as e:
                 logger.error(f"fetch_tours error: {e}")
-                tour_data = ""
+                tour_data, tour_meta = "", []
 
         # Fetch PDF info
         if action == "detail_pdf":
