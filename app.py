@@ -30,8 +30,7 @@ logger = logging.getLogger(__name__)
 VERIFY_TOKEN      = os.environ.get("VERIFY_TOKEN", "tourfiremai2024")
 FB_PAGE_TOKEN     = os.environ.get("FB_PAGE_TOKEN", "")
 ANTHROPIC_KEY     = os.environ.get("ANTHROPIC_API_KEY", "")
-TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT     = os.environ.get("TELEGRAM_CHAT", "")
+LINE_NOTIFY_TOKEN = os.environ.get("LINE_NOTIFY_TOKEN", "")
 SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY      = os.environ.get("SUPABASE_KEY", "")
 DASHBOARD_PASS    = os.environ.get("DASHBOARD_PASSWORD", "tourfiremai2024")
@@ -400,15 +399,21 @@ def send_message(recipient_id: str, text: str):
         except Exception as e:
             logger.error(f"❌ FB send exception: {e}")
 
-def notify_telegram(message: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
+def notify_line(message: str):
+    """ส่งแจ้งเตือนผ่าน LINE Notify"""
+    if not LINE_NOTIFY_TOKEN:
+        logger.warning("LINE_NOTIFY_TOKEN not set — skip notify")
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT, "text": message}, timeout=10)
-        logger.info("📨 Telegram notified")
+        requests.post(
+            "https://notify-api.line.me/api/notify",
+            headers={"Authorization": f"Bearer {LINE_NOTIFY_TOKEN}"},
+            data={"message": f"\n{message}"},
+            timeout=10,
+        )
+        logger.info("📨 LINE Notify sent")
     except Exception as e:
-        logger.error(f"Telegram error: {e}")
+        logger.error(f"notify_line error: {e}")
 
 
 # ─── Tour data fetcher ────────────────────────────────────────────────────────
@@ -744,7 +749,8 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) 
                 })
             return "\n\n".join(parts), meta
         # DB has no price data yet → fallback to detail fetch
-        return _enrich_and_format(db_tours, url_key="url", max_detail=12), []
+        result_str, result_meta = _enrich_and_format(db_tours, url_key="url", max_detail=12)
+        return result_str, result_meta
 
     # ── 2. DB miss → fall back to web scraping ────────────────────────────────
     logger.info(f"DB miss for country={country_id} city={city_hint} → scraping web")
@@ -1548,7 +1554,7 @@ def process_payment_slip(sender_id: str, image_urls: list = None):
     if image_urls:
         summary_parts.append(f"รูปสลิป: {image_urls[0]}")
     summary_parts.append("→ กรุณาตรวจสอบและยืนยันการจองด่วน!")
-    notify_telegram("\n".join(summary_parts))
+    notify_line("\n".join(summary_parts))
 
     save_lead_supabase(sender_id, ctx, "paid", "ส่งสลิปการโอนเงิน")
 
@@ -1606,6 +1612,21 @@ def process_message(sender_id: str, text: str):
             ctx["country"] = classifier_country
         if country_id and not ctx.get("country_id"):
             ctx["country_id"] = country_id
+
+        # ── Resolve selected_option_index → set selected_tour ────────────
+        if uses_previous and selected_option_idx and ctx.get("last_options"):
+            opts = ctx["last_options"]
+            if isinstance(opts, str):
+                try:
+                    opts = json.loads(opts)
+                except Exception:
+                    opts = []
+            if isinstance(opts, list) and 1 <= (selected_option_idx or 0) <= len(opts):
+                selected = opts[selected_option_idx - 1]
+                ctx["selected_tour"]      = selected
+                ctx["selected_tour_name"] = selected.get("name", "")
+                ctx["selected_tour_url"]  = selected.get("url", selected.get("link", ""))
+                logger.info(f"✅ Resolved option #{selected_option_idx}: {ctx['selected_tour_name']}")
 
         # ── clear_previous_options: ลูกค้าเปลี่ยนประเทศ ──────────────────
         if clear_prev_options:
@@ -1700,7 +1721,7 @@ def process_message(sender_id: str, text: str):
 
         # Notify admin
         if action == "flash_sale":
-            notify_telegram(f"🔥 ทัวร์ไฟไหม้!\nPSID: {sender_id}\nข้อความ: {text}")
+            notify_line(f"🔥 ทัวร์ไฟไหม้!\nPSID: {sender_id}\nข้อความ: {text}")
         elif action == "handoff":
             is_handoff = True
             stage_emoji = {"hot": "🔔", "booking": "📋", "warm": "💬", "paid": "💳"}.get(lead_stage, "📩")
@@ -1719,7 +1740,7 @@ def process_message(sender_id: str, text: str):
                 ctx_summary += f"\nจำนวน: {ctx['pax']} ท่าน"
             if ctx.get("budget_per_person"):
                 ctx_summary += f"\nงบ: {ctx['budget_per_person']:,}" if isinstance(ctx['budget_per_person'], (int, float)) else f"\nงบ: {ctx['budget_per_person']}"
-            notify_telegram(
+            notify_line(
                 f"{stage_emoji} Lead [{lead_stage.upper()}]\nPSID: {sender_id}\nข้อความ: {text}{ctx_summary}"
             )
 
@@ -2016,24 +2037,4 @@ def webhook():
             text         = message.get("text", "").strip()
 
             # ── Ad Attribution (referral / postback) ──────────────────────
-            has_referral = (
-                msg_event.get("referral") or
-                msg_event.get("postback", {}).get("referral") or
-                msg_event.get("ads_context_data")
-            )
-            if has_referral:
-                t_attr = threading.Thread(target=capture_ad_attribution, args=(sender_id, msg_event))
-                t_attr.daemon = True
-                t_attr.start()
-
-            # Handle postback text if no regular text
-            if not text and msg_event.get("postback", {}).get("title"):
-                text = msg_event["postback"]["title"]
-
-            # Image attachment = potential payment slip
-            attachments  = message.get("attachments", [])
-            image_list   = [a for a in attachments if a.get("type") == "image"]
-            if image_list:
-                image_urls = [a.get("payload", {}).get("url", "") for a in image_list]
-                logger.info(f"📷 Image from {sender_id} — treating as payment slip")
-                t = threading.Thread(target=process_payment_slip
+            has_re
