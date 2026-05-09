@@ -432,22 +432,25 @@ def fetch_tour_detail_dates(tour_url: str) -> dict:
 
 
 
-def fetch_tours_from_db(country_id: str, city_hint: str = None) -> list:
-    """Query Supabase `tours` table for tours by country + optional city filter.
-    Returns list of dicts with keys: name, url, tour_code
-    Returns [] if DB is unavailable or no results.
+def fetch_tours_from_db(country_id: str, city_hint: str = None,
+                        budget_max: int = None) -> list:
+    """Query Supabase `tours` table.
+    Returns list of dicts: name, url, tour_code, price_min, airline, departure_dates
+    Filters by city and/or budget if provided.
     """
     if not SUPABASE_URL or not SUPABASE_KEY:
         return []
     try:
         params = {
             "country_id": f"eq.{country_id}",
-            "select":     "name,url,tour_code",
-            "order":      "name.asc",
-            "limit":      "100",
+            "select":     "name,url,tour_code,price_min,airline,departure_dates",
+            "order":      "price_min.asc.nullslast",
+            "limit":      "60",
         }
         if city_hint:
             params["name"] = f"ilike.*{city_hint}*"
+        if budget_max:
+            params["price_min"] = f"lte.{budget_max}"
         headers = {
             "apikey":        SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -459,14 +462,14 @@ def fetch_tours_from_db(country_id: str, city_hint: str = None) -> list:
             timeout=10,
         )
         if resp.status_code == 200:
-            return resp.json()        # list of dicts
+            return resp.json()
         logger.warning(f"fetch_tours_from_db: HTTP {resp.status_code} — {resp.text[:200]}")
         return []
     except Exception as e:
         logger.error(f"fetch_tours_from_db error: {e}")
         return []
 
-def fetch_tours(country_id: str, city_hint: str = None) -> str:
+def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) -> str:
     """ดึงทัวร์ — ลอง Supabase DB ก่อน, fallback to web scraping
 
     DB path  (fast ~0.1s): query tours table → fetch detail pages for top 4
@@ -504,9 +507,27 @@ def fetch_tours(country_id: str, city_hint: str = None) -> str:
         return "\n\n".join(parts)
 
     # ── 1. Try Supabase DB ────────────────────────────────────────────────────
-    db_tours = fetch_tours_from_db(country_id, city_hint=city_hint)
+    db_tours = fetch_tours_from_db(country_id, city_hint=city_hint, budget_max=budget_max)
     if db_tours:
         logger.info(f"DB hit: {len(db_tours)} tours for country={country_id} city={city_hint}")
+        # Check if DB has price/dates data (v2 scraper)
+        has_price_data = any(t.get("price_min") for t in db_tours)
+        if has_price_data:
+            # Format directly from DB — no detail page fetching needed
+            parts = []
+            for t in db_tours[:6]:
+                price_str = f"{t['price_min']:,} บาท" if t.get("price_min") else "ติดต่อสอบถาม"
+                dates_str = t.get("departure_dates") or "ติดต่อเช็กวัน"
+                airline_str = t.get("airline") or ""
+                line = f"📌 {t['name']}"
+                if airline_str:
+                    line += f" ({airline_str})"
+                line += f"\n   💰 ราคาเริ่ม: {price_str}"
+                line += f"\n   📅 วันเดินทาง: {dates_str}"
+                line += f"\n   🔗 [LINK:{t['url']}]"
+                parts.append(line)
+            return "\n\n".join(parts)
+        # DB has no price data yet → fallback to detail fetch
         return _enrich_and_format(db_tours, url_key="url", max_detail=12)
 
     # ── 2. DB miss → fall back to web scraping ────────────────────────────────
@@ -1087,7 +1108,14 @@ def process_message(sender_id: str, text: str):
             country_name = COUNTRY_MAP.get(country_id, country_id)
             logger.info(f"Fetching tours: {country_name} (id={country_id})")
             try:
-                tour_data = fetch_tours(country_id, city_hint=city_hint)
+                budget_max = None
+                if ctx and ctx.get("budget_per_person"):
+                    try:
+                        b = str(ctx["budget_per_person"]).replace(",","").replace(" ","")
+                        budget_max = int(b)
+                    except Exception:
+                        pass
+                tour_data = fetch_tours(country_id, city_hint=city_hint, budget_max=budget_max)
             except Exception as e:
                 logger.error(f"fetch_tours error: {e}")
                 tour_data = ""
