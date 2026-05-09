@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta
 from flask import Flask, request, jsonify, abort
 import anthropic
 import requests
+import pdfplumber
+import io
 from bs4 import BeautifulSoup
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -190,6 +192,69 @@ def fetch_tours(country_id: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text[:8000]
 
+# PDF cache (in-memory): {program_url: extracted_text}
+_PDF_CACHE: dict = {}
+
+def extract_program_url_from_history(history: list) -> str | None:
+    """ค้นหา URL โปรแกรมทัวร์ล่าสุดจาก conversation history"""
+    pattern = re.compile(r'https://www\.tourfiremai\.com/tour/ap\w+')
+    for msg in reversed(history):
+        m = pattern.search(msg.get("content", ""))
+        if m:
+            return m.group(0)
+    return None
+
+def fetch_pdf_info(program_url: str) -> str:
+    """ดาวน์โหลด PDF ของโปรแกรมทัวร์และดึงข้อมูลสำคัญออกมา"""
+    if program_url in _PDF_CACHE:
+        return _PDF_CACHE[program_url]
+
+    # สร้าง PDF URL จาก program URL
+    # เช่น https://www.tourfiremai.com/tour/ap242931 → tour_id = 242931
+    m = re.search(r'/tour/ap(\d+)', program_url)
+    if not m:
+        return ""
+    tour_id = m.group(1)
+    pdf_url = f"https://www.tourfiremai.com/programtour/tour_{tour_id}.pdf"
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
+        resp = requests.get(pdf_url, headers=headers, timeout=20)
+        resp.raise_for_status()
+
+        with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
+            pages_text = []
+            for page in pdf.pages:
+                t = page.extract_text() or ""
+                if t.strip():
+                    pages_text.append(t)
+            full_text = "\n".join(pages_text)
+
+        # ตัดให้สั้นลง — ส่งเฉพาะส่วนที่มีข้อมูลสำคัญ (ราคา, เงื่อนไข, มัดจำ, วีซ่า, ทิป)
+        # เอาหน้าที่มี keywords สำคัญ
+        keywords = ["มัดจำ", "ทิป", "วีซ่า", "เงื่อนไข", "ราคา", "อัตราค่า", "ไม่รวม", "รวม"]
+        important_pages = []
+        for page_text in pages_text:
+            if any(kw in page_text for kw in keywords):
+                important_pages.append(page_text[:1500])
+
+        result = f"[ข้อมูลจาก PDF โปรแกรม {tour_id}]\n"
+        if important_pages:
+            result += "\n---\n".join(important_pages[:5])
+        else:
+            # fallback: เอาหน้าท้ายๆ ที่มักมีเงื่อนไข
+            result += "\n---\n".join(pages_text[-4:])[:4000]
+
+        result = result[:5000]
+        _PDF_CACHE[program_url] = result
+        logger.info(f"PDF fetched: {pdf_url} ({len(result)} chars)")
+        return result
+
+    except Exception as e:
+        logger.error(f"fetch_pdf_info error: {e}")
+        return ""
+
+
 # ─── AI — System Prompt ───────────────────────────────────────────────────────
 def _system_prompt() -> str:
     today = date.today().strftime("%-d %B %Y")
@@ -250,8 +315,9 @@ def _system_prompt() -> str:
 ══════════════════════════════════
 การแสดงข้อมูลทัวร์
 ══════════════════════════════════
-เมื่อมีข้อมูลทัวร์จากเว็บ:
-- เลือก 1-3 โปรแกรมที่เหมาะที่สุด อธิบายว่าทำไมจึงเหมาะ
+เมื่อมีข้อมูลทัวร์จากเว็บหรือ PDF โปรแกรม:
+- ถ้าเป็น [ข้อมูลจากเว็บ] → เลือก 1-3 โปรแกรมที่เหมาะที่สุด อธิบายว่าทำไมจึงเหมาะ
+- ถ้าเป็น [ข้อมูลจาก PDF โปรแกรม] → ตอบคำถามที่ลูกค้าถามโดยตรงจากข้อมูลใน PDF เท่านั้น
 - แสดง: รหัสโปรแกรม | ชื่อทัวร์ | จำนวนวัน | ราคาเริ่มต้น | สายการบิน | วันเดินทาง | ลิงก์
 - ถ้าใกล้เดินทาง (≤45 วัน) → ระบุว่าเป็น "ทัวร์ไฟไหม้ 🔥 โอกาสดี!"
 - ถ้างบไม่พอ → แนะนำทางเลือกอื่นหรือประเทศใกล้เคียงได้เลย
@@ -277,7 +343,7 @@ def _system_prompt() -> str:
 def decide_action(user_message: str, history: list) -> dict:
     """
     วิเคราะห์ว่าต้องทำอะไร คืน JSON:
-    {"action": "search"|"detail"|"flash_sale"|"handoff"|"reply", "country_id": "2"|null}
+    {"action": "search"|"detail"|"detail_pdf"|"flash_sale"|"handoff"|"reply", "country_id": "2"|null}
     """
     history_text = ""
     for msg in history[-8:]:
@@ -403,6 +469,20 @@ def process_message(sender_id: str, text: str):
             except Exception as e:
                 logger.error(f"fetch_tours error: {e}")
                 tour_data = ""
+
+        # Fetch PDF info for specific program questions (มัดจำ/วีซ่า/ทิป)
+        if action == "detail_pdf":
+            program_url = extract_program_url_from_history(history)
+            if program_url:
+                logger.info(f"Fetching PDF for: {program_url}")
+                try:
+                    tour_data = fetch_pdf_info(program_url)
+                except Exception as e:
+                    logger.error(f"fetch_pdf_info error: {e}")
+                    tour_data = ""
+            else:
+                # ไม่มี URL ใน history → ตอบธรรมดา
+                action = "reply"
 
         # Notify admin for flash_sale or handoff
         if action == "flash_sale":
