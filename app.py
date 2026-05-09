@@ -376,21 +376,131 @@ def notify_telegram(message: str):
 
 
 # ─── Tour data fetcher ────────────────────────────────────────────────────────
-def fetch_tours(country_id: str) -> str:
-    listing_url = f"https://www.tourfiremai.com/intertour/{country_id}/"
+def _parse_listing_cards(html_text: str) -> list:
+    """Parse tour cards (name + link) from a listing page."""
+    soup = BeautifulSoup(html_text, "html.parser")
+    cards = []
+    for name_div in soup.find_all("div", class_="b-name"):
+        h3 = name_div.find("h3")
+        if not h3:
+            continue
+        name = h3.get_text(strip=True)
+        link = ""
+        # Walk ancestors to find the nearest /tour/ap* link
+        for ancestor in name_div.parents:
+            a = ancestor.find("a", href=re.compile(r"/tour/ap\w+"))
+            if a:
+                href = a["href"]
+                link = ("https://www.tourfiremai.com" + href
+                        if href.startswith("/") else href)
+                break
+            if ancestor.name in ("section", "body", "[document]"):
+                break
+        cards.append({"name": name, "link": link})
+    return cards
+
+
+def fetch_tour_detail_dates(tour_url: str) -> dict:
+    """ดึง วันเดินทาง + ราคา + สายการบิน จาก detail page"""
     headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
-    resp = requests.get(listing_url, headers=headers, timeout=20, allow_redirects=True)
+    resp = requests.get(tour_url, headers=headers, timeout=12)
     resp.raise_for_status()
+    text = resp.text
+
+    # Dates (Thai abbreviated months)
+    raw_dates = re.findall(
+        r"\d+\s*(?:ม\.ค|ก\.พ|มี\.ค|เม\.ย|พ\.ค|มิ\.ย|ก\.ค|ส\.ค|ก\.ย|ต\.ค|พ\.ย|ธ\.ค)\.?\s*\d*",
+        text,
+    )
+    seen, unique_dates = set(), []
+    for d in raw_dates:
+        d = d.strip()
+        if d not in seen:
+            seen.add(d)
+            unique_dates.append(d)
+    dates_str = ", ".join(unique_dates[:8]) if unique_dates else "ติดต่อเช็กวัน"
+
+    # Price
+    prices = re.findall(r"[\d,]+\s*บาท", text)
+    price_str = prices[0] if prices else "ติดต่อสอบถาม"
+
+    # Airline code
+    airlines = re.findall(r"\b(XJ|VZ|SL|FD|DD|TG|WE|PG|QR|TK|EK|MH|CX|XI|PR|OZ|KE)\b", text)
+    airline_str = airlines[0] if airlines else ""
+
+    return {"dates": dates_str, "price": price_str, "airline": airline_str}
+
+
+def fetch_tours(country_id: str, city_hint: str = None) -> str:
+    """ดึงทัวร์จากเว็บ
+    - ถ้ามี city_hint: ค้นหลายหน้าจนเจอ → fetch detail page เพื่อได้วันเดินทางจริง
+    - ไม่มี city_hint: fallback แบบเดิม (page 1, raw text)
+    """
+    base_url = f"https://www.tourfiremai.com/intertour/{country_id}/"
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
+
+    if city_hint:
+        # ── Smart mode: scan multiple pages, filter by city ──────────────
+        matched_cards = []
+        for page_num in range(1, 5):          # max 4 pages
+            url = base_url if page_num == 1 else f"{base_url}?page={page_num}"
+            try:
+                resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+                resp.raise_for_status()
+            except Exception:
+                break
+            cards = _parse_listing_cards(resp.text)
+            if not cards:
+                break
+            matched_cards.extend([c for c in cards if city_hint in c["name"]])
+            if len(matched_cards) >= 3:
+                break
+
+        if matched_cards:
+            # Fetch detail pages in parallel (max 4 tours)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            to_detail = matched_cards[:4]
+
+            def _get_detail(t):
+                if t.get("link"):
+                    try:
+                        t.update(fetch_tour_detail_dates(t["link"]))
+                    except Exception:
+                        pass
+                return t
+
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                results = list(ex.map(_get_detail, to_detail))
+
+            parts = []
+            for t in results:
+                line = f"📌 {t['name']}"
+                if t.get("airline"):
+                    line += f" ({t['airline']})"
+                if t.get("dates"):
+                    line += f"\n   วันเดินทาง: {t['dates']}"
+                if t.get("price"):
+                    line += f"\n   ราคาเริ่ม: {t['price']}"
+                if t.get("link"):
+                    line += f"\n   [LINK:{t['link']}]"
+                parts.append(line)
+            return "\n\n".join(parts)
+
+    # ── Fallback / no city filter: original raw-text approach ────────────
+    try:
+        resp = requests.get(base_url, headers=headers, timeout=20, allow_redirects=True)
+        resp.raise_for_status()
+    except Exception as e:
+        raise
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    base_url = "https://www.tourfiremai.com"
-
+    base = "https://www.tourfiremai.com"
     for a_tag in soup.find_all("a", href=True):
         href = a_tag.get("href", "").strip()
         if not href or href.startswith("#") or href.startswith("javascript"):
             a_tag.replace_with(a_tag.get_text(strip=True))
             continue
-        full_url = (base_url + href) if href.startswith("/") else href
+        full_url = (base + href) if href.startswith("/") else href
         if re.match(r"https://www\.tourfiremai\.com/tour/ap\w+$", full_url):
             link_text = a_tag.get_text(strip=True)
             a_tag.replace_with(f"{link_text} [LINK:{full_url}]" if link_text else f"[LINK:{full_url}]")
@@ -399,7 +509,6 @@ def fetch_tours(country_id: str) -> str:
 
     for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
-
     text = soup.get_text(separator=" ")
     text = re.sub(r"\s+", " ", text).strip()
     return text[:8000]
@@ -719,6 +828,7 @@ def decide_action(user_message: str, history: list) -> dict:
         "{\n"
         '  "action": "search" | "detail" | "detail_pdf" | "flash_sale" | "handoff" | "reply" | "continue",\n'
         '  "country_id": "เลขประเทศ หรือ null",\n'
+        '  "city": "ชื่อเมือง/จังหวัดที่ลูกค้าถามถึง เช่น โอซาก้า โตเกียว ฮอกไกโด เฉิงตู คุนหมิง หรือ null",\n'
         '  "selected_option_index": 1 | 2 | 3 | null,\n'
         '  "uses_previous_option": true | false,\n'
         '  "lead_stage": "cold" | "warm" | "hot" | "booking"\n'
@@ -778,6 +888,8 @@ def decide_action(user_message: str, history: list) -> dict:
             data["action"] = data.get("action", "reply")
             cid = data.get("country_id")
             data["country_id"] = str(cid) if cid and str(cid) != "null" else None
+            city = data.get("city", "")
+            data["city"] = city if city and city != "null" else None
             data["selected_option_index"] = data.get("selected_option_index")
             data["uses_previous_option"] = bool(data.get("uses_previous_option", False))
             data["lead_stage"] = data.get("lead_stage", "cold")
@@ -847,7 +959,8 @@ def process_message(sender_id: str, text: str):
         selected_option_idx  = action_data.get("selected_option_index")
         uses_previous        = action_data.get("uses_previous_option", False)
         lead_stage           = action_data.get("lead_stage", "cold")
-        logger.info(f"Action: {action}, country_id: {country_id}, lead_stage: {lead_stage}, "
+        city_hint            = action_data.get("city")
+        logger.info(f"Action: {action}, country_id: {country_id}, city: {city_hint}, lead_stage: {lead_stage}, "
                     f"selected_idx: {selected_option_idx}, uses_prev: {uses_previous}")
 
         tour_data   = ""
@@ -878,7 +991,7 @@ def process_message(sender_id: str, text: str):
             country_name = COUNTRY_MAP.get(country_id, country_id)
             logger.info(f"Fetching tours: {country_name} (id={country_id})")
             try:
-                tour_data = fetch_tours(country_id)
+                tour_data = fetch_tours(country_id, city_hint=city_hint)
             except Exception as e:
                 logger.error(f"fetch_tours error: {e}")
                 tour_data = ""
