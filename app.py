@@ -474,8 +474,8 @@ def fetch_tours(country_id: str, city_hint: str = None) -> str:
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    def _enrich_and_format(cards: list, url_key: str = "url") -> str:
-        """Fetch detail pages for top 4 cards and format output."""
+    def _enrich_and_format(cards: list, url_key: str = "url", max_detail: int = 4) -> str:
+        """Fetch detail pages for top N cards and format output."""
         def _get_detail(t):
             link = t.get(url_key) or t.get("link") or t.get("url", "")
             if link:
@@ -485,8 +485,8 @@ def fetch_tours(country_id: str, city_hint: str = None) -> str:
                     pass
             return t
 
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            results = list(ex.map(_get_detail, cards[:4]))
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            results = list(ex.map(_get_detail, cards[:max_detail]))
 
         parts = []
         for t in results:
@@ -507,7 +507,7 @@ def fetch_tours(country_id: str, city_hint: str = None) -> str:
     db_tours = fetch_tours_from_db(country_id, city_hint=city_hint)
     if db_tours:
         logger.info(f"DB hit: {len(db_tours)} tours for country={country_id} city={city_hint}")
-        return _enrich_and_format(db_tours, url_key="url")
+        return _enrich_and_format(db_tours, url_key="url", max_detail=12)
 
     # ── 2. DB miss → fall back to web scraping ────────────────────────────────
     logger.info(f"DB miss for country={country_id} city={city_hint} → scraping web")
@@ -741,6 +741,16 @@ def _system_prompt(ctx: dict = None) -> str:
 → ห้ามบอกว่า "บทสนทนาเพิ่งเริ่มต้น" หรือ "ยังไม่มีโปรแกรมที่เสนอ" — ให้ค้นใน history ก่อนเสมอ
 → ถ้าหา "ตัวที่ X" จาก history ได้ → แสดงรายละเอียดโปรแกรมนั้นทันที
 → ถ้าหาจาก history ไม่ได้จริงๆ → ถามประเทศ/ปลายทาง อย่าบอกว่าไม่มีข้อมูล
+
+══════════════════════════════════
+กฎงบประมาณ — สำคัญมาก
+══════════════════════════════════
+ถ้าลูกค้าบอกงบ เช่น "งบไม่เกิน 20,000" หรือ "ราคาถูกสุด":
+- จำประเทศที่กำลังคุยอยู่ไว้เสมอ ห้ามถามประเทศใหม่ถ้าบทสนทนาก่อนหน้าระบุไว้แล้ว
+- จากข้อมูลทัวร์ที่ได้มา (มี 12 โปรแกรม) คัดเฉพาะตัวที่ราคาไม่เกินงบก่อน
+- ถ้าไม่มีในงบเลย บอกตัวที่ถูกที่สุดที่มี พร้อมบอกว่าเกินงบเท่าไหร่ และเสนอเพิ่มงบหรือเปลี่ยนประเทศ
+- ห้ามแสดงทัวร์ที่แพงกว่างบมากโดยไม่อธิบาย
+- ถ้าลูกค้าบอกว่า "บนเว็บมีราคา X" ตอบว่าจะให้ทีมงานเช็กราคานั้นโดยตรง ขอชื่อ+เบอร์ได้เลย
 
 ถ้าลูกค้าพิมพ์ "เช็กเลย" หลังเลือกโปรแกรม → ถือเป็น hot lead
 ให้สรุปข้อมูลโปรแกรมนั้นทันที แล้วถามเฉพาะ ชื่อผู้ติดต่อ + เบอร์/LINE เท่านั้น:
@@ -1001,6 +1011,7 @@ def generate_response(user_message: str, history: list, tour_data: str = "",
             "---\n"
             "ใช้ข้อมูลทัวร์ด้านบนในการตอบ คัดเลือก 1-3 โปรแกรมที่เหมาะที่สุดกับความต้องการลูกค้า "
             "พร้อมเหตุผล 1 ประโยคต่อตัวเลือก"
+            + (f"\n[งบลูกค้า {ctx['budget_per_person']} บาท: คัดเฉพาะที่ราคาไม่เกินงบก่อน ถ้าไม่มีให้โชว์ถูกสุดและบอกว่าเกินเท่าไหร่]" if ctx and ctx.get("budget_per_person") else "")
         )
     elif is_handoff:
         user_content = (
