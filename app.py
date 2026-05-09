@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 VERIFY_TOKEN      = os.environ.get("VERIFY_TOKEN", "tourfiremai2024")
 FB_PAGE_TOKEN     = os.environ.get("FB_PAGE_TOKEN", "")
 ANTHROPIC_KEY     = os.environ.get("ANTHROPIC_API_KEY", "")
-LINE_NOTIFY_TOKEN = os.environ.get("LINE_NOTIFY_TOKEN", "")
+LINE_CHANNEL_TOKEN = os.environ.get("LINE_CHANNEL_TOKEN", "")   # LINE Messaging API — Channel Access Token
+LINE_ADMIN_ID      = os.environ.get("LINE_ADMIN_ID", "")          # LINE User ID หรือ Group ID ของแอดมิน
 SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY      = os.environ.get("SUPABASE_KEY", "")
 DASHBOARD_PASS    = os.environ.get("DASHBOARD_PASSWORD", "tourfiremai2024")
@@ -400,18 +401,24 @@ def send_message(recipient_id: str, text: str):
             logger.error(f"❌ FB send exception: {e}")
 
 def notify_line(message: str):
-    """ส่งแจ้งเตือนผ่าน LINE Notify"""
-    if not LINE_NOTIFY_TOKEN:
-        logger.warning("LINE_NOTIFY_TOKEN not set — skip notify")
+    """ส่งแจ้งเตือนผ่าน LINE Messaging API (push message)"""
+    if not LINE_CHANNEL_TOKEN or not LINE_ADMIN_ID:
+        logger.warning("LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set — skip notify")
         return
     try:
         requests.post(
-            "https://notify-api.line.me/api/notify",
-            headers={"Authorization": f"Bearer {LINE_NOTIFY_TOKEN}"},
-            data={"message": f"\n{message}"},
+            "https://api.line.me/v2/bot/message/push",
+            headers={
+                "Authorization": f"Bearer {LINE_CHANNEL_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "to": LINE_ADMIN_ID,
+                "messages": [{"type": "text", "text": message}],
+            },
             timeout=10,
         )
-        logger.info("📨 LINE Notify sent")
+        logger.info("📨 LINE push sent")
     except Exception as e:
         logger.error(f"notify_line error: {e}")
 
@@ -2027,14 +2034,4 @@ def webhook():
 
     for entry in data.get("entry", []):
         for msg_event in entry.get("messaging", []):
-            if msg_event.get("message", {}).get("is_echo"):
-                continue
-            sender_id = msg_event.get("sender", {}).get("id")
-            if not sender_id:
-                continue
-
-            message      = msg_event.get("message", {})
-            text         = message.get("text", "").strip()
-
-            # ── Ad Attribution (referral / postback) ──────────────────────
-            has_re
+            if msg_event.get("message", {}).ge
