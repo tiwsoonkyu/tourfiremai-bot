@@ -249,8 +249,8 @@ def extract_context_after_response(psid: str, history: list, ai_response: str) -
             messages=[{"role": "user", "content": prompt}]
         )
         raw = resp.content[0].text.strip()
+        logger.info(f"decide_action raw: {raw[:200]}")
         m = re.search(r"\{.*\}", raw, re.DOTALL)
-        logger.info(f"decide_action raw (first 200): {raw[:200]}")
         if m:
             new_ctx = json.loads(m.group())
             # Merge: keep existing values if new is null
@@ -404,7 +404,7 @@ def send_message(recipient_id: str, text: str):
 def notify_line(message: str):
     """ส่งแจ้งเตือนผ่าน LINE Messaging API (push message)"""
     if not LINE_CHANNEL_TOKEN or not LINE_ADMIN_ID:
-        logger.warning("⚠️ LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set — skip notify")
+        logger.warning("LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set — skip notify")
         return
     try:
         resp = requests.post(
@@ -1363,6 +1363,65 @@ AI: ขอค้นหาโอซาก้าให้นะคะ
 
 
 # ─── AI — Call 1: Decide Action ───────────────────────────────────────────────
+
+def fetch_faimai_tours(country_filter: str = None) -> str:
+    """ดึงทัวร์ไฟไหม้จาก tourfiremai.com/faimai"""
+    try:
+        import requests as _req
+        resp = _req.get("https://www.tourfiremai.com/faimai", timeout=10,
+                        headers={"User-Agent": "Mozilla/5.0"})
+        html = resp.text
+    except Exception as e:
+        logger.error(f"fetch_faimai error: {e}")
+        return "ขออภัยค่ะ ดึงข้อมูลทัวร์ไฟไหม้ไม่ได้ตอนนี้"
+
+    import re as _re
+    blocks = _re.split(r'<div class="b-one-pg', html)
+    tours = []
+    for block in blocks[1:]:
+        url_m   = _re.search(r'href="(https://www\.tourfiremai\.com/tour/[^"]+)"', block)
+        name_m  = _re.search(r'<h3>(.*?)</h3>', block, _re.DOTALL)
+        code_m  = _re.search(r'<i class="fa-solid fa-tag"></i></span> <span>(.*?)</span>', block)
+        days_m  = _re.search(r'(\d+)วัน', block)
+        date_m  = _re.search(r'<i class="fa-solid fa-calendar-days"></i></span>\s*<span>(.*?)</span>', block, _re.DOTALL)
+        airline_m = _re.search(r'alt="([^"]{3,40})" class="size-img">', block)
+        disc_m  = _re.search(r'nb-dcprice-pgt">(.*?)<span>', block, _re.DOTALL)
+        price_m = _re.search(r'txt-price">[^<]*<span class="txt-price-full-box1">.*?</span>(.*?)</p>', block, _re.DOTALL)
+
+        if not url_m or not name_m:
+            continue
+        name    = _re.sub(r'<[^>]+>', '', name_m.group(1)).strip()
+        days    = days_m.group(1) if days_m else "?"
+        date    = _re.sub(r'\s+', ' ', date_m.group(1).strip()) if date_m else ""
+        airline = airline_m.group(1).strip() if airline_m else ""
+        disc    = _re.sub(r'<[^>]+>', '', disc_m.group(1)).strip() if disc_m else ""
+        price   = _re.sub(r'[^\d,]', '', price_m.group(1).strip()) if price_m else ""
+        url     = url_m.group(1)
+
+        # กรองตามประเทศถ้ามี
+        if country_filter:
+            if not any(k.lower() in name.lower() for k in country_filter.split()):
+                continue
+
+        tours.append({"name": name, "days": days, "date": date,
+                      "airline": airline, "disc": disc, "price": price, "url": url})
+
+    if not tours:
+        return "ขณะนี้ยังไม่มีทัวร์ไฟไหม้ที่ตรงกับที่ค้นหาค่ะ"
+
+    lines = ["🔥 **ทัวร์ไฟไหม้ราคาพิเศษ** จาก tourfiremai.com/faimai\n"]
+    for i, t in enumerate(tours[:6], 1):
+        line = f"{i}. {t['name']}"
+        if t['days']: line += f" ({t['days']}วัน)"
+        if t['date']: line += f"\n   📅 {t['date']}"
+        if t['airline']: line += f" | ✈️ {t['airline']}"
+        if t['price']: line += f"\n   💰 เริ่มต้น {t['price']} บาท/ท่าน"
+        if t['disc']: line += f" (ลด {t['disc']} บาท!)"
+        line += f"\n   🔗 {t['url']}"
+        lines.append(line)
+    lines.append(f"\nดูทั้งหมด: https://www.tourfiremai.com/faimai")
+    return "\n".join(lines)
+
 def decide_action(user_message: str, history: list, last_options_count: int = 0) -> dict:
     history_text = ""
     for msg in history[-10:]:
@@ -1407,8 +1466,8 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
         "action=search: ลูกค้าต้องการดูโปรแกรมทัวร์ประเทศที่ระบุ รวมถึงการเปลี่ยนประเทศ\n"
         "action=detail: ลูกค้าขอดูรายละเอียดทัวร์ — ใช้เมื่อยังไม่มีโปรแกรมที่เลือกใน context\n"
         "action=detail_pdf: (1) ลูกค้าขอ 'รายละเอียด' ของโปรแกรมที่เลือกไว้ใน context แล้ว (2) ลูกค้าถามมัดจำ/วีซ่า/ทิป/พักเดี่ยว/เงื่อนไขยกเลิก/itinerary/โรงแรม/รวมอะไร — และมีโปรแกรมที่เลือกไว้ใน context\n"
-        "action=flash_sale: ลูกค้าถามทัวร์ไฟไหม้/โปรโมชั่นพิเศษ/ดีลร้อน\n"
-        "action=handoff: ลูกค้าพร้อมจอง/สนใจจอง/ขอคุยเซลล์/เช็กที่นั่ง/ขอราคา final/ขอส่วนลด/ยกเลิก\n"
+        "action=flash_sale: ลูกค้าถามทัวร์ไฟไหม้โดยไม่ระบุประเทศ เช่น 'ทัวร์ไฟไหม้มีอะไรบ้าง' 'ทัวร์ถูกๆ' 'ไฟไหม้ราคาดี' หรือถามทัวร์จากโพสเพจโดยตรง\n"
+        "action=handoff: ลูกค้าพร้อมจอง/สนใจจอง/ขอคุยเซลล์/ขอคุยเจ้าหน้าที่/เช็กที่นั่ง/ขอราคา final/ขอส่วนลด/ยกเลิก/ส่งรูปจากโพสเพจ\n"
         "action=reply: ทักทาย/ถามทั่วไป/ยังไม่ระบุประเทศ/ยุโรปรวม — ใช้เฉพาะตอนเริ่มบทสนทนาใหม่จริงๆ เท่านั้น\n"
         "  ⚠️ กรณียุโรป: ถ้าลูกค้าพูดว่า 'ยุโรป' โดยไม่ระบุประเทศ → action=reply, country_id=null\n"
         "  ให้ bot ถามประเทศที่สนใจ (อิตาลี/ฝรั่งเศส/สวิต/กรีซ/ตุรกี/อังกฤษ/สเปน)\n"
@@ -1454,8 +1513,7 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
             messages=[{"role": "user", "content": prompt}]
         )
         raw = resp.content[0].text.strip()
-        logger.info(f"decide_action raw: {raw[:250]}")
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        m = re.search(r"\{.*?\}", raw, re.DOTALL)
         if m:
             data = json.loads(m.group())
             data["action"] = data.get("action", "reply")
@@ -1733,7 +1791,10 @@ def process_message(sender_id: str, text: str):
 
         # Notify admin
         if action == "flash_sale":
-            notify_line(f"🔥 ทัวร์ไฟไหม้!\nPSID: {sender_id}\nข้อความ: {text}")
+            # ดึงทัวร์ไฟไหม้จากหน้า /faimai
+            country_hint = ctx.get("country_name") or ""
+            tour_data = fetch_faimai_tours(country_filter=country_hint if country_hint else None)
+            logger.info(f"flash_sale: fetched faimai tours ({len(tour_data)} chars)")
         elif action == "handoff":
             is_handoff = True
             stage_emoji = {"hot": "🔔", "booking": "📋", "warm": "💬", "paid": "💳"}.get(lead_stage, "📩")
@@ -2066,10 +2127,19 @@ def webhook():
             image_list   = [a for a in attachments if a.get("type") == "image"]
             if image_list:
                 image_urls = [a.get("payload", {}).get("url", "") for a in image_list]
-                logger.info(f"📷 Image from {sender_id} — treating as payment slip")
-                t = threading.Thread(target=process_payment_slip, args=(sender_id, image_urls))
-                t.daemon = True
-                t.start()
+                post_kw = ["โพส", "เพจ", "ราคาในรูป", "ตัวนี้", "อันนี้", "ทัวร์นี้", "ตัวที่", "ในรูป"]
+                is_post = text and any(k in text for k in post_kw)
+                if is_post:
+                    logger.info(f"📷 Post screenshot from {sender_id}")
+                    notify_line("📸 ลูกค้าส่งรูปจากโพส!\nPSID: " + sender_id + "\nข้อความ: " + text + "\nรูป: " + image_urls[0][:80])
+                    t = threading.Thread(target=process_message, args=(sender_id, text + " [ลูกค้าส่งรูปจากโพสเพจ]"))
+                    t.daemon = True
+                    t.start()
+                else:
+                    logger.info(f"📷 Image from {sender_id} — treating as payment slip")
+                    t = threading.Thread(target=process_payment_slip, args=(sender_id, image_urls))
+                    t.daemon = True
+                    t.start()
                 continue
 
             if not text:
@@ -2084,24 +2154,18 @@ def webhook():
 
 @app.route("/test-line", methods=["GET"])
 def test_line():
-    """ทดสอบ LINE Messaging API — เปิด URL นี้จาก browser"""
-    token = LINE_CHANNEL_TOKEN
-    admin_id = LINE_ADMIN_ID
-    if not token or not admin_id:
-        return jsonify({"error": "LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set in env vars"}), 400
+    """ทดสอบ LINE Messaging API"""
+    if not LINE_CHANNEL_TOKEN or not LINE_ADMIN_ID:
+        return jsonify({"error": "LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set"}), 400
     try:
         resp = requests.post(
             "https://api.line.me/v2/bot/message/push",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"to": admin_id, "messages": [{"type": "text", "text": "🔧 ทดสอบระบบแจ้งเตือน LINE — TourFireMai Bot ✅"}]},
+            headers={"Authorization": f"Bearer {LINE_CHANNEL_TOKEN}", "Content-Type": "application/json"},
+            json={"to": LINE_ADMIN_ID, "messages": [{"type": "text", "text": "🔧 ทดสอบระบบแจ้งเตือน LINE — TourFireMai Bot ✅"}]},
             timeout=10,
         )
-        return jsonify({
-            "status": resp.status_code,
-            "line_response": resp.text[:500],
-            "token_prefix": token[:20] + "...",
-            "admin_id": admin_id,
-        })
+        return jsonify({"status": resp.status_code, "line_response": resp.text[:300],
+                        "token_prefix": LINE_CHANNEL_TOKEN[:20] + "...", "admin_id": LINE_ADMIN_ID})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
