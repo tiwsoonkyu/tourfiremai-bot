@@ -431,18 +431,93 @@ def fetch_tour_detail_dates(tour_url: str) -> dict:
     return {"dates": dates_str, "price": price_str, "airline": airline_str}
 
 
-def fetch_tours(country_id: str, city_hint: str = None) -> str:
-    """ดึงทัวร์จากเว็บ
-    - ถ้ามี city_hint: ค้นหลายหน้าจนเจอ → fetch detail page เพื่อได้วันเดินทางจริง
-    - ไม่มี city_hint: fallback แบบเดิม (page 1, raw text)
+
+def fetch_tours_from_db(country_id: str, city_hint: str = None) -> list:
+    """Query Supabase `tours` table for tours by country + optional city filter.
+    Returns list of dicts with keys: name, url, tour_code
+    Returns [] if DB is unavailable or no results.
     """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return []
+    try:
+        params = {
+            "country_id": f"eq.{country_id}",
+            "select":     "name,url,tour_code",
+            "order":      "name.asc",
+            "limit":      "100",
+        }
+        if city_hint:
+            params["name"] = f"ilike.*{city_hint}*"
+        headers = {
+            "apikey":        SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+        }
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/tours",
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json()        # list of dicts
+        logger.warning(f"fetch_tours_from_db: HTTP {resp.status_code} — {resp.text[:200]}")
+        return []
+    except Exception as e:
+        logger.error(f"fetch_tours_from_db error: {e}")
+        return []
+
+def fetch_tours(country_id: str, city_hint: str = None) -> str:
+    """ดึงทัวร์ — ลอง Supabase DB ก่อน, fallback to web scraping
+
+    DB path  (fast ~0.1s): query tours table → fetch detail pages for top 4
+    Web path (slow ~4-8s): scan listing pages → fetch detail pages for top 4
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _enrich_and_format(cards: list, url_key: str = "url") -> str:
+        """Fetch detail pages for top 4 cards and format output."""
+        def _get_detail(t):
+            link = t.get(url_key) or t.get("link") or t.get("url", "")
+            if link:
+                try:
+                    t.update(fetch_tour_detail_dates(link))
+                except Exception:
+                    pass
+            return t
+
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            results = list(ex.map(_get_detail, cards[:4]))
+
+        parts = []
+        for t in results:
+            link = t.get(url_key) or t.get("link") or t.get("url", "")
+            line = f"📌 {t['name']}"
+            if t.get("airline"):
+                line += f" ({t['airline']})"
+            if t.get("dates"):
+                line += f"\n   วันเดินทาง: {t['dates']}"
+            if t.get("price"):
+                line += f"\n   ราคาเริ่ม: {t['price']}"
+            if link:
+                line += f"\n   [LINK:{link}]"
+            parts.append(line)
+        return "\n\n".join(parts)
+
+    # ── 1. Try Supabase DB ────────────────────────────────────────────────────
+    db_tours = fetch_tours_from_db(country_id, city_hint=city_hint)
+    if db_tours:
+        logger.info(f"DB hit: {len(db_tours)} tours for country={country_id} city={city_hint}")
+        return _enrich_and_format(db_tours, url_key="url")
+
+    # ── 2. DB miss → fall back to web scraping ────────────────────────────────
+    logger.info(f"DB miss for country={country_id} city={city_hint} → scraping web")
     base_url = f"https://www.tourfiremai.com/intertour/{country_id}/"
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
+    headers  = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
 
     if city_hint:
-        # ── Smart mode: scan multiple pages, filter by city ──────────────
+        # Smart mode: scan multiple pages, filter by city name
         matched_cards = []
-        for page_num in range(1, 5):          # max 4 pages
+        for page_num in range(1, 5):
             url = base_url if page_num == 1 else f"{base_url}?page={page_num}"
             try:
                 resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
@@ -457,36 +532,9 @@ def fetch_tours(country_id: str, city_hint: str = None) -> str:
                 break
 
         if matched_cards:
-            # Fetch detail pages in parallel (max 4 tours)
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            to_detail = matched_cards[:4]
+            return _enrich_and_format(matched_cards, url_key="link")
 
-            def _get_detail(t):
-                if t.get("link"):
-                    try:
-                        t.update(fetch_tour_detail_dates(t["link"]))
-                    except Exception:
-                        pass
-                return t
-
-            with ThreadPoolExecutor(max_workers=3) as ex:
-                results = list(ex.map(_get_detail, to_detail))
-
-            parts = []
-            for t in results:
-                line = f"📌 {t['name']}"
-                if t.get("airline"):
-                    line += f" ({t['airline']})"
-                if t.get("dates"):
-                    line += f"\n   วันเดินทาง: {t['dates']}"
-                if t.get("price"):
-                    line += f"\n   ราคาเริ่ม: {t['price']}"
-                if t.get("link"):
-                    line += f"\n   [LINK:{t['link']}]"
-                parts.append(line)
-            return "\n\n".join(parts)
-
-    # ── Fallback / no city filter: original raw-text approach ────────────
+    # Raw-text fallback (no city filter or no city matches found)
     try:
         resp = requests.get(base_url, headers=headers, timeout=20, allow_redirects=True)
         resp.raise_for_status()
