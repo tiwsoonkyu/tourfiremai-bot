@@ -6,7 +6,6 @@ AI Tour Concierge v2 — รวมทัวร์ไฟไหม้
 import os
 import re
 import json
-import pickle
 import logging
 import threading
 from datetime import date, datetime, timedelta
@@ -72,54 +71,79 @@ COUNTRY_MAP = {
     "17": "รัสเซีย",
 }
 
-# ─── Conversation Store ───────────────────────────────────────────────────────
-# { psid: {"history": [...], "last_active": datetime} }
-HISTORY_FILE    = "/tmp/tourfiremai_history.pkl"
-conversation_store: dict = {}
-HISTORY_LIMIT  = 14      # messages kept per user (7 turns)
-SESSION_TIMEOUT = timedelta(hours=24)
+# ─── Conversation Store (Redis + in-memory fallback) ─────────────────────────
+HISTORY_LIMIT   = 30          # messages per user (15 turns)
+SESSION_TIMEOUT = timedelta(days=30)  # Redis TTL
+REDIS_TTL_SEC   = 30 * 24 * 3600     # 30 วัน
 
-def _load_history() -> dict:
-    """โหลด history จาก disk เมื่อ server start"""
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "rb") as f:
-                return pickle.load(f)
-        except Exception:
-            pass
-    return {}
-
-def _save_history():
-    """บันทึก history ลง disk — รองรับ server restart"""
+# ── Redis setup (Upstash) ──
+REDIS_URL = os.environ.get("REDIS_URL", "")
+_redis = None
+if REDIS_URL:
     try:
-        with open(HISTORY_FILE, "wb") as f:
-            pickle.dump(conversation_store, f)
+        import redis as _redis_lib
+        _redis = _redis_lib.from_url(REDIS_URL, decode_responses=True, socket_timeout=3)
+        _redis.ping()
+        logger.info("Redis connected ✅")
     except Exception as e:
-        logger.warning(f"History save failed: {e}")
+        logger.warning(f"Redis unavailable, using in-memory fallback: {e}")
+        _redis = None
+else:
+    logger.info("No REDIS_URL — using in-memory store (history lost on redeploy)")
 
-# โหลด history ที่มีอยู่เมื่อ server start
-conversation_store.update(_load_history())
-logger.info(f"Loaded {len(conversation_store)} active conversations from disk")
+# ── In-memory fallback ──
+_mem_store: dict = {}
+
+def _redis_key(psid: str) -> str:
+    return f"tourfiremai:chat:{psid}"
 
 def get_history(psid: str) -> list:
-    """คืน history ของ user (reset ถ้าหมด session)"""
-    now = datetime.now()
-    if psid in conversation_store:
-        conv = conversation_store[psid]
-        if now - conv["last_active"] > SESSION_TIMEOUT:
-            conversation_store[psid] = {"history": [], "last_active": now}
-    else:
-        conversation_store[psid] = {"history": [], "last_active": now}
-    conversation_store[psid]["last_active"] = now
-    return conversation_store[psid]["history"]
+    """คืน history ของลูกค้า — ดึงจาก Redis ก่อน fallback in-memory"""
+    if _redis:
+        try:
+            raw = _redis.get(_redis_key(psid))
+            if raw:
+                conv = json.loads(raw)
+                # เช็ก session timeout
+                last = datetime.fromisoformat(conv.get("last_active", "2000-01-01T00:00:00"))
+                if datetime.now() - last > SESSION_TIMEOUT:
+                    _redis.delete(_redis_key(psid))
+                    return []
+                return conv.get("history", [])
+            return []
+        except Exception as e:
+            logger.warning(f"Redis get error: {e}")
+
+    # fallback: in-memory
+    if psid in _mem_store:
+        conv = _mem_store[psid]
+        if datetime.now() - conv["last_active"] > SESSION_TIMEOUT:
+            del _mem_store[psid]
+            return []
+        return conv["history"]
+    return []
 
 def save_to_history(psid: str, role: str, content: str):
-    """บันทึก message เข้า history ตัด trailing ถ้าเกิน limit"""
+    """บันทึก message เข้า Redis (หรือ in-memory ถ้า Redis ไม่มี)"""
     history = get_history(psid)
     history.append({"role": role, "content": content})
-    if len(history) > HISTORY_LIMIT:
-        conversation_store[psid]["history"] = history[-HISTORY_LIMIT:]
-    _save_history()
+    history = history[-HISTORY_LIMIT:]  # keep latest N messages
+    now_iso = datetime.now().isoformat()
+
+    if _redis:
+        try:
+            conv = {"history": history, "last_active": now_iso}
+            _redis.setex(_redis_key(psid), REDIS_TTL_SEC, json.dumps(conv, ensure_ascii=False))
+            return
+        except Exception as e:
+            logger.warning(f"Redis set error: {e}")
+
+    # fallback: in-memory
+    _mem_store[psid] = {"history": history, "last_active": datetime.now()}
+
+logger.info(f"Memory backend: {'Redis ✅' if _redis else 'In-memory ⚠️'}")
+
+
 
 # ─── Facebook helpers ─────────────────────────────────────────────────────────
 def send_message(recipient_id: str, text: str):
