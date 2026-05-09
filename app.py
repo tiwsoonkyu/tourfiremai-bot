@@ -150,6 +150,12 @@ _EMPTY_CTX = {
     "pending_action": None,
     "last_bot_message": None,
     "updated_at": None,
+    # Booking flow fields
+    "lead_stage": None,           # cold/warm/hot/booking/paid/awaiting_docs/complete
+    "travel_date": None,          # วันเดินทางที่ลูกค้าเลือก
+    "selected_tour_name": None,   # ชื่อโปรแกรมที่ลูกค้าเลือก
+    "selected_tour_url": None,    # URL โปรแกรมที่เลือก
+    "payment_received": False,    # True เมื่อส่งสลิปมาแล้ว
 }
 
 def get_context(psid: str) -> dict:
@@ -195,7 +201,9 @@ def extract_context_after_response(psid: str, history: list, ai_response: str) -
         f"ประเทศ: {existing.get('country') or 'ไม่ทราบ'}\n"
         f"เดือน: {existing.get('month') or 'ไม่ทราบ'}\n"
         f"งบ/คน: {existing.get('budget_per_person') or 'ไม่ทราบ'}\n"
-        f"จำนวนคน: {existing.get('pax') or 'ไม่ทราบ'}\n\n"
+        f"จำนวนคน: {existing.get('pax') or 'ไม่ทราบ'}\n"
+        f"วันเดินทางที่เลือก: {existing.get('travel_date') or 'ยังไม่เลือก'}\n"
+        f"โปรแกรมที่เลือก: {existing.get('selected_tour_name') or 'ยังไม่เลือก'}\n\n"
         "สกัดข้อมูลจากบทสนทนา ตอบเป็น JSON เท่านั้น (อัปเดตเฉพาะที่มีในบทสนทนา):\n"
         "{\n"
         '  "customer_name": "ชื่อลูกค้า หรือ null",\n'
@@ -205,10 +213,15 @@ def extract_context_after_response(psid: str, history: list, ai_response: str) -
         '  "month": "เดือน+ปีที่จะไป เช่น ก.ค. 69 หรือ null",\n'
         '  "budget_per_person": งบประมาณต่อคนเป็นตัวเลขหรือnull,\n'
         '  "pax": จำนวนคนเป็นตัวเลขหรือnull,\n'
+        '  "travel_date": "วันเดินทางที่ลูกค้าเลือก เช่น 5 มิ.ย. 69 หรือ null",\n'
+        '  "selected_tour_name": "ชื่อโปรแกรมที่ลูกค้าเลือกชัดเจน หรือ null",\n'
         '  "last_options": [{"index":1,"code":"รหัส","name":"ชื่อโปรแกรม","url":"URL"}],\n'
         '  "pending_action": "สิ่งที่ AI บอกว่าจะทำต่อ เช่น search_osaka หรือ null"\n'
         "}\n"
-        "หมายเหตุ: last_options ให้ดึงจากข้อความล่าสุดที่ AI เสนอโปรแกรม (ไม่เกิน 3 ตัวเลือก)"
+        "หมายเหตุ:\n"
+        "- last_options ให้ดึงจากข้อความล่าสุดที่ AI เสนอโปรแกรม (ไม่เกิน 3 ตัวเลือก)\n"
+        "- travel_date: ดึงเมื่อลูกค้าบอกวันเดินทางชัดเจน\n"
+        "- selected_tour_name: ดึงเมื่อลูกค้าเลือกโปรแกรมเฉพาะเจาะจงแล้ว"
     )
 
     try:
@@ -226,6 +239,9 @@ def extract_context_after_response(psid: str, history: list, ai_response: str) -
             for key, val in new_ctx.items():
                 if val is not None and val != [] and val != "null":
                     merged[key] = val
+            # Preserve payment_received flag — never overwrite with False
+            if existing.get("payment_received"):
+                merged["payment_received"] = True
             merged["last_bot_message"] = ai_response[:600]
             merged["updated_at"] = datetime.now().isoformat()
             return merged
@@ -271,6 +287,8 @@ def save_lead_supabase(psid: str, context: dict, lead_stage: str, user_message: 
             "month": "month",
             "budget_per_person": "budget_per_person",
             "pax": "pax",
+            "travel_date": "travel_date",
+            "selected_tour_name": "selected_tour_name",
         }
         for ctx_key, db_col in field_map.items():
             v = context.get(ctx_key)
@@ -314,7 +332,7 @@ def count_leads_by_stage() -> dict:
     """นับ leads แต่ละ stage"""
     if not SUPABASE_URL or not SUPABASE_KEY:
         return {}
-    stages = ["cold", "warm", "hot", "booking"]
+    stages = ["cold", "warm", "hot", "booking", "paid", "awaiting_docs", "complete"]
     counts = {}
     for s in stages:
         try:
@@ -782,6 +800,10 @@ def _system_prompt(ctx: dict = None) -> str:
             parts.append(f"งบ/คน: {ctx['budget_per_person']:,} บาท" if isinstance(ctx['budget_per_person'], (int, float)) else f"งบ/คน: {ctx['budget_per_person']}")
         if ctx.get("pax"):
             parts.append(f"จำนวนคน: {ctx['pax']} คน")
+        if ctx.get("travel_date"):
+            parts.append(f"วันเดินทางที่เลือก: {ctx['travel_date']}")
+        if ctx.get("selected_tour_name"):
+            parts.append(f"โปรแกรมที่เลือก: {ctx['selected_tour_name']}")
         if ctx.get("last_options"):
             opts = ctx["last_options"]
             if isinstance(opts, str):
@@ -792,16 +814,65 @@ def _system_prompt(ctx: dict = None) -> str:
             if opts:
                 opts_text = ", ".join([f"ตัวที่{o.get('index','')} {o.get('name','')}" for o in opts[:3]])
                 parts.append(f"โปรแกรมที่เสนอล่าสุด: {opts_text}")
+        if ctx.get("lead_stage"):
+            parts.append(f"สถานะ lead: {ctx['lead_stage']}")
+        if ctx.get("payment_received"):
+            parts.append(f"ชำระเงินแล้ว: ✅")
         if ctx.get("pending_action"):
             parts.append(f"สิ่งที่ AI บอกว่าจะทำ: {ctx['pending_action']}")
 
+        # Build explicit "known = don't ask" rules
+        known_rules = []
+        if ctx.get("pax"):
+            known_rules.append(f"❌ ห้ามถามจำนวนคน — ทราบแล้วว่า {ctx['pax']} คน")
+        if ctx.get("month"):
+            known_rules.append(f"❌ ห้ามถามเดือนเดินทาง — ทราบแล้วว่า {ctx['month']}")
+        if ctx.get("budget_per_person"):
+            known_rules.append("❌ ห้ามถามงบประมาณ — ทราบแล้ว")
+        if ctx.get("customer_name"):
+            known_rules.append(f"❌ ห้ามถามชื่อลูกค้า — ทราบแล้วว่า {ctx['customer_name']}")
+        if ctx.get("phone"):
+            known_rules.append("❌ ห้ามถามเบอร์/LINE — ทราบแล้ว")
+        if ctx.get("travel_date"):
+            known_rules.append(f"❌ ห้ามถามวันเดินทาง — ลูกค้าเลือกแล้ว {ctx['travel_date']}")
+
+        # Determine next step hint
+        next_step = ""
+        stage = ctx.get("lead_stage", "cold")
+        has_pax = bool(ctx.get("pax"))
+        has_month = bool(ctx.get("month"))
+        has_tour = bool(ctx.get("selected_tour_name") or ctx.get("last_options"))
+        has_name = bool(ctx.get("customer_name"))
+        has_phone = bool(ctx.get("phone"))
+        has_date = bool(ctx.get("travel_date"))
+
+        if stage in ("booking", "paid", "awaiting_docs", "complete"):
+            if ctx.get("payment_received"):
+                next_step = "→ ลูกค้าชำระเงินแล้ว รอทีมงานยืนยันและส่งใบนัดหมาย"
+            elif has_name and has_phone:
+                next_step = "→ มีชื่อ+เบอร์แล้ว รอทีมงานยืนยันที่นั่งและแจ้งบัญชีชำระเงิน"
+            else:
+                next_step = "→ step ถัดไป: ขอชื่อ+เบอร์ เพื่อส่งทีมงาน"
+        elif stage == "hot" and has_pax and has_month and has_tour:
+            if not has_date:
+                next_step = "→ step ถัดไป: ให้ลูกค้าเลือกวันเดินทางจากรอบที่มีในโปรแกรม"
+            elif has_date and not has_name:
+                next_step = "→ step ถัดไป: ขอชื่อ+เบอร์ติดต่อ"
+            elif has_date and has_name and has_phone:
+                next_step = "→ step ถัดไป: สรุปการจองครบถ้วน แล้วส่งทีมงาน"
+
         if parts:
+            ctx_block = "\n".join(f"- {p}" for p in parts)
+            rules_block = ("\n" + "\n".join(known_rules)) if known_rules else ""
+            next_block = f"\n\n⏭ NEXT STEP: {next_step}" if next_step else ""
             ctx_section = (
                 "\n══════════════════════════════════\n"
                 "ข้อมูลลูกค้าที่จำไว้ (ใช้เป็น context หลัก)\n"
                 "══════════════════════════════════\n"
-                + "\n".join(f"- {p}" for p in parts)
-                + "\n\nใช้ข้อมูลนี้ตอบได้เลยโดยไม่ต้องถามซ้ำ\n"
+                f"{ctx_block}"
+                f"{rules_block}"
+                f"{next_block}"
+                "\n\nใช้ข้อมูลนี้ตอบได้เลย ห้ามถามข้อมูลที่ทราบแล้วซ้ำ\n"
             )
 
     return f"""คุณคือ "แอดมิน AI" ของเพจ รวมทัวร์ไฟไหม้
@@ -906,7 +977,11 @@ def _system_prompt(ctx: dict = None) -> str:
 - ห้ามเดาตัวเลขถ้าไม่พบใน data
 - ถ้าถามแค่ข้อเดียวเช่น "ทิปเท่าไหร่" → ตอบตรงๆ แล้วแสดง detail ครบตาม format นี้เลย
 - ห้ามถามกลับว่า "อยากทราบส่วนไหนเป็นพิเศษ"
-- หลังแสดง detail → ถามเพียง 1 คำถาม: "จะไปกี่ท่านคะ?" หรือ "สนใจเช็กที่นั่งได้เลยนะคะ 😊"
+- หลังแสดง detail → ถามเพียง 1 คำถาม โดยยึดตาม NEXT STEP ใน context:
+  • ถ้าไม่รู้จำนวนคน → "จะไปกี่ท่านคะ?"
+  • ถ้ารู้จำนวนคนแล้ว + รู้เดือนแล้ว → "สนใจวันเดินทางไหนคะ?" (แสดงรอบที่มี)
+  • ถ้ารู้วันแล้ว → "ขอชื่อ+เบอร์ไว้ให้ทีมงานติดต่อยืนยันที่นั่งได้เลยค่ะ"
+  • ถ้ารู้ชื่อ+เบอร์แล้ว → สรุปการจองและส่งทีมงาน
 
 ถ้า data ว่างเปล่า (อ่านไม่ได้เลย) → ตอบว่า:
 "ขอโทษนะคะ ระบบอ่านเอกสารโปรแกรมนี้ไม่ได้ในขณะนี้ ขอส่งให้ทีมงานเช็กและแจ้งรายละเอียดกลับให้ค่ะ ขอชื่อและเบอร์ติดต่อได้เลยนะคะ"
@@ -922,16 +997,39 @@ def _system_prompt(ctx: dict = None) -> str:
 → ถ้าข้อมูลยังไม่พอ ให้ถามเพียง 1 คำถามที่สำคัญที่สุด เช่น "สนใจเดินทางเดือนไหนคะ?"
 
 ══════════════════════════════════
-ขั้นตอนเมื่อลูกค้าสนใจจอง
+ขั้นตอนการจองแบบ step-by-step (สำคัญมาก)
 ══════════════════════════════════
-ขั้นที่ 1 — สรุปโปรแกรม + เก็บข้อมูลติดต่อก่อน (อย่าถามทุกอย่างพร้อมกัน):
-   "ขอชื่อผู้ติดต่อและเบอร์โทร/LINE ไว้ให้ทีมงานติดต่อกลับได้ไหมคะ?"
+เมื่อลูกค้าสนใจโปรแกรมและมีข้อมูลครบ ให้ทำตามลำดับนี้ทีละขั้น:
 
-ขั้นที่ 2 — ทีมงานจะเก็บข้อมูลที่เหลือเองเมื่อติดต่อกลับ:
-   (ชื่อผู้เดินทางทุกท่าน, วันเดินทางจริง, จำนวนคน, พาสปอร์ต ฯลฯ)
+【STEP 1】ยืนยันจำนวนคน (ถ้ายังไม่รู้)
+  → ถ้ารู้แล้ว → ข้ามไป STEP 2 ทันที ❌ ห้ามถามซ้ำ
 
-เมื่อได้ชื่อ+เบอร์แล้ว → แจ้งว่า:
-"ส่งข้อมูลให้ทีมงานแล้วค่ะ จะติดต่อกลับเพื่อยืนยันที่นั่งและแจ้งรายละเอียดการชำระเงินค่ะ"
+【STEP 2】ยืนยันเดือน (ถ้ายังไม่รู้)
+  → ถ้ารู้แล้ว → ข้ามไป STEP 3 ทันที ❌ ห้ามถามซ้ำ
+
+【STEP 3】ให้ลูกค้าเลือกวันเดินทาง
+  → แสดงรอบที่มีในโปรแกรม และถามว่าสะดวกวันไหน
+  ตัวอย่าง: "มีรอบเดือน [X] ค่ะ: 5 มิ.ย. / 12 มิ.ย. / 19 มิ.ย. ต้องการรอบไหนคะ?"
+
+【STEP 4】ขอข้อมูลติดต่อ (ชื่อ + เบอร์/LINE)
+  → เมื่อลูกค้าเลือกวันแล้ว:
+  "ขอชื่อผู้ติดต่อและเบอร์โทร/LINE ไว้ให้ทีมงานยืนยันที่นั่งด้วยค่ะ"
+
+【STEP 5】สรุปการจองครบถ้วน
+  → เมื่อได้ชื่อ+เบอร์แล้ว สรุปทันที:
+  ──────────────────
+  📋 สรุปการจอง
+  ──────────────────
+  ✈️ โปรแกรม: [ชื่อโปรแกรม]
+  📌 รหัส: [รหัส] | [จำนวนวัน]
+  📅 วันเดินทาง: [วันที่เลือก]
+  👥 จำนวน: [X] ท่าน
+  💰 ราคาเริ่ม: [ราคา] บาท/ท่าน
+  👤 ผู้ติดต่อ: [ชื่อ]
+  📱 เบอร์/LINE: [เบอร์]
+  ──────────────────
+  แล้วแจ้ง: "ส่งข้อมูลให้ทีมงานแล้วค่ะ 😊 จะติดต่อกลับภายใน 15-30 นาที เพื่อยืนยันที่นั่งและแจ้งรายละเอียดการชำระเงินค่ะ"
+
 หมายเหตุ: AI ไม่สามารถยืนยันที่นั่ง รับเงิน หรือยืนยันราคา final ได้ — ทีมงานจะดำเนินการ
 
 ══════════════════════════════════
@@ -991,6 +1089,24 @@ def _system_prompt(ctx: dict = None) -> str:
 - > 3 รอบ span ≤ 30 วัน → แสดงวันแรก-วันสุดท้าย
 - > 3 รอบ span > 30 วัน → แสดงเดือน
 - ข้ามรอบที่ผ่านมาแล้ว
+
+══════════════════════════════════
+เมื่อลูกค้าส่งสลิปการโอนเงิน
+══════════════════════════════════
+ถ้าลูกค้าส่งรูป (สลิป) หรือพูดว่า "โอนแล้ว" / "จ่ายแล้ว" / "ชำระแล้ว" / "ส่งสลิปแล้ว":
+→ ตอบทันที: "ได้รับแล้วค่ะ ขอบคุณนะคะ 🙏 แอดมิน AI แจ้งทีมงานตรวจสอบและยืนยันการจองให้เลยค่ะ กรุณารอสักครู่นะคะ"
+
+══════════════════════════════════
+ใบนัดหมายการเดินทาง
+══════════════════════════════════
+ถ้าลูกค้าถาม "ใบนัดหมาย" / "เอกสารเดินทาง" / "ได้รับเอกสารแล้วยัง" / "ยังไม่ได้รับอะไรเลย":
+→ ตอบ: "ทีมงานจะส่งใบนัดหมายการเดินทางให้ภายใน 2-5 วันก่อนวันเดินทางค่ะ 😊 ถ้าใกล้วันเดินทางแล้วยังไม่ได้รับ ทักแอดมินได้เลยนะคะ LINE @tourfiremai"
+
+══════════════════════════════════
+การขอรีวิวหลังเดินทาง
+══════════════════════════════════
+ถ้าลูกค้าบอกว่า "กลับมาแล้ว" / "ทริปดีมาก" / "เพิ่งกลับ" หรือแสดงสัญญาณว่าเดินทางเสร็จแล้ว:
+→ ตอบ: "ยินดีด้วยนะคะที่กลับมาโดยสวัสดิภาพ 🎉 หวังว่าทริปจะสนุกมากเลยค่ะ ถ้าชอบก็ฝากรีวิวให้เพจด้วยนะคะ จะเป็นประโยชน์กับลูกค้าท่านอื่นมากเลยค่ะ 😊 https://www.facebook.com/tourfiremai/reviews"
 
 ══════════════════════════════════
 กฎห้ามรีเซ็ตบทสนทนา
@@ -1169,6 +1285,55 @@ def generate_response(user_message: str, history: list, tour_data: str = "",
         return "ขออภัยค่ะ ระบบมีปัญหาชั่วคราว กรุณาลองใหม่อีกครั้ง หรือติดต่อแอดมินได้เลยนะคะ 😊"
 
 
+# ─── Payment slip handler ─────────────────────────────────────────────────────
+_PAYMENT_KEYWORDS = [
+    "โอนแล้ว", "จ่ายแล้ว", "ชำระแล้ว", "ส่งสลิป", "สลิปแล้ว",
+    "โอนเงินแล้ว", "ชำระเงินแล้ว", "จ่ายเงินแล้ว", "มัดจำแล้ว",
+    "โอนมัดจำแล้ว", "โอนค่าทัวร์แล้ว", "ส่งหลักฐาน",
+]
+
+def process_payment_slip(sender_id: str, image_urls: list = None):
+    """เรียกเมื่อลูกค้าส่งสลิปการโอนเงิน (รูปภาพ หรือ text keyword)"""
+    ctx = get_context(sender_id)
+    ctx["payment_received"] = True
+    ctx["lead_stage"] = "paid"
+    save_context(sender_id, ctx)
+
+    summary_parts = [f"💳 สลิปการโอน!\nPSID: {sender_id}"]
+    if ctx.get("customer_name"):
+        summary_parts.append(f"ชื่อ: {ctx['customer_name']}")
+    if ctx.get("phone"):
+        summary_parts.append(f"เบอร์/LINE: {ctx['phone']}")
+    if ctx.get("selected_tour_name"):
+        summary_parts.append(f"โปรแกรม: {ctx['selected_tour_name']}")
+    elif ctx.get("last_options"):
+        opts = ctx["last_options"]
+        if isinstance(opts, str):
+            try: opts = json.loads(opts)
+            except: opts = []
+        if opts:
+            summary_parts.append(f"โปรแกรม: {opts[0].get('name', '')}")
+    if ctx.get("travel_date"):
+        summary_parts.append(f"วันเดินทาง: {ctx['travel_date']}")
+    if ctx.get("pax"):
+        summary_parts.append(f"จำนวน: {ctx['pax']} ท่าน")
+    if image_urls:
+        summary_parts.append(f"รูปสลิป: {image_urls[0]}")
+    summary_parts.append("→ กรุณาตรวจสอบและยืนยันการจองด่วน!")
+    notify_telegram("\n".join(summary_parts))
+
+    save_lead_supabase(sender_id, ctx, "paid", "ส่งสลิปการโอนเงิน")
+
+    reply = (
+        "ได้รับสลิปแล้วค่ะ ขอบคุณมากนะคะ 🙏 "
+        "แอดมิน AI แจ้งทีมงานตรวจสอบและยืนยันการจองให้เลยค่ะ "
+        "กรุณารอสักครู่ ทีมงานจะติดต่อยืนยันกลับหาคุณอีกครั้งนะคะ 😊"
+    )
+    send_message(sender_id, reply)
+    save_to_history(sender_id, "assistant", reply)
+    logger.info(f"✅ Payment slip processed for {sender_id}")
+
+
 # ─── Core message processing ──────────────────────────────────────────────────
 def process_message(sender_id: str, text: str):
     """Main logic — รันใน background thread"""
@@ -1176,6 +1341,14 @@ def process_message(sender_id: str, text: str):
     try:
         history = list(get_history(sender_id))
         ctx = get_context(sender_id)
+
+        # ── Payment slip detection via text keywords ──────────────────────────
+        text_lower = text.lower()
+        if any(kw in text_lower for kw in _PAYMENT_KEYWORDS):
+            logger.info(f"💳 Payment keyword detected for {sender_id}")
+            save_to_history(sender_id, "user", text)
+            process_payment_slip(sender_id)
+            return
 
         _last_opts_count = len(ctx.get("last_options", []))
         action_data = decide_action(text, history, last_options_count=_last_opts_count)
@@ -1267,16 +1440,22 @@ def process_message(sender_id: str, text: str):
             notify_telegram(f"🔥 ทัวร์ไฟไหม้!\nPSID: {sender_id}\nข้อความ: {text}")
         elif action == "handoff":
             is_handoff = True
-            stage_emoji = {"hot": "🔔", "booking": "📋", "warm": "💬"}.get(lead_stage, "📩")
+            stage_emoji = {"hot": "🔔", "booking": "📋", "warm": "💬", "paid": "💳"}.get(lead_stage, "📩")
             ctx_summary = ""
-            if ctx.get("destination"):
-                ctx_summary += f"\nปลายทาง: {ctx['destination']}"
-            if ctx.get("budget_per_person"):
-                ctx_summary += f"\nงบ: {ctx['budget_per_person']:,}" if isinstance(ctx['budget_per_person'], (int, float)) else f"\nงบ: {ctx['budget_per_person']}"
             if ctx.get("customer_name"):
                 ctx_summary += f"\nชื่อ: {ctx['customer_name']}"
             if ctx.get("phone"):
-                ctx_summary += f"\nเบอร์: {ctx['phone']}"
+                ctx_summary += f"\nเบอร์/LINE: {ctx['phone']}"
+            if ctx.get("selected_tour_name"):
+                ctx_summary += f"\nโปรแกรม: {ctx['selected_tour_name']}"
+            elif ctx.get("destination"):
+                ctx_summary += f"\nปลายทาง: {ctx['destination']}"
+            if ctx.get("travel_date"):
+                ctx_summary += f"\nวันเดินทาง: {ctx['travel_date']}"
+            if ctx.get("pax"):
+                ctx_summary += f"\nจำนวน: {ctx['pax']} ท่าน"
+            if ctx.get("budget_per_person"):
+                ctx_summary += f"\nงบ: {ctx['budget_per_person']:,}" if isinstance(ctx['budget_per_person'], (int, float)) else f"\nงบ: {ctx['budget_per_person']}"
             notify_telegram(
                 f"{stage_emoji} Lead [{lead_stage.upper()}]\nPSID: {sender_id}\nข้อความ: {text}{ctx_summary}"
             )
@@ -1301,7 +1480,7 @@ def process_message(sender_id: str, text: str):
                 logger.info(f"Context updated for {sender_id}: dest={new_ctx.get('destination')}, stage={lead_stage}")
 
                 # Save to Supabase for hot/booking leads, or any handoff
-                if lead_stage in ("hot", "booking") or action == "handoff":
+                if lead_stage in ("hot", "booking", "paid", "awaiting_docs", "complete") or action == "handoff":
                     save_lead_supabase(sender_id, new_ctx, lead_stage, text)
                 elif lead_stage == "warm" and new_ctx.get("destination"):
                     # warm leads with destination also worth tracking
@@ -1551,8 +1730,24 @@ def webhook():
             if msg_event.get("message", {}).get("is_echo"):
                 continue
             sender_id = msg_event.get("sender", {}).get("id")
-            text      = msg_event.get("message", {}).get("text", "").strip()
-            if not sender_id or not text:
+            if not sender_id:
+                continue
+
+            message      = msg_event.get("message", {})
+            text         = message.get("text", "").strip()
+
+            # Image attachment = potential payment slip
+            attachments  = message.get("attachments", [])
+            image_list   = [a for a in attachments if a.get("type") == "image"]
+            if image_list:
+                image_urls = [a.get("payload", {}).get("url", "") for a in image_list]
+                logger.info(f"📷 Image from {sender_id} — treating as payment slip")
+                t = threading.Thread(target=process_payment_slip, args=(sender_id, image_urls))
+                t.daemon = True
+                t.start()
+                continue
+
+            if not text:
                 continue
             t = threading.Thread(target=process_message, args=(sender_id, text))
             t.daemon = True
