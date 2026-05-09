@@ -249,7 +249,8 @@ def extract_context_after_response(psid: str, history: list, ai_response: str) -
             messages=[{"role": "user", "content": prompt}]
         )
         raw = resp.content[0].text.strip()
-        m = re.search(r"\{.*?\}", raw, re.DOTALL)
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        logger.info(f"decide_action raw (first 200): {raw[:200]}")
         if m:
             new_ctx = json.loads(m.group())
             # Merge: keep existing values if new is null
@@ -1446,11 +1447,12 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
     try:
         resp = claude.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=150,
+            max_tokens=350,
             messages=[{"role": "user", "content": prompt}]
         )
         raw = resp.content[0].text.strip()
-        m = re.search(r"\{.*?\}", raw, re.DOTALL)
+        logger.info(f"decide_action raw: {raw[:250]}")
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
         if m:
             data = json.loads(m.group())
             data["action"] = data.get("action", "reply")
