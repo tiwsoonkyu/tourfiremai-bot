@@ -6,6 +6,7 @@ AI Tour Concierge v2 — รวมทัวร์ไฟไหม้
 import os
 import re
 import json
+import pickle
 import logging
 import threading
 from datetime import date, datetime, timedelta
@@ -43,9 +44,32 @@ COUNTRY_MAP = {
 
 # ─── Conversation Store ───────────────────────────────────────────────────────
 # { psid: {"history": [...], "last_active": datetime} }
+HISTORY_FILE    = "/tmp/tourfiremai_history.pkl"
 conversation_store: dict = {}
 HISTORY_LIMIT  = 14      # messages kept per user (7 turns)
-SESSION_TIMEOUT = timedelta(hours=2)
+SESSION_TIMEOUT = timedelta(hours=24)
+
+def _load_history() -> dict:
+    """โหลด history จาก disk เมื่อ server start"""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass
+    return {}
+
+def _save_history():
+    """บันทึก history ลง disk — รองรับ server restart"""
+    try:
+        with open(HISTORY_FILE, "wb") as f:
+            pickle.dump(conversation_store, f)
+    except Exception as e:
+        logger.warning(f"History save failed: {e}")
+
+# โหลด history ที่มีอยู่เมื่อ server start
+conversation_store.update(_load_history())
+logger.info(f"Loaded {len(conversation_store)} active conversations from disk")
 
 def get_history(psid: str) -> list:
     """คืน history ของ user (reset ถ้าหมด session)"""
@@ -65,6 +89,7 @@ def save_to_history(psid: str, role: str, content: str):
     history.append({"role": role, "content": content})
     if len(history) > HISTORY_LIMIT:
         conversation_store[psid]["history"] = history[-HISTORY_LIMIT:]
+    _save_history()
 
 # ─── Facebook helpers ─────────────────────────────────────────────────────────
 def send_message(recipient_id: str, text: str):
@@ -149,7 +174,8 @@ def _system_prompt() -> str:
 ตอบสนทนาแบบธรรมชาติ เหมือนที่ปรึกษาด้านทัวร์ที่ฉลาด ใช้ภาษาไทยเป็นกันเองแต่มืออาชีพ ใช้ค่ะ/นะคะ
 จำบริบทการสนทนาทั้งหมด — จำประเทศ/เดือน/จำนวนคน/งบที่ลูกค้าบอก ไม่ถามซ้ำ
 ถ้าลูกค้าเปลี่ยนประเทศหรือเปลี่ยนความต้องการ ให้ตอบตามความต้องการใหม่ล่าสุดทันที ไม่ย้อนกลับไปใช้ข้อมูลเก่า
-ถามทีละ 1 คำถาม ไม่ถามหลายอย่างพร้อมกัน
+ถามทีละ 1 คำถามเท่านั้น — เลือกสิ่งที่สำคัญที่สุดก่อน ห้ามถามหลายอย่างพร้อมกันเด็ดขาด
+ถ้ารู้ประเทศแล้วให้ดึงข้อมูลทัวร์เสนอก่อนได้เลย ไม่ต้องรอข้อมูลครบ
 
 เมื่อมีข้อมูลทัวร์จากเว็บให้:
 - เลือก 1-3 โปรแกรมที่เหมาะที่สุดกับความต้องการของลูกค้า
@@ -169,8 +195,9 @@ def _system_prompt() -> str:
 - รับจอง รับเงิน หรือบอกว่าจองสำเร็จ
 - เดาข้อมูลที่ไม่มีในข้อมูลทัวร์
 
-เมื่อลูกค้าพร้อมจอง/ถามที่นั่ง/ขอราคา final/ขอส่วนลด:
-บอกว่าจะส่งให้ทีมงานเช็กและติดต่อกลับ แล้วทีมงานจะรับช่วงต่อ
+เมื่อลูกค้าพร้อมจอง/บอกสนใจ/ขอคุยเซลล์/ขอที่นั่ง/ขอราคา final/ขอส่วนลด:
+→ ตอบสั้นๆ: "รับทราบค่ะ ส่งให้ทีมงานแล้ว จะติดต่อกลับเร็วๆนี้ หรือทัก LINE @tourfiremai ได้เลยค่ะ 😊"
+→ ห้ามถามข้อมูลเพิ่มในตอนนี้ ทีมงานจะถามเองเมื่อติดต่อกลับ
 """
 
 # ─── AI — Call 1: Decide Action ───────────────────────────────────────────────
@@ -195,12 +222,15 @@ def decide_action(user_message: str, history: list) -> dict:
         "action=search: ลูกค้าต้องการดูโปรแกรมทัวร์ประเทศที่ระบุได้ (รวมถึงการเปลี่ยนประเทศ)\n"
         "action=detail: ลูกค้าขอดูรายละเอียดทัวร์โปรแกรมใดโปรแกรมหนึ่ง\n"
         "action=flash_sale: ลูกค้าถาม 'ทัวร์ไฟไหม้' หรือโปรโมชั่นพิเศษ/ดีลร้อน\n"
-        "action=handoff: ลูกค้าพร้อมจอง/ถามที่นั่ง/ขอราคา final/ขอส่วนลด/ยกเลิก\n"
-        "action=reply: ทักทาย/ถามทั่วไป/ยังไม่ระบุประเทศ/ถามเกี่ยวกับยุโรปโดยรวม\n\n"
+        "action=handoff: ลูกค้าพร้อมจอง/บอกสนใจ/ขอคุยเซลล์/ถามที่นั่ง/ขอราคา final/ขอส่วนลด/ยกเลิก\n"
+        "action=search: รวมถึง 'ดูโปรแกรมบนเว็บ' หรือ 'เช็กเลย' ที่มีประเทศใน context\n"
+        "action=reply: ทักทาย/ถามทั่วไป/ยังไม่ระบุประเทศ/ยุโรปโดยรวม/ดูโปรแกรมโดยไม่ระบุประเทศ\n\n"
         "Country IDs เอเชีย: ญี่ปุ่น=2, เกาหลี=1, เวียดนาม=7, จีน=5, ฮ่องกง=3, สิงคโปร์=4, มาเลเซีย=6, ไต้หวัน=19\n"
         "Country IDs ยุโรป: อิตาลี=102, สวิตเซอร์แลนด์=64, สแกนดิเนเวีย=47, อังกฤษ=42, เยอรมนี=100, ตุรเคีย=71, ออสเตรีย=159, สเปน=105, ฝรั่งเศส=101, กรีซ=169, โปรตุเกส=200, ยุโรปตะวันออก=80\n"
         "ถ้าพูดว่า 'ยุโรป' รวมๆ โดยไม่ระบุประเทศ → action=reply\n"
-        "ตัวอย่างเปลี่ยนประเทศ: 'ขอยุโรปแทน'/'เปลี่ยนเป็นเกาหลี'/'ไม่เอาญี่ปุ่นแล้ว ขอจีน' → action=search ประเทศใหม่"
+        "ตัวอย่างเปลี่ยนประเทศ: 'ขอยุโรปแทน'/'เปลี่ยนเป็นเกาหลี' → action=search ประเทศใหม่\n"
+        "ตัวอย่าง handoff: 'เช็กเลย'/'จองเลย'/'สนใจจอง'/'ขอคุยเซลล์' → action=handoff\n"
+        "ตัวอย่าง search จาก context: 'ดูโปรแกรมบนเว็บ' (context=เกาหลี) → action=search country_id=1"
     )
 
     try:
