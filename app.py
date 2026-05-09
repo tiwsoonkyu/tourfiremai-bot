@@ -14,6 +14,8 @@ from flask import Flask, request, jsonify, abort
 import anthropic
 import requests
 import pdfplumber
+import fitz  # PyMuPDF
+import base64
 import io
 from bs4 import BeautifulSoup
 
@@ -205,12 +207,13 @@ def extract_program_url_from_history(history: list) -> str | None:
     return None
 
 def fetch_pdf_info(program_url: str) -> str:
-    """ดาวน์โหลด PDF ของโปรแกรมทัวร์และดึงข้อมูลสำคัญออกมา"""
+    """ดาวน์โหลด PDF และสกัดข้อมูลสำคัญ
+    - ลองอ่าน text ก่อน (fast)
+    - ถ้าหน้าสำคัญเป็นรูปภาพ → ส่ง Claude Haiku Vision อ่านแทน (accurate)
+    """
     if program_url in _PDF_CACHE:
         return _PDF_CACHE[program_url]
 
-    # สร้าง PDF URL จาก program URL
-    # เช่น https://www.tourfiremai.com/tour/ap242931 → tour_id = 242931
     m = re.search(r'/tour/ap(\d+)', program_url)
     if not m:
         return ""
@@ -221,37 +224,93 @@ def fetch_pdf_info(program_url: str) -> str:
         headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
         resp = requests.get(pdf_url, headers=headers, timeout=20)
         resp.raise_for_status()
+        pdf_bytes = resp.content
 
-        with pdfplumber.open(io.BytesIO(resp.content)) as pdf:
-            pages_text = []
-            for page in pdf.pages:
-                t = page.extract_text() or ""
-                if t.strip():
-                    pages_text.append(t)
-            full_text = "\n".join(pages_text)
+        # ── ขั้น 1: หาหน้าสำคัญด้วย PyMuPDF ──────────────────────────────
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        keywords = ["มัดจำ", "ทิป", "วีซ่า", "เงื่อนไข", "ราคา", "อัตราค่า", "tip", "deposit", "visa", "ไม่รวม"]
 
-        # ตัดให้สั้นลง — ส่งเฉพาะส่วนที่มีข้อมูลสำคัญ (ราคา, เงื่อนไข, มัดจำ, วีซ่า, ทิป)
-        # เอาหน้าที่มี keywords สำคัญ
-        keywords = ["มัดจำ", "ทิป", "วีซ่า", "เงื่อนไข", "ราคา", "อัตราค่า", "ไม่รวม", "รวม"]
-        important_pages = []
-        for page_text in pages_text:
-            if any(kw in page_text for kw in keywords):
-                important_pages.append(page_text[:1500])
+        important_page_nums = []
+        page_texts = {}
+        for i in range(doc.page_count):
+            t = doc[i].get_text().strip()
+            page_texts[i] = t
+            if any(kw in t for kw in keywords):
+                important_page_nums.append(i)
 
-        result = f"[ข้อมูลจาก PDF โปรแกรม {tour_id}]\n"
-        if important_pages:
-            result += "\n---\n".join(important_pages[:5])
-        else:
-            # fallback: เอาหน้าท้ายๆ ที่มักมีเงื่อนไข
-            result += "\n---\n".join(pages_text[-4:])[:4000]
+        if not important_page_nums:
+            # fallback: หน้าท้ายๆ
+            important_page_nums = list(range(max(0, doc.page_count - 5), doc.page_count))
 
+        # ── ขั้น 2: text extraction ──────────────────────────────────────
+        text_result = ""
+        image_needed_pages = []  # หน้าที่ text น้อยเกินไป → ต้องใช้ Vision
+
+        for i in important_page_nums[:6]:
+            t = page_texts.get(i, "")
+            if len(t) > 80:
+                text_result += f"\n[หน้า {i+1}]\n{t[:1500]}"
+            else:
+                image_needed_pages.append(i)  # น้อยกว่า 80 chars = น่าจะเป็นรูป
+
+        # ── ขั้น 3: Vision fallback สำหรับหน้าที่เป็นรูปภาพ ──────────────
+        if image_needed_pages:
+            logger.info(f"PDF vision fallback for pages: {[p+1 for p in image_needed_pages]}")
+            vision_result = _read_pdf_pages_with_vision(doc, image_needed_pages[:4], tour_id)
+            if vision_result:
+                text_result += f"\n[Vision OCR]\n{vision_result}"
+
+        doc.close()
+
+        result = f"[ข้อมูลจาก PDF โปรแกรม {tour_id}]\n{text_result.strip()}"
         result = result[:5000]
         _PDF_CACHE[program_url] = result
-        logger.info(f"PDF fetched: {pdf_url} ({len(result)} chars)")
+        logger.info(f"PDF fetched: {pdf_url} ({len(result)} chars, vision_pages={image_needed_pages})")
         return result
 
     except Exception as e:
         logger.error(f"fetch_pdf_info error: {e}")
+        return ""
+
+
+def _read_pdf_pages_with_vision(doc: fitz.Document, page_nums: list, tour_id: str) -> str:
+    """แปลง PDF pages เป็นรูปแล้วส่ง Claude Haiku Vision อ่าน"""
+    try:
+        content = []
+        for i in page_nums:
+            page = doc[i]
+            mat = fitz.Matrix(1.5, 1.5)  # 1.5x zoom — พอสำหรับอ่าน text
+            pix = page.get_pixmap(matrix=mat)
+            b64 = base64.b64encode(pix.tobytes("png")).decode()
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": b64}
+            })
+            logger.info(f"  Rendered page {i+1}: {len(b64)//1024} KB")
+
+        content.append({
+            "type": "text",
+            "text": (
+                "นี่คือหน้า PDF โปรแกรมทัวร์ สกัดข้อมูลต่อไปนี้จากภาพ:\n"
+                "1. มัดจำ/เงินมัดจำ — จำนวนเงิน\n"
+                "2. วีซ่า — ค่าวีซ่า หรือ รวม/ไม่รวมในราคาทัวร์\n"
+                "3. ทิปไกด์/ทิปคนขับ — จำนวนเงิน\n"
+                "4. เงื่อนไขการยกเลิก — สรุปสั้นๆ\n"
+                "5. ราคาทัวร์ (ถ้ามีในภาพ)\n"
+                "ถ้าไม่พบข้อมูลใดในภาพ ให้ตอบว่า 'ไม่พบในเอกสาร'\n"
+                "ตอบเป็นภาษาไทย กระชับ"
+            )
+        })
+
+        vision_resp = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            messages=[{"role": "user", "content": content}]
+        )
+        return vision_resp.content[0].text
+
+    except Exception as e:
+        logger.error(f"_read_pdf_pages_with_vision error: {e}")
         return ""
 
 
