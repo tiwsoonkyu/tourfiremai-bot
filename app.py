@@ -2034,4 +2034,59 @@ def webhook():
 
     for entry in data.get("entry", []):
         for msg_event in entry.get("messaging", []):
-            if msg_event.get("message", {}).ge
+            if msg_event.get("message", {}).get("is_echo"):
+                continue
+            sender_id = msg_event.get("sender", {}).get("id")
+            if not sender_id:
+                continue
+
+            message      = msg_event.get("message", {})
+            text         = message.get("text", "").strip()
+
+            # ── Ad Attribution (referral / postback) — sync before process_message ──
+            has_referral = (
+                msg_event.get("referral") or
+                msg_event.get("postback", {}).get("referral") or
+                msg_event.get("ads_context_data")
+            )
+            if has_referral:
+                capture_ad_attribution(sender_id, msg_event)  # sync ก่อน fork
+
+            # Handle postback text if no regular text
+            if not text and msg_event.get("postback", {}).get("title"):
+                text = msg_event["postback"]["title"]
+
+            # Image attachment = potential payment slip
+            attachments  = message.get("attachments", [])
+            image_list   = [a for a in attachments if a.get("type") == "image"]
+            if image_list:
+                image_urls = [a.get("payload", {}).get("url", "") for a in image_list]
+                logger.info(f"📷 Image from {sender_id} — treating as payment slip")
+                t = threading.Thread(target=process_payment_slip, args=(sender_id, image_urls))
+                t.daemon = True
+                t.start()
+                continue
+
+            if not text:
+                continue
+            t = threading.Thread(target=process_message, args=(sender_id, text))
+            t.daemon = True
+            t.start()
+
+    return jsonify({"status": "ok"}), 200
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "ok",
+        "service": "TourFiremai AI Concierge v5",
+        "redis": "connected" if _redis else "in-memory",
+        "supabase": "configured" if SUPABASE_URL else "not configured",
+    }), 200
+
+
+# ─── Entry point ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
