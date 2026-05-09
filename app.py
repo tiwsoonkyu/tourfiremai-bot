@@ -431,6 +431,30 @@ def _system_prompt() -> str:
 - ข้ามรอบที่ผ่านมาแล้ว
 
 ══════════════════════════════════
+กฎห้ามรีเซ็ตบทสนทนา
+══════════════════════════════════
+ห้ามทักทายใหม่หรือถาม "อยากไปเที่ยวที่ไหนคะ?" ถ้าบทสนทนาก่อนหน้ามีข้อมูลอยู่แล้ว
+
+ถ้าลูกค้าพิมพ์สั้นๆ เช่น "ไหนครับ", "ได้ยัง", "ส่งมา", "มีไหม", "รออยู่", "ดูให้หน่อย"
+→ ให้ตีความว่าเขากำลังตามคำตอบจากเรื่องก่อนหน้า ต้องใช้บริบทเดิมมาตอบต่อทันที
+
+ตัวอย่าง:
+ลูกค้า: เอาโอซาก้าครับ งบ 40,000
+AI: ขอค้นหาโอซาก้าให้นะคะ
+ลูกค้า: ไหนครับ
+✅ ถูก: "ขอโทษที่ให้รอนะคะ กำลังคัดโปรแกรมโอซาก้างบ 40,000 ให้ค่ะ" แล้ว trigger search ต่อ
+❌ ห้าม: "สวัสดีค่ะ อยากไปเที่ยวที่ไหนคะ?"
+
+══════════════════════════════════
+เมื่อค้นหาแล้วไม่เจอโปรแกรมตรงเงื่อนไข
+══════════════════════════════════
+อย่าถามเริ่มใหม่ ให้เสนอทางเลือกทันที เช่น:
+"ตอนนี้ยังไม่เจอโอซาก้าที่ตรงงบ 40,000 พอดีค่ะ แอดมิน AI แนะนำได้ 2 ทาง:
+1. ดูญี่ปุ่นเมืองใกล้เคียง เช่น โตเกียว/นาโกย่า ที่งบใกล้เคียงกัน
+2. ให้ทีมงานเช็กโปรโอซาก้าล่าสุดโดยตรง
+ให้แอดมินส่งทีมงานเช็กให้เลยไหมคะ?"
+
+══════════════════════════════════
 สิ่งที่ห้ามทำเด็ดขาด
 ══════════════════════════════════
 - ยืนยันที่นั่งว่าง หรือยืนยันราคา final
@@ -447,7 +471,7 @@ def decide_action(user_message: str, history: list) -> dict:
     """
     วิเคราะห์ว่าต้องทำอะไร คืน JSON:
     {
-      "action": "search"|"detail"|"detail_pdf"|"flash_sale"|"handoff"|"reply",
+      "action": "search"|"detail"|"detail_pdf"|"flash_sale"|"handoff"|"reply"|"continue",
       "country_id": "2"|null,
       "selected_option_index": 1|2|3|null,
       "uses_previous_option": true|false,
@@ -465,25 +489,31 @@ def decide_action(user_message: str, history: list) -> dict:
 
         "ตอบเป็น JSON เท่านั้น (ห้ามมีข้อความอื่น):\n"
         "{\n"
-        '  "action": "search" | "detail" | "detail_pdf" | "flash_sale" | "handoff" | "reply",\n'
+        '  "action": "search" | "detail" | "detail_pdf" | "flash_sale" | "handoff" | "reply" | "continue",\n'
         '  "country_id": "เลขประเทศ หรือ null",\n'
         '  "selected_option_index": 1 | 2 | 3 | null,\n'
         '  "uses_previous_option": true | false,\n'
         '  "lead_stage": "cold" | "warm" | "hot" | "booking"\n'
         "}\n\n"
 
-        "=== กฎ action ===\n"
+        "=== กฎ action (เรียงตามความสำคัญ) ===\n\n"
+
+        "⚠️ กฎ CONTINUATION — ตรวจสอบก่อนทุกกฎอื่น:\n"
+        "ถ้าข้อความล่าสุดเป็น คำสั้นๆ เช่น 'ไหน', 'ไหนครับ', 'ไหนคะ', 'ได้ยัง', 'รออยู่', 'ส่งมา', 'มีไหม', 'หาได้ไหม', 'ดูให้หน่อย', 'แล้วไง', 'ยังไง'\n"
+        "AND ใน history ก่อนหน้า AI เคยบอกว่าจะค้นหา/เช็ก/ดึงข้อมูล/รอสักครู่\n"
+        "→ action=continue, country_id=ประเทศล่าสุดจาก history, lead_stage ตาม context\n\n"
+
         "action=search: ลูกค้าต้องการดูโปรแกรมทัวร์ประเทศที่ระบุ รวมถึงการเปลี่ยนประเทศ\n"
         "action=detail: ลูกค้าขอดูรายละเอียดทัวร์โปรแกรมใดโปรแกรมหนึ่ง\n"
         "action=detail_pdf: ลูกค้าถามมัดจำ/วีซ่า/ทิป/พักเดี่ยว/เงื่อนไขยกเลิก/รายละเอียด itinerary/โรงแรม/สายการบิน/รวมอะไร — และมีโปรแกรมที่เลือกไว้ใน context\n"
         "action=flash_sale: ลูกค้าถามทัวร์ไฟไหม้/โปรโมชั่นพิเศษ/ดีลร้อน\n"
         "action=handoff: ลูกค้าพร้อมจอง/สนใจจอง/ขอคุยเซลล์/เช็กที่นั่ง/ขอราคา final/ขอส่วนลด/ยกเลิก\n"
-        "action=reply: ทักทาย/ถามทั่วไป/ยังไม่ระบุประเทศ/ยุโรปรวม/ดูโปรแกรมโดยไม่ระบุประเทศ\n\n"
+        "action=reply: ทักทาย/ถามทั่วไป/ยังไม่ระบุประเทศ/ยุโรปรวม — ใช้เฉพาะตอนเริ่มบทสนทนาใหม่จริงๆ เท่านั้น\n\n"
 
         "=== กฎ selected_option_index และ uses_previous_option ===\n"
-        "ถ้าลูกค้าพิมพ์ 'ตัวที่ 1/2/3', 'อันนี้', 'ตัวนี้', 'สนใจอันนี้' → uses_previous_option=true, selected_option_index=เลขที่ระบุ (หรือ null ถ้าไม่ระบุ)\n"
+        "ถ้าลูกค้าพิมพ์ 'ตัวที่ 1/2/3', 'อันนี้', 'ตัวนี้', 'สนใจอันนี้' → uses_previous_option=true, selected_option_index=เลขที่ระบุ\n"
         "ถ้าลูกค้าพิมพ์ 'เช็กเลย' หลังมีโปรแกรมใน context → action=handoff, uses_previous_option=true, lead_stage=hot\n"
-        "ถ้าลูกค้าเปลี่ยนประเทศ → uses_previous_option=false, ใช้ country_id ใหม่\n\n"
+        "ถ้าลูกค้าเปลี่ยนประเทศจริง → uses_previous_option=false, country_id ใหม่\n\n"
 
         "=== กฎ lead_stage ===\n"
         "cold: เพิ่งทักมา ยังไม่รู้จะไปไหน\n"
@@ -496,11 +526,15 @@ def decide_action(user_message: str, history: list) -> dict:
         "ยุโรป: อิตาลี=102, สวิตฯ=64, สแกนดิ=47, อังกฤษ=42, เยอรมนี=100, ตุรเคีย=71, ออสเตรีย=159, สเปน=105, ฝรั่งเศส=101, กรีซ=169, โปรตุเกส=200, ยุโรปตะวันออก=80\n"
         "อื่นๆ: ออสเตรเลีย=10, นิวซีแลนด์=11, อเมริกา=12, ดูไบ/UAE=72, อินเดีย=14, อียิปต์=16, รัสเซีย=17, จอร์เจีย=168, คาซัคสถาน=256\n\n"
 
-        "ถ้าพูดว่า 'ยุโรป' รวมๆ → action=reply\n"
-        "ตัวอย่าง: 'เปลี่ยนเป็นเกาหลี' → action=search country_id=1 uses_previous_option=false\n"
-        "ตัวอย่าง: 'สนใจตัวที่ 2' → action=detail_pdf หรือ handoff, uses_previous_option=true, selected_option_index=2\n"
-        "ตัวอย่าง: 'มัดจำเท่าไหร่' (context มีโปรแกรมแล้ว) → action=detail_pdf, lead_stage=hot\n"
-        "ตัวอย่าง: 'เช็กเลย' → action=handoff, uses_previous_option=true, lead_stage=hot"
+        "ตัวอย่าง continuation:\n"
+        "AI พูดก่อน: 'ขอค้นหาโอซาก้าให้นะคะ...' → ลูกค้า: 'ไหนครับ' → action=continue country_id=2\n"
+        "AI พูดก่อน: 'ขอดึงข้อมูลสักครู่ค่ะ' → ลูกค้า: 'ได้ยัง' → action=continue country_id=country ล่าสุด\n\n"
+
+        "ตัวอย่างอื่น:\n"
+        "'เปลี่ยนเป็นเกาหลีแทน' → action=search country_id=1 uses_previous_option=false\n"
+        "'สนใจตัวที่ 2' → uses_previous_option=true selected_option_index=2\n"
+        "'มัดจำเท่าไหร่' (มีโปรแกรมใน context) → action=detail_pdf lead_stage=hot\n"
+        "'เช็กเลย' → action=handoff uses_previous_option=true lead_stage=hot"
     )
 
     try:
@@ -596,6 +630,18 @@ def process_message(sender_id: str, text: str):
 
         tour_data   = ""
         is_handoff  = False
+
+        # action=continue → ใช้ country_id ล่าสุดจาก history แล้ว search เหมือนเดิม
+        if action == "continue":
+            if not country_id:
+                # หา country_id จาก history (มองหา country_id ที่เคยใช้ก่อนหน้า)
+                for msg in reversed(history):
+                    c = re.search(r'country_id["\s:]+(\d+)', msg.get("content", ""))
+                    if c:
+                        country_id = c.group(1)
+                        break
+            action = "search"  # treat เหมือน search ปกติ
+            logger.info(f"Continuation detected → search country_id={country_id}")
 
         # Fetch tour data if needed
         if action in ("search", "detail") and country_id:
