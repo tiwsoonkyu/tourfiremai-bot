@@ -1,6 +1,7 @@
 """
-AI Tour Concierge v2 — รวมทัวร์ไฟไหม้
-แอดมิน AI ค้นหาและแนะนำโปรแกรมทัวร์จากเว็บจริง พร้อม Conversation Memory
+AI Tour Concierge v3 — รวมทัวร์ไฟไหม้
+แอดมิน AI ค้นหาและแนะนำโปรแกรมทัวร์จากเว็บจริง
+พร้อม Conversation Memory (Redis) + Structured Context + Supabase CRM
 """
 
 import os
@@ -9,7 +10,7 @@ import json
 import logging
 import threading
 from datetime import date, datetime, timedelta
-from flask import Flask, request, jsonify, abort
+from flask import Flask, request, jsonify, abort, render_template_string
 import anthropic
 import requests
 import pdfplumber
@@ -26,57 +27,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERIFY_TOKEN   = os.environ.get("VERIFY_TOKEN", "tourfiremai2024")
-FB_PAGE_TOKEN  = os.environ.get("FB_PAGE_TOKEN", "")
-ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT", "")
+VERIFY_TOKEN      = os.environ.get("VERIFY_TOKEN", "tourfiremai2024")
+FB_PAGE_TOKEN     = os.environ.get("FB_PAGE_TOKEN", "")
+ANTHROPIC_KEY     = os.environ.get("ANTHROPIC_API_KEY", "")
+TELEGRAM_TOKEN    = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT     = os.environ.get("TELEGRAM_CHAT", "")
+SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY      = os.environ.get("SUPABASE_KEY", "")
+DASHBOARD_PASS    = os.environ.get("DASHBOARD_PASSWORD", "tourfiremai2024")
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
 # ─── Country Map ─────────────────────────────────────────────────────────────
 COUNTRY_MAP = {
-    # เอเชียตะวันออก
     "1": "เกาหลี", "2": "ญี่ปุ่น", "3": "ฮ่องกง",
     "4": "สิงคโปร์", "5": "จีน", "6": "มาเลเซีย",
     "7": "เวียดนาม", "8": "พม่า", "9": "ลาว",
     "18": "อินโดนีเซีย", "19": "ไต้หวัน", "29": "มาเก๊า",
     "104": "ฟิลิปปินส์",
-    # เอเชียใต้ / กลาง
     "14": "อินเดีย", "20": "ภูฏาน", "182": "ศรีลังกา",
     "184": "ทิเบต", "173": "อุซเบกิสถาน", "256": "คาซัคสถาน",
     "164": "ปากีสถาน", "165": "มองโกเลีย",
-    # ตะวันออกกลาง / แอฟริกา
     "72": "สหรัฐอาหรับฯ", "70": "จอร์แดน", "16": "อียิปต์",
     "167": "เคนย่า", "68": "แอฟริกาใต้", "161": "โมร็อกโก",
     "183": "อิหร่าน",
-    # ยุโรปตะวันตก
     "42": "อังกฤษ", "64": "สวิตเซอร์แลนด์", "100": "เยอรมนี",
     "101": "ฝรั่งเศส", "102": "อิตาลี", "105": "สเปน",
     "159": "ออสเตรีย", "169": "กรีซ", "200": "โปรตุเกส",
     "213": "เบลเยี่ยม", "308": "เนเธอร์แลนด์", "2217": "เบเนลักซ์",
-    # ยุโรปเหนือ / สแกนดิเนเวีย
     "47": "สแกนดิเนเวีย", "65": "ฟินแลนด์", "153": "สวีเดน",
     "162": "นอร์เวย์", "232": "เดนมาร์ก", "25": "ไอซ์แลนด์",
     "194": "ไอร์แลนด์", "197": "สกอตแลนด์",
-    # ยุโรปตะวันออก / บอลข่าน
     "80": "ยุโรปตะวันออก", "66": "โครเอเชีย", "166": "โปแลนด์",
     "168": "จอร์เจีย", "71": "ตุรเคีย", "2213": "บอลติก",
     "2220": "โรมาเนีย", "275": "มอลตา", "276": "มอนเตเนโกร",
-    # โอเชียเนีย / อเมริกา / อื่นๆ
     "10": "ออสเตรเลีย", "11": "นิวซีแลนด์",
     "12": "อเมริกา", "73": "แคนาดา", "174": "บราซิล",
     "175": "อาร์เจนติน่า", "226": "โคลอมเบีย", "272": "เม็กซิโก",
-    # รัสเซีย / CIS
     "17": "รัสเซีย",
 }
 
-# ─── Conversation Store (Redis + in-memory fallback) ─────────────────────────
-HISTORY_LIMIT   = 30          # messages per user (15 turns)
-SESSION_TIMEOUT = timedelta(days=30)  # Redis TTL
-REDIS_TTL_SEC   = 30 * 24 * 3600     # 30 วัน
+# ─── Redis setup (Upstash) ────────────────────────────────────────────────────
+HISTORY_LIMIT   = 30
+SESSION_TIMEOUT = timedelta(days=30)
+REDIS_TTL_SEC   = 30 * 24 * 3600
 
-# ── Redis setup (Upstash) ──
 REDIS_URL = os.environ.get("REDIS_URL", "")
 _redis = None
 if REDIS_URL:
@@ -89,22 +84,22 @@ if REDIS_URL:
         logger.warning(f"Redis unavailable, using in-memory fallback: {e}")
         _redis = None
 else:
-    logger.info("No REDIS_URL — using in-memory store (history lost on redeploy)")
+    logger.info("No REDIS_URL — using in-memory store")
 
-# ── In-memory fallback ──
-_mem_store: dict = {}
+_mem_store: dict = {}      # history fallback
+_ctx_store: dict = {}      # context fallback
 
+
+# ── History key & functions ───────────────────────────────────────────────────
 def _redis_key(psid: str) -> str:
     return f"tourfiremai:chat:{psid}"
 
 def get_history(psid: str) -> list:
-    """คืน history ของลูกค้า — ดึงจาก Redis ก่อน fallback in-memory"""
     if _redis:
         try:
             raw = _redis.get(_redis_key(psid))
             if raw:
                 conv = json.loads(raw)
-                # เช็ก session timeout
                 last = datetime.fromisoformat(conv.get("last_active", "2000-01-01T00:00:00"))
                 if datetime.now() - last > SESSION_TIMEOUT:
                     _redis.delete(_redis_key(psid))
@@ -114,7 +109,6 @@ def get_history(psid: str) -> list:
         except Exception as e:
             logger.warning(f"Redis get error: {e}")
 
-    # fallback: in-memory
     if psid in _mem_store:
         conv = _mem_store[psid]
         if datetime.now() - conv["last_active"] > SESSION_TIMEOUT:
@@ -124,10 +118,9 @@ def get_history(psid: str) -> list:
     return []
 
 def save_to_history(psid: str, role: str, content: str):
-    """บันทึก message เข้า Redis (หรือ in-memory ถ้า Redis ไม่มี)"""
     history = get_history(psid)
     history.append({"role": role, "content": content})
-    history = history[-HISTORY_LIMIT:]  # keep latest N messages
+    history = history[-HISTORY_LIMIT:]
     now_iso = datetime.now().isoformat()
 
     if _redis:
@@ -138,17 +131,212 @@ def save_to_history(psid: str, role: str, content: str):
         except Exception as e:
             logger.warning(f"Redis set error: {e}")
 
-    # fallback: in-memory
     _mem_store[psid] = {"history": history, "last_active": datetime.now()}
 
-logger.info(f"Memory backend: {'Redis ✅' if _redis else 'In-memory ⚠️'}")
 
+# ── Structured Context key & functions ───────────────────────────────────────
+def _ctx_key(psid: str) -> str:
+    return f"tourfiremai:context:{psid}"
+
+_EMPTY_CTX = {
+    "customer_name": None,
+    "phone": None,
+    "destination": None,
+    "country": None,
+    "month": None,
+    "budget_per_person": None,
+    "pax": None,
+    "last_options": [],
+    "pending_action": None,
+    "last_bot_message": None,
+    "updated_at": None,
+}
+
+def get_context(psid: str) -> dict:
+    """คืน structured context ของลูกค้า"""
+    if _redis:
+        try:
+            raw = _redis.get(_ctx_key(psid))
+            if raw:
+                return json.loads(raw)
+        except Exception as e:
+            logger.warning(f"Redis ctx get error: {e}")
+
+    return dict(_ctx_store.get(psid, _EMPTY_CTX))
+
+def save_context(psid: str, ctx: dict):
+    """บันทึก structured context"""
+    if _redis:
+        try:
+            _redis.setex(_ctx_key(psid), REDIS_TTL_SEC, json.dumps(ctx, ensure_ascii=False))
+            return
+        except Exception as e:
+            logger.warning(f"Redis ctx set error: {e}")
+
+    _ctx_store[psid] = ctx
+
+def extract_context_after_response(psid: str, history: list, ai_response: str) -> dict:
+    """ใช้ Haiku วิเคราะห์บทสนทนาและ extract structured context
+    ทำงานแบบ async ใน background — ไม่บล็อก response หลัก"""
+    existing = get_context(psid)
+
+    history_text = ""
+    for msg in history[-14:]:
+        role = "ลูกค้า" if msg["role"] == "user" else "AI"
+        history_text += f"{role}: {msg['content'][:250]}\n"
+    history_text += f"AI: {ai_response[:300]}\n"
+
+    prompt = (
+        f"บทสนทนา:\n{history_text}\n\n"
+        f"ข้อมูลที่มีอยู่แล้ว:\n"
+        f"ชื่อลูกค้า: {existing.get('customer_name') or 'ไม่ทราบ'}\n"
+        f"เบอร์โทร: {existing.get('phone') or 'ไม่ทราบ'}\n"
+        f"ปลายทาง: {existing.get('destination') or 'ไม่ทราบ'}\n"
+        f"ประเทศ: {existing.get('country') or 'ไม่ทราบ'}\n"
+        f"เดือน: {existing.get('month') or 'ไม่ทราบ'}\n"
+        f"งบ/คน: {existing.get('budget_per_person') or 'ไม่ทราบ'}\n"
+        f"จำนวนคน: {existing.get('pax') or 'ไม่ทราบ'}\n\n"
+        "สกัดข้อมูลจากบทสนทนา ตอบเป็น JSON เท่านั้น (อัปเดตเฉพาะที่มีในบทสนทนา):\n"
+        "{\n"
+        '  "customer_name": "ชื่อลูกค้า หรือ null",\n'
+        '  "phone": "เบอร์โทร/LINE หรือ null",\n'
+        '  "destination": "เมือง/ปลายทาง หรือ null",\n'
+        '  "country": "ชื่อประเทศ หรือ null",\n'
+        '  "month": "เดือน+ปีที่จะไป เช่น ก.ค. 69 หรือ null",\n'
+        '  "budget_per_person": งบประมาณต่อคนเป็นตัวเลขหรือnull,\n'
+        '  "pax": จำนวนคนเป็นตัวเลขหรือnull,\n'
+        '  "last_options": [{"index":1,"code":"รหัส","name":"ชื่อโปรแกรม","url":"URL"}],\n'
+        '  "pending_action": "สิ่งที่ AI บอกว่าจะทำต่อ เช่น search_osaka หรือ null"\n'
+        "}\n"
+        "หมายเหตุ: last_options ให้ดึงจากข้อความล่าสุดที่ AI เสนอโปรแกรม (ไม่เกิน 3 ตัวเลือก)"
+    )
+
+    try:
+        resp = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = resp.content[0].text.strip()
+        m = re.search(r"\{.*?\}", raw, re.DOTALL)
+        if m:
+            new_ctx = json.loads(m.group())
+            # Merge: keep existing values if new is null
+            merged = dict(existing)
+            for key, val in new_ctx.items():
+                if val is not None and val != [] and val != "null":
+                    merged[key] = val
+            merged["last_bot_message"] = ai_response[:600]
+            merged["updated_at"] = datetime.now().isoformat()
+            return merged
+    except Exception as e:
+        logger.error(f"extract_context error: {e}")
+
+    existing["last_bot_message"] = ai_response[:600]
+    existing["updated_at"] = datetime.now().isoformat()
+    return existing
+
+
+# ─── Supabase CRM ─────────────────────────────────────────────────────────────
+def _sb_headers(prefer_upsert: bool = False) -> dict:
+    h = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+    if prefer_upsert:
+        h["Prefer"] = "resolution=merge-duplicates,return=minimal"
+    else:
+        h["Prefer"] = "return=minimal"
+    return h
+
+def save_lead_supabase(psid: str, context: dict, lead_stage: str, user_message: str = ""):
+    """Upsert lead ลงใน Supabase โดยใช้ psid เป็น unique key"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        logger.info("Supabase not configured — skip lead save")
+        return
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/leads"
+        payload = {
+            "psid": psid,
+            "lead_stage": lead_stage,
+            "updated_at": datetime.now().isoformat(),
+        }
+        # เพิ่มเฉพาะ field ที่มีข้อมูล
+        field_map = {
+            "customer_name": "customer_name",
+            "phone": "phone",
+            "destination": "destination",
+            "country": "country",
+            "month": "month",
+            "budget_per_person": "budget_per_person",
+            "pax": "pax",
+        }
+        for ctx_key, db_col in field_map.items():
+            v = context.get(ctx_key)
+            if v is not None:
+                payload[db_col] = v
+
+        opts = context.get("last_options", [])
+        if opts:
+            payload["last_options"] = json.dumps(opts, ensure_ascii=False)
+
+        if user_message:
+            payload["last_message"] = user_message[:500]
+
+        resp = requests.post(url, json=payload, headers=_sb_headers(prefer_upsert=True), timeout=10)
+        if resp.ok or resp.status_code == 201:
+            logger.info(f"✅ Lead upserted: {psid} [{lead_stage}]")
+        else:
+            logger.error(f"❌ Supabase {resp.status_code}: {resp.text[:300]}")
+    except Exception as e:
+        logger.error(f"save_lead_supabase error: {e}")
+
+def list_leads_supabase(stage_filter: str = None, limit: int = 50) -> list:
+    """ดึง leads จาก Supabase สำหรับ Dashboard"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return []
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/leads"
+        params = {"order": "updated_at.desc", "limit": str(limit)}
+        if stage_filter:
+            params["lead_stage"] = f"eq.{stage_filter}"
+        resp = requests.get(url, params=params, headers=_sb_headers(), timeout=10)
+        if resp.ok:
+            return resp.json()
+        logger.error(f"list_leads error: {resp.status_code} {resp.text[:200]}")
+        return []
+    except Exception as e:
+        logger.error(f"list_leads_supabase error: {e}")
+        return []
+
+def count_leads_by_stage() -> dict:
+    """นับ leads แต่ละ stage"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {}
+    stages = ["cold", "warm", "hot", "booking"]
+    counts = {}
+    for s in stages:
+        try:
+            url = f"{SUPABASE_URL}/rest/v1/leads"
+            headers = dict(_sb_headers())
+            headers["Prefer"] = "count=exact"
+            resp = requests.get(
+                url,
+                params={"lead_stage": f"eq.{s}", "select": "psid"},
+                headers=headers,
+                timeout=8
+            )
+            cr = resp.headers.get("Content-Range", "0/0")
+            total = cr.split("/")[-1]
+            counts[s] = int(total) if total.isdigit() else 0
+        except Exception:
+            counts[s] = 0
+    return counts
 
 
 # ─── Facebook helpers ─────────────────────────────────────────────────────────
 def send_message(recipient_id: str, text: str):
-    """ส่งข้อความกลับไปที่ Messenger"""
-    # Split long messages at newlines if > 2000 chars
     chunks = []
     while len(text) > 1950:
         split_at = text.rfind("\n", 0, 1950)
@@ -170,16 +358,14 @@ def send_message(recipient_id: str, text: str):
         try:
             resp = requests.post(url, json=payload, timeout=10)
             if resp.ok:
-                logger.info(f"✅ Sent chunk ({len(chunk)} chars) to {recipient_id}")
+                logger.info(f"✅ Sent ({len(chunk)} chars) to {recipient_id}")
             else:
                 logger.error(f"❌ FB send error {resp.status_code}: {resp.text[:200]}")
         except Exception as e:
             logger.error(f"❌ FB send exception: {e}")
 
 def notify_telegram(message: str):
-    """แจ้ง admin ทาง Telegram"""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
-        logger.info("Telegram not configured, skip notify")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
@@ -188,9 +374,9 @@ def notify_telegram(message: str):
     except Exception as e:
         logger.error(f"Telegram error: {e}")
 
+
 # ─── Tour data fetcher ────────────────────────────────────────────────────────
 def fetch_tours(country_id: str) -> str:
-    """ดึงข้อมูลทัวร์จาก tourfiremai.com พร้อม URL ของแต่ละโปรแกรม"""
     listing_url = f"https://www.tourfiremai.com/intertour/{country_id}/"
     headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
     resp = requests.get(listing_url, headers=headers, timeout=20, allow_redirects=True)
@@ -218,11 +404,9 @@ def fetch_tours(country_id: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text[:8000]
 
-# PDF cache (in-memory): {program_url: extracted_text}
 _PDF_CACHE: dict = {}
 
 def extract_program_url_from_history(history: list) -> str | None:
-    """ค้นหา URL โปรแกรมทัวร์ล่าสุดจาก conversation history"""
     pattern = re.compile(r'https://www\.tourfiremai\.com/tour/ap\w+')
     for msg in reversed(history):
         m = pattern.search(msg.get("content", ""))
@@ -231,10 +415,6 @@ def extract_program_url_from_history(history: list) -> str | None:
     return None
 
 def fetch_pdf_info(program_url: str) -> str:
-    """ดาวน์โหลด PDF และสกัดข้อมูลสำคัญ
-    - ลองอ่าน text ก่อน (fast)
-    - ถ้าหน้าสำคัญเป็นรูปภาพ → ส่ง Claude Haiku Vision อ่านแทน (accurate)
-    """
     if program_url in _PDF_CACHE:
         return _PDF_CACHE[program_url]
 
@@ -250,7 +430,6 @@ def fetch_pdf_info(program_url: str) -> str:
         resp.raise_for_status()
         pdf_bytes = resp.content
 
-        # ── ขั้น 1: หาหน้าสำคัญด้วย PyMuPDF ──────────────────────────────
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         keywords = ["มัดจำ", "ทิป", "วีซ่า", "เงื่อนไข", "ราคา", "อัตราค่า", "tip", "deposit", "visa", "ไม่รวม"]
 
@@ -263,21 +442,18 @@ def fetch_pdf_info(program_url: str) -> str:
                 important_page_nums.append(i)
 
         if not important_page_nums:
-            # fallback: หน้าท้ายๆ
             important_page_nums = list(range(max(0, doc.page_count - 5), doc.page_count))
 
-        # ── ขั้น 2: text extraction ──────────────────────────────────────
         text_result = ""
-        image_needed_pages = []  # หน้าที่ text น้อยเกินไป → ต้องใช้ Vision
+        image_needed_pages = []
 
         for i in important_page_nums[:6]:
             t = page_texts.get(i, "")
             if len(t) > 80:
                 text_result += f"\n[หน้า {i+1}]\n{t[:1500]}"
             else:
-                image_needed_pages.append(i)  # น้อยกว่า 80 chars = น่าจะเป็นรูป
+                image_needed_pages.append(i)
 
-        # ── ขั้น 3: Vision fallback สำหรับหน้าที่เป็นรูปภาพ ──────────────
         if image_needed_pages:
             logger.info(f"PDF vision fallback for pages: {[p+1 for p in image_needed_pages]}")
             vision_result = _read_pdf_pages_with_vision(doc, image_needed_pages[:4], tour_id)
@@ -289,21 +465,19 @@ def fetch_pdf_info(program_url: str) -> str:
         result = f"[ข้อมูลจาก PDF โปรแกรม {tour_id}]\n{text_result.strip()}"
         result = result[:5000]
         _PDF_CACHE[program_url] = result
-        logger.info(f"PDF fetched: {pdf_url} ({len(result)} chars, vision_pages={image_needed_pages})")
+        logger.info(f"PDF fetched: {pdf_url} ({len(result)} chars)")
         return result
 
     except Exception as e:
         logger.error(f"fetch_pdf_info error: {e}")
         return ""
 
-
 def _read_pdf_pages_with_vision(doc: fitz.Document, page_nums: list, tour_id: str) -> str:
-    """แปลง PDF pages เป็นรูปแล้วส่ง Claude Haiku Vision อ่าน"""
     try:
         content = []
         for i in page_nums:
             page = doc[i]
-            mat = fitz.Matrix(1.5, 1.5)  # 1.5x zoom — พอสำหรับอ่าน text
+            mat = fitz.Matrix(1.5, 1.5)
             pix = page.get_pixmap(matrix=mat)
             b64 = base64.b64encode(pix.tobytes("png")).decode()
             content.append({
@@ -332,19 +506,59 @@ def _read_pdf_pages_with_vision(doc: fitz.Document, page_nums: list, tour_id: st
             messages=[{"role": "user", "content": content}]
         )
         return vision_resp.content[0].text
-
     except Exception as e:
         logger.error(f"_read_pdf_pages_with_vision error: {e}")
         return ""
 
 
 # ─── AI — System Prompt ───────────────────────────────────────────────────────
-def _system_prompt() -> str:
+def _system_prompt(ctx: dict = None) -> str:
     today = date.today().strftime("%-d %B %Y")
+
+    # Inject structured context memory if available
+    ctx_section = ""
+    if ctx:
+        parts = []
+        if ctx.get("customer_name"):
+            parts.append(f"ชื่อลูกค้า: {ctx['customer_name']}")
+        if ctx.get("phone"):
+            parts.append(f"เบอร์/LINE: {ctx['phone']}")
+        if ctx.get("destination"):
+            parts.append(f"ปลายทาง: {ctx['destination']}")
+        if ctx.get("country"):
+            parts.append(f"ประเทศ: {ctx['country']}")
+        if ctx.get("month"):
+            parts.append(f"เดือนที่จะไป: {ctx['month']}")
+        if ctx.get("budget_per_person"):
+            parts.append(f"งบ/คน: {ctx['budget_per_person']:,} บาท" if isinstance(ctx['budget_per_person'], (int, float)) else f"งบ/คน: {ctx['budget_per_person']}")
+        if ctx.get("pax"):
+            parts.append(f"จำนวนคน: {ctx['pax']} คน")
+        if ctx.get("last_options"):
+            opts = ctx["last_options"]
+            if isinstance(opts, str):
+                try:
+                    opts = json.loads(opts)
+                except Exception:
+                    opts = []
+            if opts:
+                opts_text = ", ".join([f"ตัวที่{o.get('index','')} {o.get('name','')}" for o in opts[:3]])
+                parts.append(f"โปรแกรมที่เสนอล่าสุด: {opts_text}")
+        if ctx.get("pending_action"):
+            parts.append(f"สิ่งที่ AI บอกว่าจะทำ: {ctx['pending_action']}")
+
+        if parts:
+            ctx_section = (
+                "\n══════════════════════════════════\n"
+                "ข้อมูลลูกค้าที่จำไว้ (ใช้เป็น context หลัก)\n"
+                "══════════════════════════════════\n"
+                + "\n".join(f"- {p}" for p in parts)
+                + "\n\nใช้ข้อมูลนี้ตอบได้เลยโดยไม่ต้องถามซ้ำ\n"
+            )
+
     return f"""คุณคือ "แอดมิน AI" ของเพจ รวมทัวร์ไฟไหม้
 บริษัท อัพ-โอเปอเรชั่น จำกัด | เว็บ: www.tourfiremai.com | LINE: @tourfiremai
 วันนี้: {today}
-
+{ctx_section}
 ══════════════════════════════════
 บุคลิกและสไตล์การตอบ
 ══════════════════════════════════
@@ -492,16 +706,6 @@ AI: ขอค้นหาโอซาก้าให้นะคะ
 
 # ─── AI — Call 1: Decide Action ───────────────────────────────────────────────
 def decide_action(user_message: str, history: list) -> dict:
-    """
-    วิเคราะห์ว่าต้องทำอะไร คืน JSON:
-    {
-      "action": "search"|"detail"|"detail_pdf"|"flash_sale"|"handoff"|"reply"|"continue",
-      "country_id": "2"|null,
-      "selected_option_index": 1|2|3|null,
-      "uses_previous_option": true|false,
-      "lead_stage": "cold"|"warm"|"hot"|"booking"
-    }
-    """
     history_text = ""
     for msg in history[-10:]:
         role = "ลูกค้า" if msg["role"] == "user" else "AI"
@@ -586,17 +790,12 @@ def decide_action(user_message: str, history: list) -> dict:
 
 
 # ─── AI — Call 2: Generate Response ──────────────────────────────────────────
-def generate_response(user_message: str, history: list, tour_data: str = "", is_handoff: bool = False) -> str:
-    """
-    Claude สร้างคำตอบแบบ natural conversation
-    history = messages ก่อนหน้า (ไม่รวม user_message ปัจจุบัน)
-    """
-    # Build message array from history
+def generate_response(user_message: str, history: list, tour_data: str = "",
+                      is_handoff: bool = False, ctx: dict = None) -> str:
     messages = []
     for msg in history[-10:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    # Build user content
     if tour_data:
         user_content = (
             f"{user_message}\n\n"
@@ -625,7 +824,7 @@ def generate_response(user_message: str, history: list, tour_data: str = "", is_
         resp = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=1200,
-            system=_system_prompt(),
+            system=_system_prompt(ctx=ctx),
             messages=messages
         )
         return resp.content[0].text.strip()
@@ -639,10 +838,9 @@ def process_message(sender_id: str, text: str):
     """Main logic — รันใน background thread"""
     logger.info(f"Processing [{sender_id}]: {text[:80]}")
     try:
-        # ดึง history ก่อน save message ใหม่
-        history = list(get_history(sender_id))  # snapshot
+        history = list(get_history(sender_id))
+        ctx = get_context(sender_id)
 
-        # Call 1: decide what to do
         action_data = decide_action(text, history)
         action               = action_data.get("action", "reply")
         country_id           = action_data.get("country_id")
@@ -655,16 +853,24 @@ def process_message(sender_id: str, text: str):
         tour_data   = ""
         is_handoff  = False
 
-        # action=continue → ใช้ country_id ล่าสุดจาก history แล้ว search เหมือนเดิม
+        # action=continue → ใช้ country_id ล่าสุด
         if action == "continue":
             if not country_id:
-                # หา country_id จาก history (มองหา country_id ที่เคยใช้ก่อนหน้า)
-                for msg in reversed(history):
-                    c = re.search(r'country_id["\s:]+(\d+)', msg.get("content", ""))
-                    if c:
-                        country_id = c.group(1)
-                        break
-            action = "search"  # treat เหมือน search ปกติ
+                # ลอง context ก่อน
+                if ctx.get("country"):
+                    cname = ctx["country"]
+                    for cid, cname2 in COUNTRY_MAP.items():
+                        if cname2 == cname:
+                            country_id = cid
+                            break
+                # fallback: ค้นใน history
+                if not country_id:
+                    for msg in reversed(history):
+                        c = re.search(r'country_id["\s:]+(\d+)', msg.get("content", ""))
+                        if c:
+                            country_id = c.group(1)
+                            break
+            action = "search"
             logger.info(f"Continuation detected → search country_id={country_id}")
 
         # Fetch tour data if needed
@@ -677,7 +883,7 @@ def process_message(sender_id: str, text: str):
                 logger.error(f"fetch_tours error: {e}")
                 tour_data = ""
 
-        # Fetch PDF info for specific program questions (มัดจำ/วีซ่า/ทิป)
+        # Fetch PDF info
         if action == "detail_pdf":
             program_url = extract_program_url_from_history(history)
             if program_url:
@@ -688,31 +894,58 @@ def process_message(sender_id: str, text: str):
                     logger.error(f"fetch_pdf_info error: {e}")
                     tour_data = ""
             else:
-                # ไม่มี URL ใน history → ตอบธรรมดา
                 action = "reply"
 
-        # Notify admin for flash_sale or handoff
+        # Notify admin
         if action == "flash_sale":
-            notify_telegram(
-                f"🔥 ทัวร์ไฟไหม้!\nPSID: {sender_id}\nข้อความ: {text}"
-            )
+            notify_telegram(f"🔥 ทัวร์ไฟไหม้!\nPSID: {sender_id}\nข้อความ: {text}")
         elif action == "handoff":
             is_handoff = True
             stage_emoji = {"hot": "🔔", "booking": "📋", "warm": "💬"}.get(lead_stage, "📩")
+            ctx_summary = ""
+            if ctx.get("destination"):
+                ctx_summary += f"\nปลายทาง: {ctx['destination']}"
+            if ctx.get("budget_per_person"):
+                ctx_summary += f"\nงบ: {ctx['budget_per_person']:,}" if isinstance(ctx['budget_per_person'], (int, float)) else f"\nงบ: {ctx['budget_per_person']}"
+            if ctx.get("customer_name"):
+                ctx_summary += f"\nชื่อ: {ctx['customer_name']}"
+            if ctx.get("phone"):
+                ctx_summary += f"\nเบอร์: {ctx['phone']}"
             notify_telegram(
-                f"{stage_emoji} Lead [{lead_stage.upper()}]\nPSID: {sender_id}\nข้อความ: {text}"
+                f"{stage_emoji} Lead [{lead_stage.upper()}]\nPSID: {sender_id}\nข้อความ: {text}{ctx_summary}"
             )
 
-        # Save user message to history
+        # Save user message
         save_to_history(sender_id, "user", text)
 
-        # Call 2: generate natural response
-        reply = generate_response(text, history, tour_data, is_handoff)
+        # Generate response (with context injected into system prompt)
+        reply = generate_response(text, history, tour_data, is_handoff, ctx=ctx)
 
-        # Save AI reply to history
+        # Save AI reply
         save_to_history(sender_id, "assistant", reply)
 
         send_message(sender_id, reply)
+
+        # ── Background: extract context + save lead ──────────────────────
+        def _update_crm():
+            try:
+                updated_history = get_history(sender_id)
+                new_ctx = extract_context_after_response(sender_id, updated_history, reply)
+                save_context(sender_id, new_ctx)
+                logger.info(f"Context updated for {sender_id}: dest={new_ctx.get('destination')}, stage={lead_stage}")
+
+                # Save to Supabase for hot/booking leads, or any handoff
+                if lead_stage in ("hot", "booking") or action == "handoff":
+                    save_lead_supabase(sender_id, new_ctx, lead_stage, text)
+                elif lead_stage == "warm" and new_ctx.get("destination"):
+                    # warm leads with destination also worth tracking
+                    save_lead_supabase(sender_id, new_ctx, lead_stage, text)
+            except Exception as e:
+                logger.error(f"_update_crm error: {e}", exc_info=True)
+
+        crm_thread = threading.Thread(target=_update_crm)
+        crm_thread.daemon = True
+        crm_thread.start()
 
     except Exception as e:
         logger.error(f"process_message error: {e}", exc_info=True)
@@ -723,6 +956,209 @@ def process_message(sender_id: str, text: str):
             )
         except Exception:
             pass
+
+
+# ─── Dashboard ────────────────────────────────────────────────────────────────
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>รวมทัวร์ไฟไหม้ — Lead Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f0f4f8; color: #333; }
+  header { background: linear-gradient(135deg, #e63946, #ff6b35); color: #fff; padding: 18px 28px; }
+  header h1 { font-size: 1.4rem; }
+  header p { font-size: 0.85rem; opacity: 0.85; margin-top: 4px; }
+  .stats { display: flex; gap: 14px; padding: 20px 28px; flex-wrap: wrap; }
+  .stat-card { background: #fff; border-radius: 12px; padding: 18px 22px; flex: 1; min-width: 130px;
+               box-shadow: 0 2px 8px rgba(0,0,0,0.07); text-align: center; }
+  .stat-card .num { font-size: 2rem; font-weight: 700; }
+  .stat-card .label { font-size: 0.8rem; color: #666; margin-top: 4px; }
+  .cold .num { color: #aaa; }
+  .warm .num { color: #f59e0b; }
+  .hot .num { color: #ef4444; }
+  .booking .num { color: #10b981; }
+  .section { padding: 0 28px 28px; }
+  .section h2 { font-size: 1rem; margin-bottom: 14px; color: #444; border-left: 4px solid #e63946;
+                padding-left: 10px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px;
+          overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  th { background: #fef2f2; color: #666; font-size: 0.78rem; text-transform: uppercase;
+       padding: 10px 14px; text-align: left; }
+  td { padding: 10px 14px; font-size: 0.88rem; border-top: 1px solid #f3f4f6; }
+  tr:hover td { background: #fef9f9; }
+  .badge { display: inline-block; border-radius: 6px; padding: 2px 8px; font-size: 0.75rem;
+           font-weight: 600; }
+  .badge-cold { background: #f3f4f6; color: #9ca3af; }
+  .badge-warm { background: #fef3c7; color: #d97706; }
+  .badge-hot { background: #fee2e2; color: #dc2626; }
+  .badge-booking { background: #d1fae5; color: #059669; }
+  .no-data { text-align: center; color: #aaa; padding: 40px; font-size: 0.9rem; }
+  .refresh { float: right; background: #e63946; color: #fff; border: none; border-radius: 8px;
+             padding: 6px 14px; cursor: pointer; font-size: 0.82rem; margin-top: -2px; }
+  .refresh:hover { background: #c1121f; }
+  .options-list { font-size: 0.78rem; color: #555; }
+  .updated { font-size: 0.72rem; color: #aaa; }
+  @media (max-width: 600px) {
+    .stats { flex-direction: column; }
+    table { font-size: 0.8rem; }
+    td, th { padding: 8px 10px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔥 รวมทัวร์ไฟไหม้ — Lead Dashboard</h1>
+  <p>ข้อมูล Lead จาก AI Sales Bot (Messenger)</p>
+</header>
+
+<div class="stats">
+  <div class="stat-card booking">
+    <div class="num">{{ counts.get('booking', 0) }}</div>
+    <div class="label">📋 Booking</div>
+  </div>
+  <div class="stat-card hot">
+    <div class="num">{{ counts.get('hot', 0) }}</div>
+    <div class="label">🔔 Hot</div>
+  </div>
+  <div class="stat-card warm">
+    <div class="num">{{ counts.get('warm', 0) }}</div>
+    <div class="label">💬 Warm</div>
+  </div>
+  <div class="stat-card cold">
+    <div class="num">{{ counts.get('cold', 0) }}</div>
+    <div class="label">❄️ Cold</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>📋 Booking + 🔔 Hot Leads
+    <button class="refresh" onclick="location.reload()">🔄 รีเฟรช</button>
+  </h2>
+  {% if hot_leads %}
+  <table>
+    <thead>
+      <tr>
+        <th>Stage</th>
+        <th>ชื่อ</th>
+        <th>เบอร์/LINE</th>
+        <th>ปลายทาง</th>
+        <th>เดือน</th>
+        <th>งบ/คน</th>
+        <th>จำนวน</th>
+        <th>โปรแกรมที่สนใจ</th>
+        <th>ข้อความล่าสุด</th>
+        <th>อัปเดต</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for lead in hot_leads %}
+      <tr>
+        <td><span class="badge badge-{{ lead.lead_stage }}">{{ lead.lead_stage }}</span></td>
+        <td>{{ lead.customer_name or '—' }}</td>
+        <td>{{ lead.phone or '—' }}</td>
+        <td>{{ lead.destination or '—' }}</td>
+        <td>{{ lead.month or '—' }}</td>
+        <td>{{ '{:,}'.format(lead.budget_per_person) if lead.budget_per_person else '—' }}</td>
+        <td>{{ lead.pax or '—' }}</td>
+        <td class="options-list">
+          {% set opts = lead.last_options %}
+          {% if opts %}
+            {% if opts is string %}{% set opts = opts | from_json %}{% endif %}
+            {% for o in opts[:2] %}
+              <div>{{ o.get('index','') }}. {{ o.get('name','')[:30] }}</div>
+            {% endfor %}
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ (lead.last_message or '')[:60] }}{% if lead.last_message and lead.last_message|length > 60 %}…{% endif %}</td>
+        <td class="updated">{{ lead.updated_at[:16].replace('T',' ') if lead.updated_at else '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="no-data">ยังไม่มี Hot/Booking Leads</div>
+  {% endif %}
+</div>
+
+<div class="section">
+  <h2>💬 Warm Leads ล่าสุด</h2>
+  {% if warm_leads %}
+  <table>
+    <thead>
+      <tr>
+        <th>ชื่อ</th>
+        <th>เบอร์/LINE</th>
+        <th>ปลายทาง</th>
+        <th>ประเทศ</th>
+        <th>เดือน</th>
+        <th>งบ/คน</th>
+        <th>ข้อความล่าสุด</th>
+        <th>อัปเดต</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for lead in warm_leads %}
+      <tr>
+        <td>{{ lead.customer_name or '—' }}</td>
+        <td>{{ lead.phone or '—' }}</td>
+        <td>{{ lead.destination or '—' }}</td>
+        <td>{{ lead.country or '—' }}</td>
+        <td>{{ lead.month or '—' }}</td>
+        <td>{{ '{:,}'.format(lead.budget_per_person) if lead.budget_per_person else '—' }}</td>
+        <td>{{ (lead.last_message or '')[:60] }}{% if lead.last_message and lead.last_message|length > 60 %}…{% endif %}</td>
+        <td class="updated">{{ lead.updated_at[:16].replace('T',' ') if lead.updated_at else '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="no-data">ยังไม่มี Warm Leads</div>
+  {% endif %}
+</div>
+
+<div style="text-align:center; padding: 20px; color: #bbb; font-size: 0.8rem;">
+  รวมทัวร์ไฟไหม้ AI Sales Bot v3 • <a href="/health" style="color:#bbb">health check</a>
+</div>
+</body>
+</html>
+"""
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    # Simple password check via query param
+    pw = request.args.get("pass", "")
+    if pw != DASHBOARD_PASS:
+        return (
+            '<html><body style="font-family:sans-serif;text-align:center;padding:60px">'
+            '<h2>🔒 Dashboard</h2>'
+            '<p>ใส่ password: <code>/dashboard?pass=YOUR_PASSWORD</code></p>'
+            '</body></html>'
+        ), 401
+
+    counts = count_leads_by_stage()
+    hot_leads = list_leads_supabase(stage_filter=None, limit=100)
+    # Filter client-side
+    booking_hot = [l for l in hot_leads if l.get("lead_stage") in ("booking", "hot")]
+    warm = [l for l in hot_leads if l.get("lead_stage") == "warm"][:20]
+
+    # Jinja2 doesn't have from_json filter by default — parse last_options here
+    for lead in booking_hot + warm:
+        opts = lead.get("last_options")
+        if opts and isinstance(opts, str):
+            try:
+                lead["last_options"] = json.loads(opts)
+            except Exception:
+                lead["last_options"] = []
+
+    return render_template_string(
+        DASHBOARD_HTML,
+        counts=counts,
+        hot_leads=booking_hot,
+        warm_leads=warm,
+    )
 
 
 # ─── Webhook routes ───────────────────────────────────────────────────────────
@@ -761,7 +1197,12 @@ def webhook():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "TourFiremai AI Concierge v2"}), 200
+    return jsonify({
+        "status": "ok",
+        "service": "TourFiremai AI Concierge v3",
+        "redis": "connected" if _redis else "in-memory",
+        "supabase": "configured" if SUPABASE_URL else "not configured",
+    }), 200
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
