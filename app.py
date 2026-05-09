@@ -139,23 +139,41 @@ def _ctx_key(psid: str) -> str:
     return f"tourfiremai:context:{psid}"
 
 _EMPTY_CTX = {
+    # ── Core customer info ─────────────────────────────────────────────────
     "customer_name": None,
     "phone": None,
-    "destination": None,
-    "country": None,
+    # ── Destination / Search ──────────────────────────────────────────────
+    "destination": None,          # human text เช่น "ญี่ปุ่น โตเกียว"
+    "destination_text": None,     # full text from user เช่น "อยากไปญี่ปุ่นช่วงซากุระ"
+    "country": None,              # ชื่อประเทศ เช่น "ญี่ปุ่น"
+    "country_id": None,           # รหัสประเทศ เช่น "2"
+    "country_name": None,         # ชื่อประเทศแบบสมบูรณ์ (จาก classifier)
+    "city_hint": None,            # เมือง/จังหวัดที่สนใจ เช่น "โอซาก้า"
+    "inferred_destination": None, # ปลายทางที่คาดเดาจากโฆษณา
+    "duration_days": None,        # จำนวนวัน เช่น 5
     "month": None,
     "budget_per_person": None,
     "pax": None,
-    "last_options": [],
-    "pending_action": None,
-    "last_bot_message": None,
-    "updated_at": None,
-    # Booking flow fields
+    # ── Options & Selection ───────────────────────────────────────────────
+    "last_options": [],           # list of tour dicts ที่เสนอล่าสุด
+    "selected_tour": None,        # full dict ของทัวร์ที่เลือก {name, url, code, price, airline}
+    "selected_tour_name": None,   # shortcut สำหรับ backward compat
+    "selected_tour_url": None,
+    # ── Booking flow ──────────────────────────────────────────────────────
     "lead_stage": None,           # cold/warm/hot/booking/paid/awaiting_docs/complete
     "travel_date": None,          # วันเดินทางที่ลูกค้าเลือก
-    "selected_tour_name": None,   # ชื่อโปรแกรมที่ลูกค้าเลือก
-    "selected_tour_url": None,    # URL โปรแกรมที่เลือก
-    "payment_received": False,    # True เมื่อส่งสลิปมาแล้ว
+    "payment_received": False,
+    # ── Ad Attribution ────────────────────────────────────────────────────
+    "entry_source": None,         # 'messenger','ad_click','referral'
+    "ad_id": None,
+    "ad_title": None,
+    "ad_ref": None,
+    "post_id": None,
+    # ── Meta ──────────────────────────────────────────────────────────────
+    "last_user_message": None,
+    "last_bot_message": None,
+    "pending_action": None,
+    "updated_at": None,
 }
 
 def get_context(psid: str) -> dict:
@@ -394,6 +412,115 @@ def notify_telegram(message: str):
 
 
 # ─── Tour data fetcher ────────────────────────────────────────────────────────
+def capture_ad_attribution(psid: str, msg_event: dict):
+    """ดึงข้อมูล Ad Attribution จาก FB webhook event และบันทึก context + Supabase"""
+    referral = (
+        msg_event.get("referral") or
+        msg_event.get("postback", {}).get("referral") or
+        {}
+    )
+    ads_ctx = referral.get("ads_context_data") or msg_event.get("ads_context_data") or {}
+
+    ad_id        = str(referral.get("ad_id") or ads_ctx.get("ad_id") or "")
+    ad_title     = str(ads_ctx.get("ad_title") or "")
+    adset_id     = str(ads_ctx.get("adset_id") or "")
+    campaign_id  = str(ads_ctx.get("campaign_id") or "")
+    ad_ref       = str(referral.get("ref") or "")
+    post_id      = str(ads_ctx.get("photo_id") or referral.get("item") or "")
+    source       = str(referral.get("source") or "")
+    ref_type     = str(referral.get("type") or "")
+
+    if not any([ad_id, ad_ref, post_id, campaign_id]):
+        return  # ไม่มี ad data — ข้าม
+
+    logger.info(f"🎯 Ad attribution: psid={psid} ad_id={ad_id} ref={ad_ref}")
+
+    # อัพเดท context
+    ctx = get_context(psid)
+    if not ctx.get("ad_id") and ad_id:
+        ctx["ad_id"] = ad_id
+    if not ctx.get("ad_title") and ad_title:
+        ctx["ad_title"] = ad_title
+    if not ctx.get("ad_ref") and ad_ref:
+        ctx["ad_ref"] = ad_ref
+    if not ctx.get("post_id") and post_id:
+        ctx["post_id"] = post_id
+    if not ctx.get("entry_source"):
+        ctx["entry_source"] = "ad_click" if ad_id else "referral"
+
+    # Infer destination จาก ad_title (ถ้ามี keyword ประเทศ)
+    if ad_title and not ctx.get("inferred_destination"):
+        for keyword in ["ญี่ปุ่น","เกาหลี","จีน","เวียดนาม","ยุโรป","ฮ่องกง","สิงคโปร์","ไต้หวัน","ออสเตรเลีย"]:
+            if keyword in ad_title:
+                ctx["inferred_destination"] = keyword
+                break
+    save_context(psid, ctx)
+
+    # บันทึก Supabase
+    save_ad_attribution_supabase(psid, {
+        "ad_id": ad_id, "ad_title": ad_title, "adset_id": adset_id,
+        "campaign_id": campaign_id, "ad_ref": ad_ref, "post_id": post_id,
+        "source": source, "type": ref_type,
+        "raw_referral": referral,
+    })
+
+
+def save_ad_attribution_supabase(psid: str, ad_data: dict):
+    """บันทึก ad attribution ลง Supabase"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    try:
+        import json as _json
+        payload = {"psid": psid}
+        for k in ["ad_id","ad_title","adset_id","campaign_id","ad_ref","post_id","source","type"]:
+            v = ad_data.get(k, "")
+            if v:
+                payload[k] = v
+        raw = ad_data.get("raw_referral")
+        if raw:
+            payload["raw_referral"] = _json.dumps(raw, ensure_ascii=False)
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/ad_attributions",
+            json=payload,
+            headers=_sb_headers(),
+            timeout=10
+        )
+        if resp.ok or resp.status_code == 201:
+            logger.info(f"✅ Ad attribution saved for {psid}")
+        else:
+            logger.warning(f"Ad attribution save: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        logger.error(f"save_ad_attribution_supabase error: {e}")
+
+
+def save_customers_supabase(psid: str, ctx: dict):
+    """Upsert ลูกค้าลง customers table"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    if not ctx.get("customer_name") and not ctx.get("phone"):
+        return  # ไม่มีข้อมูลพอ
+    try:
+        payload = {"psid": psid}
+        if ctx.get("customer_name"):
+            payload["name"] = ctx["customer_name"]
+        if ctx.get("phone"):
+            payload["phone"] = ctx["phone"]
+        if ctx.get("entry_source"):
+            payload["entry_source"] = ctx["entry_source"]
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/customers",
+            json=payload,
+            headers=_sb_headers(prefer_upsert=True),
+            timeout=10
+        )
+        if resp.ok or resp.status_code == 201:
+            logger.info(f"✅ Customer upserted: {psid}")
+        else:
+            logger.warning(f"save_customers: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        logger.error(f"save_customers_supabase error: {e}")
+
+
 def _parse_listing_cards(html_text: str) -> list:
     """Parse tour cards (name + link) from a listing page."""
     soup = BeautifulSoup(html_text, "html.parser")
@@ -865,6 +992,32 @@ def _system_prompt(ctx: dict = None) -> str:
             elif has_name and has_phone:
                 next_step = "→ step ถัดไป: สรุปการจองครบถ้วน แล้วส่งทีมงาน"
 
+        # ── AD CONTEXT section ──────────────────────────────────────────────
+        ad_parts = []
+        if ctx.get("ad_id"):
+            ad_parts.append(f"Ad ID: {ctx['ad_id']}")
+        if ctx.get("ad_title"):
+            ad_parts.append(f"ชื่อโฆษณา: {ctx['ad_title']}")
+        if ctx.get("ad_ref"):
+            ad_parts.append(f"Ref: {ctx['ad_ref']}")
+        if ctx.get("inferred_destination"):
+            ad_parts.append(f"ปลายทางที่โฆษณาชี้: {ctx['inferred_destination']}")
+        if ctx.get("entry_source"):
+            ad_parts.append(f"ที่มา: {ctx['entry_source']}")
+
+        ad_section = ""
+        if ad_parts:
+            ad_block = "\n".join(f"  {p}" for p in ad_parts)
+            inferred = ctx.get("inferred_destination", "")
+            skip_ask = "→ ❌ ห้ามถาม 'อยากไปไหน' — ลูกค้ามาจากโฆษณาที่เกี่ยวกับ " + inferred if inferred else ""
+            ad_section = (
+                "\n══════════════════════════════════\n"
+                "📣 ข้อมูล Ad Attribution (ที่มาลูกค้า)\n"
+                "══════════════════════════════════\n"
+                f"{ad_block}\n"
+                f"{skip_ask}\n"
+            )
+
         if parts:
             ctx_block = "\n".join(f"- {p}" for p in parts)
             rules_block = ("\n" + "\n".join(known_rules)) if known_rules else ""
@@ -877,6 +1030,7 @@ def _system_prompt(ctx: dict = None) -> str:
                 f"{rules_block}"
                 f"{next_block}"
                 "\n\nใช้ข้อมูลนี้ตอบได้เลย ห้ามถามข้อมูลที่ทราบแล้วซ้ำ\n"
+                f"{ad_section}"
             )
 
     return f"""คุณคือ "แอดมิน AI" ของเพจ รวมทัวร์ไฟไหม้
@@ -1169,10 +1323,16 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
         "{\n"
         '  "action": "search" | "detail" | "detail_pdf" | "flash_sale" | "handoff" | "reply" | "continue",\n'
         '  "country_id": "เลขประเทศ หรือ null",\n'
+        '  "country_name": "ชื่อประเทศภาษาไทย หรือ null",\n'
         '  "city": "ชื่อเมือง/จังหวัดที่ลูกค้าถามถึง เช่น โอซาก้า โตเกียว ฮอกไกโด เฉิงตู คุนหมิง หรือ null",\n'
+        '  "month": "เดือนที่ลูกค้าระบุ เช่น มิ.ย. 69 หรือ null",\n'
+        '  "budget_per_person": จำนวนเงินงบต่อคน (integer) หรือ null,\n'
+        '  "pax": จำนวนคน (integer) หรือ null,\n'
         '  "selected_option_index": 1 | 2 | 3 | null,\n'
         '  "uses_previous_option": true | false,\n'
-        '  "lead_stage": "cold" | "warm" | "hot" | "booking"\n'
+        '  "clear_previous_options": true | false,\n'
+        '  "lead_stage": "cold" | "warm" | "hot" | "booking",\n'
+        '  "reason": "เหตุผลสั้นๆ ที่เลือก action นี้"\n'
         "}\n\n"
 
         "=== กฎ action (เรียงตามความสำคัญ) ===\n\n"
@@ -1194,6 +1354,11 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
         "action=flash_sale: ลูกค้าถามทัวร์ไฟไหม้/โปรโมชั่นพิเศษ/ดีลร้อน\n"
         "action=handoff: ลูกค้าพร้อมจอง/สนใจจอง/ขอคุยเซลล์/เช็กที่นั่ง/ขอราคา final/ขอส่วนลด/ยกเลิก\n"
         "action=reply: ทักทาย/ถามทั่วไป/ยังไม่ระบุประเทศ/ยุโรปรวม — ใช้เฉพาะตอนเริ่มบทสนทนาใหม่จริงๆ เท่านั้น\n\n"
+
+        "=== กฎ clear_previous_options ===\n"
+        "clear_previous_options=true เมื่อ: ลูกค้าเปลี่ยนประเทศ/เมืองใหม่ ทำให้ last_options ชุดก่อนใช้ไม่ได้แล้ว\n"
+        "เช่น: 'เปลี่ยนเป็นเกาหลีแทน', 'ขอดูญี่ปุ่นแทน', 'ลองดูจีนดีกว่า'\n"
+        "clear_previous_options=false: ลูกค้ายังสนใจชุดเดิม หรือเป็นคำถามทั่วไป\n\n"
 
         "=== กฎ selected_option_index และ uses_previous_option ===\n"
         "ถ้าลูกค้าพิมพ์ 'ตัวที่ 1/2/3', 'อันนี้', 'ตัวนี้', 'สนใจอันนี้' → uses_previous_option=true, selected_option_index=เลขที่ระบุ (เลขหมายถึงลำดับจากชุดโปรแกรมที่เสนอล่าสุดใน history)\n"
@@ -1237,15 +1402,27 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
             data["country_id"] = str(cid) if cid and str(cid) != "null" else None
             city = data.get("city", "")
             data["city"] = city if city and city != "null" else None
+            cname = data.get("country_name", "")
+            data["country_name"] = cname if cname and cname != "null" else None
+            month = data.get("month", "")
+            data["month"] = month if month and month != "null" else None
+            bgt = data.get("budget_per_person")
+            data["budget_per_person"] = int(bgt) if bgt and str(bgt).isdigit() else None
+            pax = data.get("pax")
+            data["pax"] = int(pax) if pax and str(pax).isdigit() else None
             data["selected_option_index"] = data.get("selected_option_index")
             data["uses_previous_option"] = bool(data.get("uses_previous_option", False))
+            data["clear_previous_options"] = bool(data.get("clear_previous_options", False))
             data["lead_stage"] = data.get("lead_stage", "cold")
+            data["reason"] = data.get("reason", "")
             return data
     except Exception as e:
         logger.error(f"decide_action error: {e}")
 
-    return {"action": "reply", "country_id": None, "selected_option_index": None,
-            "uses_previous_option": False, "lead_stage": "cold"}
+    return {"action": "reply", "country_id": None, "country_name": None, "city": None,
+            "month": None, "budget_per_person": None, "pax": None,
+            "selected_option_index": None, "uses_previous_option": False,
+            "clear_previous_options": False, "lead_stage": "cold", "reason": ""}
 
 
 # ─── AI — Call 2: Generate Response ──────────────────────────────────────────
@@ -1364,10 +1541,38 @@ def process_message(sender_id: str, text: str):
         country_id           = action_data.get("country_id")
         selected_option_idx  = action_data.get("selected_option_index")
         uses_previous        = action_data.get("uses_previous_option", False)
+        clear_prev_options   = action_data.get("clear_previous_options", False)
         lead_stage           = action_data.get("lead_stage", "cold")
-        city_hint            = action_data.get("city")
+        city_hint            = action_data.get("city") or action_data.get("city_hint")
+        classifier_month     = action_data.get("month")
+        classifier_budget    = action_data.get("budget_per_person")
+        classifier_pax       = action_data.get("pax")
+        classifier_country   = action_data.get("country_name")
         logger.info(f"Action: {action}, country_id: {country_id}, city: {city_hint}, lead_stage: {lead_stage}, "
-                    f"selected_idx: {selected_option_idx}, uses_prev: {uses_previous}")
+                    f"selected_idx: {selected_option_idx}, uses_prev: {uses_previous}, clear_prev: {clear_prev_options}")
+
+        # ── Apply classifier fast-fills to context ────────────────────────
+        ctx["last_user_message"] = text[:500]
+        if classifier_month and not ctx.get("month"):
+            ctx["month"] = classifier_month
+        if classifier_budget and not ctx.get("budget_per_person"):
+            ctx["budget_per_person"] = classifier_budget
+        if classifier_pax and not ctx.get("pax"):
+            ctx["pax"] = classifier_pax
+        if classifier_country and not ctx.get("country"):
+            ctx["country"] = classifier_country
+        if country_id and not ctx.get("country_id"):
+            ctx["country_id"] = country_id
+
+        # ── clear_previous_options: ลูกค้าเปลี่ยนประเทศ ──────────────────
+        if clear_prev_options:
+            ctx["last_options"] = []
+            ctx["selected_tour"] = None
+            ctx["selected_tour_name"] = None
+            ctx["selected_tour_url"] = None
+            ctx["city_hint"] = None
+            logger.info(f"🔄 clear_previous_options triggered for {sender_id}")
+        save_context(sender_id, ctx)
 
         tour_data   = ""
         is_handoff  = False
@@ -1414,6 +1619,13 @@ def process_message(sender_id: str, text: str):
                     ctx["last_options"] = tour_meta
                     if city_hint:
                         ctx["city_hint"] = city_hint
+                    # ── Auto-select when only 1 result returned ───────────
+                    if len(tour_meta) == 1:
+                        t0 = tour_meta[0]
+                        ctx["selected_tour"] = t0
+                        ctx["selected_tour_name"] = t0.get("name", "")
+                        ctx["selected_tour_url"]  = t0.get("url", t0.get("link", ""))
+                        logger.info(f"🎯 Auto-selected single tour: {ctx['selected_tour_name']}")
                     save_context(sender_id, ctx)
                     logger.info(f"last_options updated immediately: {len(tour_meta)} tours")
             except Exception as e:
@@ -1477,6 +1689,18 @@ def process_message(sender_id: str, text: str):
         # Save AI reply
         save_to_history(sender_id, "assistant", reply)
 
+        # Track pending_action — what AI just said it will do
+        if action in ("search", "detail", "detail_pdf"):
+            ctx["pending_action"] = f"{action}_{country_id or 'unknown'}"
+        elif action == "handoff":
+            ctx["pending_action"] = "handoff_sent"
+        elif action == "flash_sale":
+            ctx["pending_action"] = "flash_sale_notified"
+        else:
+            ctx["pending_action"] = None
+        ctx["last_bot_message"] = reply[:600]
+        save_context(sender_id, ctx)
+
         send_message(sender_id, reply)
 
         # ── Background: extract context + save lead ──────────────────────
@@ -1486,6 +1710,10 @@ def process_message(sender_id: str, text: str):
                 new_ctx = extract_context_after_response(sender_id, updated_history, reply)
                 save_context(sender_id, new_ctx)
                 logger.info(f"Context updated for {sender_id}: dest={new_ctx.get('destination')}, stage={lead_stage}")
+
+                # Upsert customer record whenever we have name or phone
+                if new_ctx.get("customer_name") or new_ctx.get("phone"):
+                    save_customers_supabase(sender_id, new_ctx)
 
                 # Save to Supabase for hot/booking leads, or any handoff
                 if lead_stage in ("hot", "booking", "paid", "awaiting_docs", "complete") or action == "handoff":
@@ -1744,6 +1972,21 @@ def webhook():
             message      = msg_event.get("message", {})
             text         = message.get("text", "").strip()
 
+            # ── Ad Attribution (referral / postback) ──────────────────────
+            has_referral = (
+                msg_event.get("referral") or
+                msg_event.get("postback", {}).get("referral") or
+                msg_event.get("ads_context_data")
+            )
+            if has_referral:
+                t_attr = threading.Thread(target=capture_ad_attribution, args=(sender_id, msg_event))
+                t_attr.daemon = True
+                t_attr.start()
+
+            # Handle postback text if no regular text
+            if not text and msg_event.get("postback", {}).get("title"):
+                text = msg_event["postback"]["title"]
+
             # Image attachment = potential payment slip
             attachments  = message.get("attachments", [])
             image_list   = [a for a in attachments if a.get("type") == "image"]
@@ -1768,7 +2011,7 @@ def webhook():
 def health():
     return jsonify({
         "status": "ok",
-        "service": "TourFiremai AI Concierge v3",
+        "service": "TourFiremai AI Concierge v5",
         "redis": "connected" if _redis else "in-memory",
         "supabase": "configured" if SUPABASE_URL else "not configured",
     }), 200
