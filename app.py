@@ -432,6 +432,61 @@ def fetch_tour_detail_dates(tour_url: str) -> dict:
 
 
 
+
+
+def fetch_tour_detail_full(tour_url: str) -> str:
+    """ดึงข้อมูลครบจาก HTML detail page — ทิป มัดจำ วีซ่า พักเดี่ยว รวม/ไม่รวม
+    ใช้ก่อน fetch_pdf_info เพราะเร็วกว่าและมักมีข้อมูลหลักครบ
+    """
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
+        resp = requests.get(tour_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # ลบ script/style/nav/footer ทิ้ง
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()
+
+        full_text = soup.get_text(separator="\n")
+        full_text = re.sub(r"\n{3,}", "\n\n", full_text).strip()
+
+        # ดึงเฉพาะส่วนที่มี keyword สำคัญ
+        keywords = [
+            "มัดจำ", "ค่ามัดจำ", "deposit",
+            "ทิป", "tip", "ค่าทิป",
+            "วีซ่า", "visa",
+            "พักเดี่ยว", "single",
+            "รวม", "ไม่รวม", "อัตราค่าบริการ",
+            "เงื่อนไข", "ยกเลิก", "cancel",
+            "เด็ก", "ทารก",
+        ]
+
+        lines = full_text.split("\n")
+        relevant_lines = []
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            if not line_stripped:
+                continue
+            if any(kw.lower() in line_stripped.lower() for kw in keywords):
+                # เก็บ context รอบๆ ด้วย (บรรทัดก่อน+หลัง 2 บรรทัด)
+                start = max(0, i - 2)
+                end = min(len(lines), i + 3)
+                chunk = "\n".join(lines[start:end]).strip()
+                if chunk not in relevant_lines:
+                    relevant_lines.append(chunk)
+
+        if relevant_lines:
+            result = "[ข้อมูลสำคัญจากหน้าโปรแกรม]\n" + "\n---\n".join(relevant_lines[:20])
+            return result[:4000]
+
+        # fallback: คืน text ทั้งหมดถ้าหา keyword ไม่เจอ
+        return "[ข้อมูลหน้าโปรแกรม]\n" + full_text[:3000]
+
+    except Exception as e:
+        logger.error(f"fetch_tour_detail_full error {tour_url}: {e}")
+        return ""
+
 def fetch_tours_from_db(country_id: str, city_hint: str = None,
                         budget_max: int = None) -> list:
     """Query Supabase `tours` table.
@@ -832,8 +887,29 @@ def _system_prompt(ctx: dict = None) -> str:
 
 → ต้อง trigger action=detail_pdf ก่อนตอบ ห้ามตอบว่า "ดูได้ใน PDF" เฉยๆ
 
-ถ้าอ่าน PDF แล้วพบข้อมูล → ตอบจาก PDF โดยตรง กระชับ ระบุว่า "ตามไฟล์โปรแกรมนี้"
-ถ้าอ่าน PDF แล้วไม่พบ → ตอบว่า "ในไฟล์โปรแกรมนี้ยังไม่พบข้อมูลส่วนนี้ชัดเจนค่ะ แอดมิน AI ขอส่งให้ทีมงานเช็กจากเอกสารอัปเดตให้อีกครั้งนะคะ"
+เมื่อมีข้อมูลจาก HTML detail / PDF → ตอบในรูปแบบนี้ทันที (ไม่ต้องรอให้ลูกค้าถามทีละข้อ):
+
+✈️ *[ชื่อโปรแกรม]*
+📌 รหัส: [code] | [จำนวนวัน] | [สายการบิน]
+💰 ราคาเริ่ม: *[ราคา] บาท*
+📅 วันเดินทาง: [รอบที่มี]
+
+💳 ค่าวีซ่า: [รวมในราคา / ต้องทำเอง / ราคา / ไม่พบข้อมูล]
+🤝 ค่าทิป: [X บาท/คน/ทริป / ไม่พบในเอกสาร]
+🛏 พักเดี่ยวเพิ่ม: [X บาท / ไม่พบในเอกสาร]
+💵 ค่ามัดจำ: [X บาท / ไม่พบในเอกสาร]
+
+🔗 [ลิงก์โปรแกรม]
+
+กฎสำคัญ:
+- ต้องแสดงทุก field ข้างบน แม้บางตัวจะ "ไม่พบในเอกสาร"
+- ห้ามเดาตัวเลขถ้าไม่พบใน data
+- ถ้าถามแค่ข้อเดียวเช่น "ทิปเท่าไหร่" → ตอบตรงๆ แล้วแสดง detail ครบตาม format นี้เลย
+- ห้ามถามกลับว่า "อยากทราบส่วนไหนเป็นพิเศษ"
+- หลังแสดง detail → ถามเพียง 1 คำถาม: "จะไปกี่ท่านคะ?" หรือ "สนใจเช็กที่นั่งได้เลยนะคะ 😊"
+
+ถ้า data ว่างเปล่า (อ่านไม่ได้เลย) → ตอบว่า:
+"ขอโทษนะคะ ระบบอ่านเอกสารโปรแกรมนี้ไม่ได้ในขณะนี้ ขอส่งให้ทีมงานเช็กและแจ้งรายละเอียดกลับให้ค่ะ ขอชื่อและเบอร์ติดต่อได้เลยนะคะ"
 
 ══════════════════════════════════
 เมื่อลูกค้าขอดูโปรแกรมบนเว็บ
@@ -906,8 +982,9 @@ def _system_prompt(ctx: dict = None) -> str:
 ห้ามถามลูกค้าว่า "อยากทราบส่วนไหนเป็นพิเศษ" — ส่งข้อมูลหลักมาเลย
 หลังแสดง detail → ถามเพียง 1 คำถาม เช่น "สนใจเช็กที่นั่งได้เลยนะคะ ขอชื่อ+เบอร์ติดต่อด้วยค่ะ 😊"
 
-เมื่อมีข้อมูลจาก PDF โปรแกรม:
-- ตอบคำถามที่ลูกค้าถามโดยตรงจากข้อมูลใน PDF เท่านั้น
+เมื่อมีข้อมูลจาก HTML detail / PDF โปรแกรม:
+- ตอบคำถามที่ลูกค้าถามโดยตรงก่อน แล้วแสดง detail ครบ (ทิป วีซ่า มัดจำ พักเดี่ยว) ทันทีเลย
+- ไม่ต้องรอให้ลูกค้าถามทีละข้อ — ให้ข้อมูลครบในครั้งเดียว
 
 กฎวันเดินทาง:
 - ≤ 3 รอบ → แสดงทุกรอบ
@@ -1166,11 +1243,21 @@ def process_message(sender_id: str, text: str):
         if action == "detail_pdf":
             program_url = extract_program_url_from_history(history)
             if program_url:
-                logger.info(f"Fetching PDF for: {program_url}")
+                logger.info(f"Fetching full detail for: {program_url}")
                 try:
-                    tour_data = fetch_pdf_info(program_url)
+                    # Step 1: HTML detail page (เร็ว มีทิป/มัดจำ/วีซ่าในเนื้อหา)
+                    html_detail = fetch_tour_detail_full(program_url)
+                    # Step 2: PDF (itinerary, เงื่อนไขละเอียด)
+                    pdf_detail = fetch_pdf_info(program_url)
+                    # รวมกัน — HTML ก่อน PDF
+                    parts = []
+                    if html_detail:
+                        parts.append(html_detail)
+                    if pdf_detail:
+                        parts.append(pdf_detail)
+                    tour_data = "\n\n".join(parts) if parts else ""
                 except Exception as e:
-                    logger.error(f"fetch_pdf_info error: {e}")
+                    logger.error(f"fetch detail error: {e}")
                     tour_data = ""
             else:
                 action = "reply"
