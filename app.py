@@ -404,10 +404,10 @@ def send_message(recipient_id: str, text: str):
 def notify_line(message: str):
     """ส่งแจ้งเตือนผ่าน LINE Messaging API (push message)"""
     if not LINE_CHANNEL_TOKEN or not LINE_ADMIN_ID:
-        logger.warning("LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set — skip notify")
+        logger.warning("⚠️ LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set — skip notify")
         return
     try:
-        requests.post(
+        resp = requests.post(
             "https://api.line.me/v2/bot/message/push",
             headers={
                 "Authorization": f"Bearer {LINE_CHANNEL_TOKEN}",
@@ -419,7 +419,10 @@ def notify_line(message: str):
             },
             timeout=10,
         )
-        logger.info("📨 LINE push sent")
+        if resp.status_code == 200:
+            logger.info("📨 LINE push sent ✅")
+        else:
+            logger.error(f"❌ LINE push failed {resp.status_code}: {resp.text[:300]}")
     except Exception as e:
         logger.error(f"notify_line error: {e}")
 
@@ -2077,6 +2080,30 @@ def webhook():
 
     return jsonify({"status": "ok"}), 200
 
+
+
+@app.route("/test-line", methods=["GET"])
+def test_line():
+    """ทดสอบ LINE Messaging API — เปิด URL นี้จาก browser"""
+    token = LINE_CHANNEL_TOKEN
+    admin_id = LINE_ADMIN_ID
+    if not token or not admin_id:
+        return jsonify({"error": "LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set in env vars"}), 400
+    try:
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"to": admin_id, "messages": [{"type": "text", "text": "🔧 ทดสอบระบบแจ้งเตือน LINE — TourFireMai Bot ✅"}]},
+            timeout=10,
+        )
+        return jsonify({
+            "status": resp.status_code,
+            "line_response": resp.text[:500],
+            "token_prefix": token[:20] + "...",
+            "admin_id": admin_id,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/health", methods=["GET"])
 def health():
