@@ -3203,18 +3203,33 @@ def webhook():
 
 @app.route("/test-line", methods=["GET"])
 def test_line():
-    """ทดสอบ LINE Messaging API"""
-    if not LINE_CHANNEL_TOKEN or not LINE_ADMIN_ID:
-        return jsonify({"error": "LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set"}), 400
+    """ทดสอบ LINE Messaging API — ส่งไป LINE_ADMIN_ID ถ้ามี ไม่งั้นใช้ LINE_GROUP_ID"""
+    if not LINE_CHANNEL_TOKEN:
+        return jsonify({"error": "LINE_CHANNEL_TOKEN not set"}), 400
+
+    # เลือก target: admin ก่อน, fallback group
+    if LINE_ADMIN_ID:
+        target_id   = LINE_ADMIN_ID
+        target_type = "admin"
+    elif LINE_GROUP_ID:
+        target_id   = LINE_GROUP_ID
+        target_type = "group"
+    else:
+        return jsonify({"error": "LINE_ADMIN_ID and LINE_GROUP_ID both not set"}), 400
+
     try:
         resp = requests.post(
             "https://api.line.me/v2/bot/message/push",
             headers={"Authorization": f"Bearer {LINE_CHANNEL_TOKEN}", "Content-Type": "application/json"},
-            json={"to": LINE_ADMIN_ID, "messages": [{"type": "text", "text": "🔧 ทดสอบระบบแจ้งเตือน LINE — TourFireMai Bot ✅"}]},
+            json={"to": target_id, "messages": [{"type": "text", "text": "🔧 ทดสอบระบบแจ้งเตือน LINE — TourFireMai Bot ✅"}]},
             timeout=10,
         )
-        return jsonify({"status": resp.status_code, "line_response": resp.text[:300],
-                        "token_prefix": LINE_CHANNEL_TOKEN[:20] + "...", "admin_id": LINE_ADMIN_ID})
+        return jsonify({
+            "status":       resp.status_code,
+            "target":       target_type,
+            "line_response": resp.text[:300],
+            "token_prefix": LINE_CHANNEL_TOKEN[:20] + "...",
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
