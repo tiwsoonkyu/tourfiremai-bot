@@ -2836,6 +2836,71 @@ def process_message(sender_id: str, text: str):
                 logger.info("[SOONEST] no country known — asking country")
         departure_urgency = action_data.get("departure_urgency") or ctx.get("departure_urgency")
 
+        # ── Fix 1: Known-field gate — ห้ามถามซ้ำถ้าเรารู้คำตอบแล้ว ──────────
+        if missing_field_to_ask:
+            _ctx_has = {
+                "country":           bool(country_id or ctx.get("country_id")),
+                "city":              bool(city_hint or ctx.get("city_hint")),
+                "budget_per_person": bool(ctx.get("budget_per_person")),
+                "month":             bool(ctx.get("month") or departure_urgency == "soonest"),
+                "pax":               bool(ctx.get("pax")),
+            }
+            if _ctx_has.get(missing_field_to_ask):
+                logger.info(f"[KNOWN_FIELD] suppressing ask for '{missing_field_to_ask}' — already in ctx")
+                missing_field_to_ask = None
+                if not should_search and (country_id or ctx.get("country_id")):
+                    should_search = True
+                    action = "search"
+                    if not country_id:
+                        country_id = str(ctx.get("country_id", ""))
+
+        # ── Fix 2: City trigger — city รู้แล้ว + country รู้แล้ว → search ────
+        if city_hint and not missing_field_to_ask:
+            _city_country = country_id or ctx.get("country_id")
+            if _city_country:
+                if not should_search:
+                    should_search = True
+                    logger.info(f"[CITY_TRIGGER] city={city_hint} + country={_city_country} → force search")
+                if action == "reply":
+                    action = "search"
+                if not country_id:
+                    country_id = str(_city_country)
+
+        # ── Fix 3: Tour Code Selection Lock — ลูกค้าพิมพ์รหัสทัวร์ → lock ───
+        _last_opts_fix3 = ctx.get("last_options") or []
+        if isinstance(_last_opts_fix3, str):
+            try:
+                _last_opts_fix3 = json.loads(_last_opts_fix3)
+            except Exception:
+                _last_opts_fix3 = []
+        if _last_opts_fix3 and not ctx.get("selected_tour"):
+            _text_up = text.upper()
+            _locked_tour = None
+            for _t3 in _last_opts_fix3:
+                _rc3 = (_t3.get("tour_code_real") or "").strip().upper()
+                _wc3 = (_t3.get("web_code") or _t3.get("tour_code") or "").strip().upper()
+                if _rc3 and _rc3 in _text_up:
+                    _locked_tour = _t3
+                    logger.info(f"[CODE_LOCK] real_code match: {_rc3}")
+                    break
+                if _wc3 and _wc3 in _text_up:
+                    _locked_tour = _t3
+                    logger.info(f"[CODE_LOCK] web_code match: {_wc3}")
+                    break
+            if _locked_tour:
+                ctx["selected_tour"]          = _locked_tour
+                ctx["selected_tour_name"]     = _locked_tour.get("name", "")
+                ctx["selected_tour_url"]      = _locked_tour.get("url", _locked_tour.get("link", ""))
+                ctx["selected_tour_code"]     = _locked_tour.get("tour_code_real", "") or ""
+                ctx["selected_tour_web_code"] = _locked_tour.get("web_code", "") or _locked_tour.get("tour_code", "") or ""
+                ctx["selected_tour_airline"]  = _locked_tour.get("airline", "") or ""
+                lead_stage = "hot"
+                ctx["_lead_stage"] = "hot"
+                action = "detail_pdf"
+                should_search = False
+                missing_field_to_ask = None
+                logger.info(f"[CODE_LOCK] locked → {ctx['selected_tour_name']} → action=detail_pdf")
+
         # ── Apply classifier fast-fills to context ────────────────────────
         ctx["last_user_message"] = text[:500]
         if classifier_month and not ctx.get("month"):
@@ -3044,6 +3109,35 @@ def process_message(sender_id: str, text: str):
                     tour_data = ""
             else:
                 action = "reply"
+
+        # ── Fix 4: Fee-only question + ไม่มีข้อมูลค่าธรรมเนียม → ตอบสั้น ──────
+        # ถ้าลูกค้าถามแค่ค่าทิป/มัดจำ/วีซ่า/พักเดี่ยว และไม่มีข้อมูลจาก DB → handoff
+        _FEE_KEYWORDS = {"ค่าทิป", "ทิปไกด์", "ทิปคนขับ", "มัดจำ", "ค่ามัดจำ",
+                         "วีซ่า", "ค่าวีซ่า", "พักเดี่ยว", "ค่าพักเดี่ยว"}
+        _is_fee_question = any(k in text for k in _FEE_KEYWORDS)
+        if _is_fee_question and action == "detail_pdf" and not is_handoff:
+            # ตรวจว่ามี fee ใน last_options หรือ selected_tour หรือ tour_data ไหม
+            _sel = ctx.get("selected_tour") or {}
+            _has_fee = (
+                bool(_sel.get("tip_fee"))
+                or bool(_sel.get("visa_fee"))
+                or bool(_sel.get("single_supplement"))
+                or ("ทิป" in tour_data)
+                or ("มัดจำ" in tour_data)
+                or ("วีซ่า" in tour_data)
+            )
+            if not _has_fee and not tour_data:
+                # ไม่มีข้อมูล → ตอบสั้นแล้ว handoff
+                _fee_short = (
+                    "ขออภัยค่ะ ข้อมูลค่าทิป/มัดจำ/วีซ่า ของโปรแกรมนี้ยังไม่มีในระบบ 🙏\n"
+                    "ทีมแอดมินจะติดต่อกลับเพื่อแจ้งรายละเอียดภายใน 15 นาทีนะคะ ☺️"
+                )
+                send_message(sender_id, _fee_short)
+                is_handoff = True
+                save_history(sender_id, "user", text)
+                save_history(sender_id, "assistant", _fee_short)
+                log_chat_event(sender_id, "fee_handoff", text, "detail_pdf", lead_stage, ctx)
+                return jsonify({"status": "ok"}), 200
 
         # ── Departure month filter ────────────────────────────────────────────
         if action == "departure_filter":
