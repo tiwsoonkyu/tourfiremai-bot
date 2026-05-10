@@ -31,7 +31,8 @@ VERIFY_TOKEN      = os.environ.get("VERIFY_TOKEN", "tourfiremai2024")
 FB_PAGE_TOKEN     = os.environ.get("FB_PAGE_TOKEN", "")
 ANTHROPIC_KEY     = os.environ.get("ANTHROPIC_API_KEY", "")
 LINE_CHANNEL_TOKEN = os.environ.get("LINE_CHANNEL_TOKEN", "")   # LINE Messaging API — Channel Access Token
-LINE_ADMIN_ID      = os.environ.get("LINE_ADMIN_ID", "")          # LINE User ID หรือ Group ID ของแอดมิน
+LINE_ADMIN_ID      = os.environ.get("LINE_ADMIN_ID", "")          # LINE User ID ของแอดมิน (personal)
+LINE_GROUP_ID      = os.environ.get("LINE_GROUP_ID", "")          # LINE Group ID สำหรับแจ้งเตือนทีม
 SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY      = os.environ.get("SUPABASE_KEY", "")
 DASHBOARD_PASS    = os.environ.get("DASHBOARD_PASSWORD", "tourfiremai2024")
@@ -481,29 +482,45 @@ def send_message(recipient_id: str, text: str):
             logger.error(f"❌ FB send exception: {e}")
 
 def notify_line(message: str):
-    """ส่งแจ้งเตือนผ่าน LINE Messaging API (push message)"""
-    if not LINE_CHANNEL_TOKEN or not LINE_ADMIN_ID:
-        logger.warning("LINE_CHANNEL_TOKEN / LINE_ADMIN_ID not set — skip notify")
+    """ส่งแจ้งเตือนผ่าน LINE Messaging API (push message)
+    - ส่งหา LINE_ADMIN_ID (แอดมิน personal) เสมอถ้าตั้งไว้
+    - ส่งหา LINE_GROUP_ID (กลุ่มทีม) ถ้าตั้งไว้
+    """
+    if not LINE_CHANNEL_TOKEN:
+        logger.warning("LINE_CHANNEL_TOKEN not set — skip notify")
         return
-    try:
-        resp = requests.post(
-            "https://api.line.me/v2/bot/message/push",
-            headers={
-                "Authorization": f"Bearer {LINE_CHANNEL_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "to": LINE_ADMIN_ID,
-                "messages": [{"type": "text", "text": message}],
-            },
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            logger.info("📨 LINE push sent ✅")
-        else:
-            logger.error(f"❌ LINE push failed {resp.status_code}: {resp.text[:300]}")
-    except Exception as e:
-        logger.error(f"notify_line error: {e}")
+
+    targets = []
+    if LINE_ADMIN_ID:
+        targets.append(LINE_ADMIN_ID)
+    if LINE_GROUP_ID and LINE_GROUP_ID not in targets:
+        targets.append(LINE_GROUP_ID)
+
+    if not targets:
+        logger.warning("No LINE target (LINE_ADMIN_ID / LINE_GROUP_ID) — skip notify")
+        return
+
+    for target in targets:
+        try:
+            resp = requests.post(
+                "https://api.line.me/v2/bot/message/push",
+                headers={
+                    "Authorization": f"Bearer {LINE_CHANNEL_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "to": target,
+                    "messages": [{"type": "text", "text": message}],
+                },
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                label = "group" if target == LINE_GROUP_ID else "admin"
+                logger.info(f"📨 LINE push sent → {label} ✅")
+            else:
+                logger.error(f"❌ LINE push failed {resp.status_code}: {resp.text[:300]}")
+        except Exception as e:
+            logger.error(f"notify_line error ({target[:12]}): {e}")
 
 
 # ─── Tour data fetcher ────────────────────────────────────────────────────────
@@ -2625,6 +2642,59 @@ def test_line():
                         "token_prefix": LINE_CHANNEL_TOKEN[:20] + "...", "admin_id": LINE_ADMIN_ID})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route("/line-webhook", methods=["GET", "POST"])
+def line_webhook():
+    """LINE Messaging API Webhook — รับ events จาก LINE group"""
+    if request.method == "GET":
+        return jsonify({"status": "LINE webhook ready"}), 200
+
+    try:
+        body = request.get_json(force=True) or {}
+        events = body.get("events", [])
+
+        for event in events:
+            source = event.get("source", {})
+            source_type = source.get("type", "")   # user | group | room
+            group_id    = source.get("groupId", "")
+            user_id     = source.get("userId", "")
+            event_type  = event.get("type", "")
+
+            # Log Group ID ทุกครั้งที่มี event จากกลุ่ม
+            if group_id:
+                logger.info(f"🔑 LINE GROUP ID: {group_id} (type={source_type}, event={event_type})")
+
+            # ถ้าเป็น message event — log เพิ่มเติม
+            if event_type == "message":
+                msg_text = event.get("message", {}).get("text", "")
+                logger.info(f"📨 LINE group message from {user_id[:10]}: {msg_text[:50]}")
+
+                # ถ้าพิมพ์ /groupid → ตอบกลับ Group ID ใน group
+                if msg_text.strip() == "/groupid" and LINE_CHANNEL_TOKEN and group_id:
+                    reply_token = event.get("replyToken", "")
+                    if reply_token:
+                        requests.post(
+                            "https://api.line.me/v2/bot/message/reply",
+                            headers={
+                                "Authorization": f"Bearer {LINE_CHANNEL_TOKEN}",
+                                "Content-Type": "application/json",
+                            },
+                            json={
+                                "replyToken": reply_token,
+                                "messages": [{
+                                    "type": "text",
+                                    "text": f"🔑 Group ID ของกลุ่มนี้:\n{group_id}\n\nคัดลอกไปใส่ใน Railway env:\nLINE_GROUP_ID={group_id}"
+                                }]
+                            },
+                            timeout=10,
+                        )
+
+        return jsonify({"status": "ok"}), 200
+
+    except Exception as e:
+        logger.error(f"line_webhook error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/health", methods=["GET"])
 def health():
