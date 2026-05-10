@@ -1,9 +1,9 @@
 -- ─────────────────────────────────────────────────────────────────────────────
--- Migration: แยก Faimai / Normal Tours
+-- Migration v2: Faimai Full Features
 -- รัน 1 ครั้งใน Supabase SQL Editor
 -- ─────────────────────────────────────────────────────────────────────────────
 
--- 1. เพิ่ม columns ใหม่ในตาราง tours
+-- 1. Source / faimai columns (รอบแรก)
 ALTER TABLE tours
   ADD COLUMN IF NOT EXISTS source_type   TEXT    DEFAULT 'normal',
   ADD COLUMN IF NOT EXISTS is_faimai     BOOLEAN DEFAULT false,
@@ -11,15 +11,20 @@ ALTER TABLE tours
   ADD COLUMN IF NOT EXISTS discount_text TEXT,
   ADD COLUMN IF NOT EXISTS badge_text    TEXT;
 
--- 2. Index เพื่อให้ query เร็ว (is_faimai=true / source_type)
-CREATE INDEX IF NOT EXISTS tours_source_type_idx ON tours(source_type);
-CREATE INDEX IF NOT EXISTS tours_is_faimai_idx   ON tours(is_faimai);
+-- 2. Stale-data columns
+ALTER TABLE tours
+  ADD COLUMN IF NOT EXISTS is_active     BOOLEAN      DEFAULT true,
+  ADD COLUMN IF NOT EXISTS last_seen_at  TIMESTAMPTZ;
 
--- 3. ตั้ง default ให้ rows เดิมทั้งหมดเป็น normal
-UPDATE tours
-SET source_type = 'normal',
-    is_faimai   = false
-WHERE source_type IS NULL OR is_faimai IS NULL;
+-- 3. Discount / pricing columns
+ALTER TABLE tours
+  ADD COLUMN IF NOT EXISTS original_price    INT,
+  ADD COLUMN IF NOT EXISTS promo_price       INT,
+  ADD COLUMN IF NOT EXISTS discount_amount   INT,
+  ADD COLUMN IF NOT EXISTS discount_percent  NUMERIC(5,1),
+  ADD COLUMN IF NOT EXISTS promo_badge       TEXT;
 
--- 4. (Optional) ดู rows ที่มีอยู่ให้แน่ใจ
--- SELECT source_type, is_faimai, COUNT(*) FROM tours GROUP BY 1,2;
+-- 4. Fee detail columns
+ALTER TABLE tours
+  ADD COLUMN IF NOT EXISTS tip_fee                INT,
+  ADD COLUMN IF NOT EXISTS visa_fee    
