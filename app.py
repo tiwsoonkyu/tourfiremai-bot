@@ -770,6 +770,208 @@ def fetch_tour_detail_full(tour_url: str) -> str:
         logger.error(f"fetch_tour_detail_full error {tour_url}: {e}")
         return ""
 
+
+
+# Thai month abbreviation map
+_TH_MONTH_MAP = {
+    "ม.ค": "ม.ค.", "ก.พ": "ก.พ.", "มี.ค": "มี.ค.", "เม.ย": "เม.ย.",
+    "พ.ค": "พ.ค.", "มิ.ย": "มิ.ย.", "ก.ค": "ก.ค.", "ส.ค": "ส.ค.",
+    "ก.ย": "ก.ย.", "ต.ค": "ต.ค.", "พ.ย": "พ.ย.", "ธ.ค": "ธ.ค.",
+}
+_TH_MONTH_ORDER = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                   "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+_TH_MONTH_WORDS = {
+    "มกราคม": "ม.ค.", "กุมภาพันธ์": "ก.พ.", "มีนาคม": "มี.ค.",
+    "เมษายน": "เม.ย.", "พฤษภาคม": "พ.ค.", "มิถุนายน": "มิ.ย.",
+    "กรกฎาคม": "ก.ค.", "สิงหาคม": "ส.ค.", "กันยายน": "ก.ย.",
+    "ตุลาคม": "ต.ค.", "พฤศจิกายน": "พ.ย.", "ธันวาคม": "ธ.ค.",
+    "มกรา": "ม.ค.", "กุมภา": "ก.พ.", "มีนา": "มี.ค.",
+    "เมษา": "เม.ย.", "พฤษภา": "พ.ค.", "มิถุนา": "มิ.ย.",
+    "กรกฎา": "ก.ค.", "สิงหา": "ส.ค.", "กันยา": "ก.ย.",
+    "ตุลา": "ต.ค.", "พฤศจิกา": "พ.ย.", "ธันวา": "ธ.ค.",
+    "เดือน 1": "ม.ค.", "เดือน 2": "ก.พ.", "เดือน 3": "มี.ค.",
+    "เดือน 4": "เม.ย.", "เดือน 5": "พ.ค.", "เดือน 6": "มิ.ย.",
+    "เดือน 7": "ก.ค.", "เดือน 8": "ส.ค.", "เดือน 9": "ก.ย.",
+    "เดือน 10": "ต.ค.", "เดือน 11": "พ.ย.", "เดือน 12": "ธ.ค.",
+}
+
+def _extract_month_from_date(date_str: str) -> str:
+    """คืน abbreviated month เช่น 'ก.ค.' จาก '2-6 ก.ค. 69'"""
+    for abbr in _TH_MONTH_MAP:
+        if abbr in date_str:
+            return _TH_MONTH_MAP[abbr]
+    return ""
+
+def detect_departure_month_from_text(text: str) -> str | None:
+    """Rule-based — ตรวจว่า user พิมพ์เดือนไหน คืน abbreviated month เช่น 'ก.ค.'"""
+    t = text.strip()
+    # Full name / partial Thai words
+    for word, abbr in _TH_MONTH_WORDS.items():
+        if word in t:
+            return abbr
+    # Abbreviated form already
+    for abbr in _TH_MONTH_ORDER:
+        if abbr.rstrip(".") in t or abbr in t:
+            return abbr
+    # Digit month "7", "07"
+    m = re.search(r"เดือน\s*(\d{1,2})", t)
+    if m:
+        idx = int(m.group(1))
+        if 1 <= idx <= 12:
+            return _TH_MONTH_ORDER[idx - 1]
+    # Just a digit 1-12 on its own
+    m2 = re.fullmatch(r"\s*(\d{1,2})\s*", t)
+    if m2:
+        idx = int(m2.group(1))
+        if 1 <= idx <= 12:
+            return _TH_MONTH_ORDER[idx - 1]
+    return None
+
+
+def fetch_departure_structured(tour_url: str) -> dict:
+    """Parse departure table from detail page into structured monthly groups.
+
+    Returns:
+        {
+          "rows": [{"date": "2-6 ก.ค. 69", "adult": 19999, "child_no_bed": 17999, "raw": "..."}, ...],
+          "by_month": {"ก.ค.": [...], "ส.ค.": [...]},
+          "month_order": ["ก.ค.", "ส.ค."],
+          "fee_summary": "ทิปไกด์ 2,000 บาท | วีซ่า: รวม",
+        }
+    """
+    result = {"rows": [], "by_month": {}, "month_order": [], "fee_summary": ""}
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}
+        resp = requests.get(tour_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        text = resp.text
+
+        # ── Extract fee info ──────────────────────────────────────────────
+        fee_parts = []
+        tip_m = re.search(r"(?:ทิป|tip)[^0-9]{0,20}([\d,]+)\s*(?:บาท|baht)?", text, re.IGNORECASE)
+        if tip_m:
+            fee_parts.append(f"ทิปไกด์ {tip_m.group(1)} บาท/ท่าน")
+        visa_m = re.search(r"(?:วีซ่า|visa)[^:]{0,30}:?\s*([^\n<]{1,40})", text, re.IGNORECASE)
+        if visa_m:
+            v = visa_m.group(1).strip()[:40]
+            fee_parts.append(f"วีซ่า: {v}")
+        single_m = re.search(r"(?:พักเดี่ยว|single)[^0-9]{0,20}([\d,]+)", text, re.IGNORECASE)
+        if single_m:
+            fee_parts.append(f"พักเดี่ยวเพิ่ม {single_m.group(1)} บาท")
+        deposit_m = re.search(r"(?:มัดจำ|deposit)[^0-9]{0,20}([\d,]+)", text, re.IGNORECASE)
+        if deposit_m:
+            fee_parts.append(f"มัดจำ {deposit_m.group(1)} บาท")
+        result["fee_summary"] = " | ".join(fee_parts) if fee_parts else ""
+
+        # ── Parse departure rows from table ───────────────────────────────
+        DATE_PAT = re.compile(
+            r"(\d{1,2}[-–]\d{1,2}\s*(?:ม\.ค|ก\.พ|มี\.ค|เม\.ย|พ\.ค|มิ\.ย|ก\.ค|ส\.ค|ก\.ย|ต\.ค|พ\.ย|ธ\.ค)\.?(?:\s*[-–]\s*\d{1,2}\s*(?:ม\.ค|ก\.พ|มี\.ค|เม\.ย|พ\.ค|มิ\.ย|ก\.ค|ส\.ค|ก\.ย|ต\.ค|พ\.ย|ธ\.ค)\.?)?(?:\s*\d{2,4})?)"
+        )
+        PRICE_PAT = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{4,6})\s*(?:บาท|฿)?")
+
+        rows = []
+        # Try table rows first
+        for tr in soup.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+            row_text = " | ".join(cells)
+            date_m = DATE_PAT.search(row_text)
+            if not date_m:
+                continue
+            date_str = date_m.group(1).strip()
+            prices = [int(p.replace(",", "")) for p in PRICE_PAT.findall(row_text)
+                      if 3000 <= int(p.replace(",", "")) <= 200000]
+            if not prices:
+                continue
+            row = {
+                "date": date_str,
+                "adult": prices[0] if prices else None,
+                "child_no_bed": prices[1] if len(prices) > 1 else None,
+                "raw": row_text[:120],
+            }
+            rows.append(row)
+
+        # Fallback: line-by-line scan if table parsing got nothing
+        if not rows:
+            for line in text.split("\n"):
+                date_m = DATE_PAT.search(line)
+                if not date_m:
+                    continue
+                prices = [int(p.replace(",", "")) for p in PRICE_PAT.findall(line)
+                          if 3000 <= int(p.replace(",", "")) <= 200000]
+                if not prices:
+                    continue
+                rows.append({
+                    "date": date_m.group(1).strip(),
+                    "adult": prices[0],
+                    "child_no_bed": prices[1] if len(prices) > 1 else None,
+                    "raw": line.strip()[:120],
+                })
+
+        # De-duplicate by date
+        seen_dates = set()
+        unique_rows = []
+        for r in rows:
+            if r["date"] not in seen_dates:
+                seen_dates.add(r["date"])
+                unique_rows.append(r)
+        result["rows"] = unique_rows
+
+        # Group by month (order by _TH_MONTH_ORDER)
+        by_month: dict = {}
+        for r in unique_rows:
+            mo = _extract_month_from_date(r["date"])
+            if mo:
+                by_month.setdefault(mo, []).append(r)
+        # Sort months in calendar order
+        sorted_months = [m for m in _TH_MONTH_ORDER if m in by_month]
+        result["by_month"] = by_month
+        result["month_order"] = sorted_months
+
+    except Exception as e:
+        logger.debug(f"fetch_departure_structured error {tour_url}: {e}")
+    return result
+
+
+def format_departure_for_chat(structured: dict, max_rows: int = 5) -> str:
+    """สร้าง tour_data string จาก structured departure — ถ้า rows > max_rows สรุปเป็นเดือน"""
+    rows = structured.get("rows", [])
+    by_month = structured.get("by_month", {})
+    month_order = structured.get("month_order", [])
+    fee = structured.get("fee_summary", "")
+
+    parts = []
+    if fee:
+        parts.append(f"[ค่าใช้จ่ายสำคัญ]\n{fee}")
+
+    if len(rows) == 0:
+        parts.append("[วันเดินทาง] ไม่พบตารางวันเดินทางในหน้านี้ — กรุณาดูที่ลิงก์โปรแกรม")
+    elif len(rows) <= max_rows:
+        lines = ["[รอบเดินทางทั้งหมด]"]
+        for r in rows:
+            line = f"- {r['date']}"
+            if r.get("adult"):
+                line += f" ผู้ใหญ่ {r['adult']:,}"
+            if r.get("child_no_bed"):
+                line += f" / เด็กไม่มีเตียง {r['child_no_bed']:,}"
+            lines.append(line)
+        parts.append("\n".join(lines))
+    else:
+        # Summarize by month
+        lines = ["[รอบเดินทาง — สรุปตามเดือน]"]
+        for mo in month_order:
+            month_rows = by_month[mo]
+            date_strs = [r["date"].split()[0] + " " + mo for r in month_rows]
+            # Try to show date ranges concisely
+            date_display = ", ".join(d.split()[0] for d in [r["date"] for r in month_rows][:6])
+            lines.append(f"- {mo}: {date_display}")
+        parts.append("\n".join(lines))
+        parts.append(f"[INSTRUCTION_FOR_BOT] มีทั้งหมด {len(rows)} รอบ ใน {len(month_order)} เดือน "
+                     f"({', '.join(month_order)}) ให้ถามลูกค้าว่าสนใจเดือนไหน "
+                     f"ห้ามยกตารางทั้งหมด ให้สรุปเป็นเดือนแล้วถามทีละ 1 คำถาม")
+
+    return "\n\n".join(parts)
+
 def _fetch_tour_code_real_quick(url: str) -> str:
     """On-demand fetch of tour_code_real from detail page — called when DB has null."""
     if not url:
@@ -964,6 +1166,7 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                         line += f"\n   🔑 รหัสเว็บ: {web_code_str}"
                 elif web_code_str:
                     line += f"\n   🔑 รหัสเว็บ: {web_code_str}"
+                    line += f"\n   🏷 รหัสทัวร์: (ตรวจสอบหน้าโปรแกรม)"
                 # Faimai: show discount info
                 if t.get("is_faimai"):
                     orig = t.get("original_price")
@@ -1179,6 +1382,7 @@ def _system_prompt(ctx: dict = None) -> str:
 
     # Inject structured context memory if available
     ctx_section = ""
+    departure_ctx_section = ""
     if ctx:
         parts = []
         if ctx.get("customer_name"):
@@ -1312,10 +1516,47 @@ def _system_prompt(ctx: dict = None) -> str:
                 f"{ad_section}"
             )
 
+        # ── PATCH 6: DEPARTURE CONTEXT ─────────────────────────────────────────
+        departure_ctx_section = ""
+        pending = ctx.get("pending_action", "")
+        if pending in ("wait_departure_month", "wait_departure_date"):
+            avail_months = ctx.get("available_departure_months") or []
+            selected_month = ctx.get("last_selected_departure_month", "")
+            tour_name = ctx.get("selected_tour_name", "โปรแกรมที่เลือก")
+
+            if pending == "wait_departure_month" and avail_months:
+                months_str = " / ".join(avail_months)
+                departure_ctx_section = (
+                    "\n══════════════════════════════════\n"
+                    "📅 สถานะ: รอลูกค้าเลือกเดือนเดินทาง\n"
+                    "══════════════════════════════════\n"
+                    f"โปรแกรม: {tour_name}\n"
+                    f"เดือนที่มีรอบเดินทาง: {months_str}\n"
+                    "\n⚠️ กฎสำคัญ (ห้ามละเมิด):\n"
+                    "❌ ห้ามถามประเทศหรือโปรแกรมซ้ำ — ลูกค้าเลือกโปรแกรมแล้ว\n"
+                    "❌ ห้ามแสดงตารางวันเดินทางทั้งหมด — รอให้ลูกค้าเลือกเดือนก่อน\n"
+                    "❌ ห้ามถามมากกว่า 1 คำถาม\n"
+                    "✅ ถามเพียง: ลูกค้าสะดวกเดือนไหน?\n"
+                    f"✅ ตัวอย่าง: 'มีรอบเดินทาง {months_str} นะคะ สะดวกเดือนไหนคะ? 😊'\n"
+                )
+            elif pending == "wait_departure_date":
+                departure_ctx_section = (
+                    "\n══════════════════════════════════\n"
+                    f"📅 สถานะ: รอลูกค้าเลือกวันเดินทาง"
+                    + (f" (เดือน {selected_month})" if selected_month else "") + "\n"
+                    "══════════════════════════════════\n"
+                    f"โปรแกรม: {tour_name}\n"
+                    + (f"เดือนที่เลือก: {selected_month}\n" if selected_month else "")
+                    + "\n⚠️ กฎสำคัญ:\n"
+                    "❌ ห้ามถามประเทศหรือโปรแกรมซ้ำ\n"
+                    "✅ แสดงรอบวันเดินทางเฉพาะเดือนที่ลูกค้าเลือก แล้วให้เลือก 1 รอบ\n"
+                    "✅ ถ้าไม่มีข้อมูลรอบ → ถามว่าต้องการวันไหนในเดือนนั้น\n"
+                )
+
     return f"""คุณคือ AI Travel Sales Assistant ของเพจ รวมทัวร์ไฟไหม้ — ฉลาด อบอุ่น เชี่ยวชาญด้านทัวร์
 บริษัท อัพ-โอเปอเรชั่น จำกัด | เว็บ: www.tourfiremai.com | LINE: @tourfiremai
 วันนี้: {today}
-{ctx_section}
+{ctx_section}{departure_ctx_section}
 ══════════════════════════════════
 Conversation Brain — หัวใจสำคัญ
 ══════════════════════════════════
@@ -1815,7 +2056,7 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0,
 
         "ตอบเป็น JSON เท่านั้น (ห้ามมีข้อความอื่น):\n"
         "{\n"
-        '  "action": "search" | "detail" | "detail_pdf" | "flash_sale" | "handoff" | "reply" | "continue",\n'
+        '  "action": "search" | "detail" | "detail_pdf" | "departure_filter" | "flash_sale" | "handoff" | "reply" | "continue",\n'
         '  "should_search": true | false,\n'
         '  "search_mode": "normal" | "faimai" | "any",\n'
         '  "deal_type": "normal" | "faimai" | null,\n'
@@ -1827,6 +2068,7 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0,
         '  "budget_per_person": จำนวนเงินงบต่อคน (integer) หรือ null,\n'
         '  "pax": จำนวนคน (integer) หรือ null,\n'
         '  "selected_option_index": 1 | 2 | 3 | null,\n'
+        '  "departure_month": "เดือนที่ลูกค้าระบุ เช่น ก.ค. หรือ null",\n'
         '  "uses_previous_option": true | false,\n'
         '  "clear_previous_options": true | false,\n'
         '  "lead_stage": "cold" | "warm" | "hot" | "booking",\n'
@@ -1876,6 +2118,11 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0,
         "AND ใน history ก่อนหน้า AI เคยบอกว่าจะค้นหา/เช็ก/ดึงข้อมูล/รอสักครู่\n"
         "→ action=continue, country_id=ประเทศล่าสุดจาก history, lead_stage ตาม context\n\n"
 
+        "⚠️ กฎ DEPARTURE_FILTER — ตรวจสอบก่อนทุกกฎอื่น:\n"
+        "ถ้า pending_action=wait_departure_month หรือ wait_departure_date\n"
+        "AND ลูกค้าพิมพ์ชื่อเดือน (ก.ค., กรกฎา, สิงหา, เดือน 7, ก.ค.69, 10 ก.ค., 2-6) ฯลฯ\n"
+        "→ action=departure_filter, departure_month=เดือนที่ตรวจพบ, uses_previous_option=true\n"
+        "→ ห้าม reset country/program ห้ามถามประเทศซ้ำ ใช้ selected_tour จาก context\n\n"
         "action=search: ลูกค้าต้องการดูโปรแกรมทัวร์ประเทศที่ระบุ รวมถึงการเปลี่ยนประเทศ\n"
         "action=detail: ลูกค้าขอดูรายละเอียดทัวร์ — ใช้เมื่อยังไม่มีโปรแกรมที่เลือกใน context\n"
         "action=detail_pdf: (1) ลูกค้าขอ 'รายละเอียด' ของโปรแกรมที่เลือกไว้ใน context แล้ว (2) ลูกค้าถามมัดจำ/วีซ่า/ทิป/พักเดี่ยว/เงื่อนไขยกเลิก/itinerary/โรงแรม/รวมอะไร — และมีโปรแกรมที่เลือกไว้ใน context (3) ลูกค้าถามราคาแต่ละรอบ/วันเดินทาง เช่น 'รอบไหนราคาเท่าไหร่' 'ราคาเดือน X' 'แต่ละวันราคาต่างกันไหม' — ต้องอ่าน PDF ก่อน ห้ามใช้ price_min กับทุกวัน\n"
@@ -2411,18 +2658,39 @@ def process_message(sender_id: str, text: str):
 
         # Fetch PDF info
         if action == "detail_pdf":
-            program_url = extract_program_url_from_history(history)
+            program_url = (
+                ctx.get("selected_tour_url")
+                or extract_program_url_from_history(history)
+            )
             if program_url:
                 logger.info(f"Fetching full detail for: {program_url}")
                 try:
-                    # Step 1: HTML detail page (เร็ว มีทิป/มัดจำ/วีซ่าในเนื้อหา)
+                    # Step 1: HTML fee info (ทิป/มัดจำ/วีซ่า/พักเดี่ยว)
                     html_detail = fetch_tour_detail_full(program_url)
-                    # Step 2: PDF (itinerary, เงื่อนไขละเอียด)
+                    # Step 2: Structured departure table (parse into monthly groups)
+                    dep_structured = fetch_departure_structured(program_url)
+                    dep_str = format_departure_for_chat(dep_structured)
+                    # Step 3: PDF (เงื่อนไขยกเลิก/itinerary)
                     pdf_detail = fetch_pdf_info(program_url)
-                    # รวมกัน — HTML ก่อน PDF
+
+                    # Save departure context to Redis BEFORE generate_response
+                    if dep_structured.get("rows"):
+                        ctx["departure_options_by_month"] = dep_structured["by_month"]
+                        ctx["available_departure_months"] = dep_structured["month_order"]
+                        if len(dep_structured["rows"]) > 5:
+                            ctx["pending_action"] = "wait_departure_month"
+                            ctx["last_bot_message_type"] = "tour_detail_summary"
+                        save_context(sender_id, ctx)
+                        logger.info(
+                            f"[DEPARTURE] rows={len(dep_structured['rows'])} "
+                            f"months={dep_structured['month_order']}"
+                        )
+
                     parts = []
                     if html_detail:
                         parts.append(html_detail)
+                    if dep_str:
+                        parts.append(dep_str)
                     if pdf_detail:
                         parts.append(pdf_detail)
                     tour_data = "\n\n".join(parts) if parts else ""
@@ -2431,6 +2699,69 @@ def process_message(sender_id: str, text: str):
                     tour_data = ""
             else:
                 action = "reply"
+
+        # ── Departure month filter ────────────────────────────────────────────
+        if action == "departure_filter":
+            selected_month = action_data.get("departure_month") or detect_departure_month_from_text(text)
+            dep_by_month = ctx.get("departure_options_by_month") or {}
+            sel_tour = ctx.get("selected_tour") or {}
+            tour_name = ctx.get("selected_tour_name") or sel_tour.get("name", "")
+            web_code  = ctx.get("selected_tour_web_code") or sel_tour.get("web_code", "")
+            tip_summary = ""
+            # Try to get fee from DB or ctx
+            last_opts = ctx.get("last_options") or []
+            for opt in last_opts:
+                if opt.get("web_code") == web_code and opt.get("tip_fee"):
+                    tip_summary = f"\nทิปไกด์: {opt['tip_fee']:,} บาท/ท่าน"
+                    if opt.get("visa_status"):
+                        tip_summary += f" | วีซ่า: {opt['visa_status']}"
+                    break
+
+            if selected_month and dep_by_month:
+                # Filter matching month (fuzzy: also check nearby)
+                month_rows = dep_by_month.get(selected_month, [])
+                if not month_rows:
+                    # Try case-insensitive
+                    for k, v in dep_by_month.items():
+                        if selected_month.rstrip(".") in k or k.rstrip(".") in selected_month:
+                            month_rows = v
+                            selected_month = k
+                            break
+
+                if month_rows:
+                    lines = [f"รอบเดือน {selected_month} ของโปรแกรม {web_code or tour_name} ค่ะ"]
+                    for r in month_rows:
+                        line = f"- {r['date']}"
+                        if r.get("adult"):
+                            line += f"  ผู้ใหญ่ {r['adult']:,}"
+                        if r.get("child_no_bed"):
+                            line += f" / เด็กไม่มีเตียง {r['child_no_bed']:,}"
+                        lines.append(line)
+                    if tip_summary:
+                        lines.append(tip_summary)
+                    tour_data = "\n".join(lines)
+                    tour_data += (
+                        "\n[INSTRUCTION_FOR_BOT] แสดงรายการรอบด้านบนแบบ bullet list ห้ามใช้ markdown table "
+                        "แล้วถามว่าสนใจรอบไหนเป็นพิเศษ และถามจำนวนผู้เดินทางถ้ายังไม่ทราบ"
+                    )
+                    # Update pending_action
+                    ctx["pending_action"] = "wait_departure_date"
+                    ctx["last_selected_departure_month"] = selected_month
+                    save_context(sender_id, ctx)
+                    logger.info(f"[DEPARTURE_FILTER] month={selected_month} rows={len(month_rows)}")
+                else:
+                    available = ", ".join(ctx.get("available_departure_months") or list(dep_by_month.keys()))
+                    tour_data = (
+                        f"[INSTRUCTION_FOR_BOT] ไม่พบรอบเดือน {selected_month} "
+                        f"มีเดือนที่ว่าง: {available} "
+                        f"ให้บอกลูกค้าว่าไม่มีรอบเดือนนั้น และถามว่าสนใจเดือนอื่นไหม"
+                    )
+            else:
+                available = ", ".join(ctx.get("available_departure_months") or list(dep_by_month.keys()))
+                tour_data = (
+                    f"[INSTRUCTION_FOR_BOT] ลูกค้าพิมพ์ว่า '{text}' ยังไม่ชัดว่าต้องการเดือนไหน "
+                    f"มีรอบ: {available} ให้ถามซ้ำว่าสนใจเดือนไหนจากรายการนี้"
+                )
 
         # Notify admin
         if action == "flash_sale":
@@ -2954,4 +3285,3 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
-
