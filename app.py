@@ -169,6 +169,9 @@ _EMPTY_CTX = {
     "ad_title": None,
     "ad_ref": None,
     "post_id": None,
+    # ── Search Mode ──────────────────────────────────────────────────────
+    "search_mode": "normal",  # "normal"|"faimai"|"any"
+    "deal_type": None,        # "normal"|"faimai"|None
     # ── Meta ──────────────────────────────────────────────────────────────
     "last_user_message": None,
     "last_bot_message": None,
@@ -649,20 +652,27 @@ def fetch_tour_detail_full(tour_url: str) -> str:
         return ""
 
 def fetch_tours_from_db(country_id: str, city_hint: str = None,
-                        budget_max: int = None) -> list:
+                        budget_max: int = None,
+                        search_mode: str = "normal") -> list:
     """Query Supabase `tours` table.
     Returns list of dicts: name, url, tour_code, price_min, airline, departure_dates
-    Filters by city and/or budget if provided.
+    Filters by city, budget, and/or search_mode (normal|faimai|any).
     """
     if not SUPABASE_URL or not SUPABASE_KEY:
         return []
     try:
         params = {
             "country_id": f"eq.{country_id}",
-            "select":     "name,url,tour_code,price_min,airline,departure_dates",
+            "select":     "name,url,tour_code,price_min,airline,departure_dates,is_faimai,discount_text",
             "order":      "price_min.asc.nullslast",
             "limit":      "60",
         }
+        # Filter by source type
+        if search_mode == "faimai":
+            params["is_faimai"] = "eq.true"
+        elif search_mode == "normal":
+            params["source_type"] = "eq.normal"
+        # search_mode="any" → no filter
         if city_hint:
             params["name"] = f"ilike.*{city_hint}*"
         if budget_max:
@@ -685,7 +695,8 @@ def fetch_tours_from_db(country_id: str, city_hint: str = None,
         logger.error(f"fetch_tours_from_db error: {e}")
         return []
 
-def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) -> str:
+def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
+                search_mode: str = "normal") -> str:
     """ดึงทัวร์ — ลอง Supabase DB ก่อน, fallback to web scraping
 
     DB path  (fast ~0.1s): query tours table → fetch detail pages for top 4
@@ -731,7 +742,7 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None) 
         return "\n\n".join(parts), meta
 
     # ── 1. Try Supabase DB ────────────────────────────────────────────────────
-    db_tours = fetch_tours_from_db(country_id, city_hint=city_hint, budget_max=budget_max)
+    db_tours = fetch_tours_from_db(country_id, city_hint=city_hint, budget_max=budget_max, search_mode=search_mode)
     if db_tours:
         logger.info(f"DB hit: {len(db_tours)} tours for country={country_id} city={city_hint}")
         # Check if DB has price/dates data (v2 scraper)
@@ -1443,22 +1454,27 @@ def fetch_faimai_tours(country_filter: str = None) -> str:
     lines.append(f"\nดูทั้งหมด: https://www.tourfiremai.com/faimai")
     return "\n".join(lines)
 
-def decide_action(user_message: str, history: list, last_options_count: int = 0) -> dict:
+def decide_action(user_message: str, history: list, last_options_count: int = 0,
+                 current_search_mode: str = "normal") -> dict:
     history_text = ""
     for msg in history[-10:]:
         role = "ลูกค้า" if msg["role"] == "user" else "AI"
         history_text += f"{role}: {msg['content'][:250]}\n"
 
     last_opts_hint = f"\n⚠️ last_options_count={last_options_count} (จำนวนทัวร์ที่เสนอล่าสุดใน context)" if last_options_count > 0 else ""
+    search_mode_hint = f"\n⚠️ current_search_mode={current_search_mode} (รักษาสถานะนี้ถ้าลูกค้าไม่เปลี่ยนเจตนา)"
     prompt = (
         f"บทสนทนาที่ผ่านมา:\n{history_text}\n"
         f"--- ข้อความล่าสุดของลูกค้า (สำคัญที่สุด): {user_message} ---\n"
-        f"{last_opts_hint}\n\n"
+        f"{last_opts_hint}"
+        f"{search_mode_hint}\n\n"
 
         "ตอบเป็น JSON เท่านั้น (ห้ามมีข้อความอื่น):\n"
         "{\n"
         '  "action": "search" | "detail" | "detail_pdf" | "flash_sale" | "handoff" | "reply" | "continue",\n'
         '  "should_search": true | false,\n'
+        '  "search_mode": "normal" | "faimai" | "any",\n'
+        '  "deal_type": "normal" | "faimai" | null,\n'
         '  "missing_field_to_ask": "country" | "city" | "budget_per_person" | "month" | "pax" | null,\n'
         '  "country_id": "เลขประเทศ หรือ null",\n'
         '  "country_name": "ชื่อประเทศภาษาไทย หรือ null",\n'
@@ -1493,6 +1509,16 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
         "  month → รู้ประเทศ+งบแล้ว ยังไม่รู้เดือน\n"
         "  pax → รู้เกือบครบ ยังไม่รู้จำนวนคน\n"
         "  null → ไม่มีอะไรต้องถามเพิ่ม (หรือ should_search=true)\n\n"
+        "=== กฎ search_mode ===\n"
+        "search_mode=faimai เมื่อ:\n"
+        "  - ข้อความมีคำว่า ไฟไหม้ โปรไฟไหม้ ลดราคา flash sale ใกล้เดินทาง โปรพิเศษ\n"
+        "  - current_search_mode=faimai AND ข้อความเป็นประเทศ/เมือง เช่น ญี่ปุ่น เกาหลี โอซาก้า\n"
+        "    → ยังคง search_mode=faimai (ไม่เปลี่ยนถ้าลูกค้าแค่ระบุปลายทาง)\n"
+        "search_mode=normal เมื่อ:\n"
+        "  - ข้อความมีคำว่า ทั่วไป ปกติ ราคาเต็ม ไม่ใช่ไฟไหม้ ดูทัวร์ทั้งหมด\n"
+        "  - ลูกค้าพูดชัดว่าอยากดูทัวร์ปกติ ไม่ใช่โปรไฟไหม้\n"
+        "ค่า default = current_search_mode (รักษาสถานะเดิมถ้าไม่มีสัญญาณเปลี่ยน)\n"
+        "deal_type เซ็ตเหมือน search_mode (faimai หรือ normal) หรือ null ถ้าไม่ชัด\n\n"
         "=== กฎ action (เรียงตามความสำคัญ) ===\n\n"
 
         "⚠️ กฎ SINGLE-OPTION — ตรวจสอบก่อนทุกกฎอื่น:\n"
@@ -1561,6 +1587,11 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
             data = json.loads(m.group())
             data["action"] = data.get("action", "reply")
             data["should_search"] = bool(data.get("should_search", True))
+            # search_mode — default to current_search_mode if classifier returns default
+            sm = data.get("search_mode", current_search_mode)
+            data["search_mode"] = sm if sm in ("normal", "faimai", "any") else current_search_mode
+            dt = data.get("deal_type", None)
+            data["deal_type"] = dt if dt in ("normal", "faimai") else None
             mfta = data.get("missing_field_to_ask", None)
             data["missing_field_to_ask"] = mfta if mfta and mfta != "null" else None
             cid = data.get("country_id")
@@ -1585,6 +1616,7 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
         logger.error(f"decide_action error: {e}")
 
     return {"action": "reply", "should_search": False, "missing_field_to_ask": "country",
+            "search_mode": current_search_mode, "deal_type": None,
             "country_id": None, "country_name": None, "city": None,
             "month": None, "budget_per_person": None, "pax": None,
             "selected_option_index": None, "uses_previous_option": False,
@@ -1619,6 +1651,26 @@ def generate_response(user_message: str, history: list, tour_data: str = "",
                 "ให้บอกตรงๆ และแนะนำประเทศอื่นที่มีในหน้าไฟไหม้แทน "
                 "ห้ามเปรียบเทียบกับราคาปกติหรือแนะนำให้เพิ่มงบ"
                 + no_result_hint
+            )
+        elif ctx and ctx.get("search_mode") == "faimai":
+            # ── Faimai DB results (search_mode=faimai via Supabase) ──────
+            faimai_has_result = "ขณะนี้ยังไม่มี" not in tour_data and len(tour_data.strip()) > 20
+            no_result_hint = ""
+            if not faimai_has_result:
+                no_result_hint = (
+                    "\n[ไม่พบทัวร์ไฟไหม้ตรงกับที่ค้นหา: บอกลูกค้าตรงๆ ว่าช่วงนี้ยังไม่มีโปรไฟไหม้สำหรับประเทศนั้น "
+                    "แล้วแนะนำให้ดูทัวร์ปกติหรือให้ติดตามโปรแกรมใหม่]"
+                )
+            user_content = (
+                f"{user_message}\n\n"
+                "--- โปรไฟไหม้จาก tourfiremai.com (ราคาพิเศษ ลดจากปกติ) ---\n"
+                f"{tour_data[:4000]}\n"
+                "---\n"
+                "คำแนะนำ: เปิดด้วย 'มีค่ะ โปรไฟไหม้...' เสนอ 2-3 โปรแกรมที่น่าสนใจ "
+                "เน้นส่วนลด/ความคุ้มค่า ห้ามเปรียบเทียบกับราคาปกติหรือแนะนำให้เพิ่มงบ "
+                "ห้ามใช้คำว่าน้องแอดมิน"
+                + no_result_hint
+                + (f"\n[งบลูกค้า {ctx['budget_per_person']} บาท: คัดเฉพาะที่ราคาไม่เกินงบก่อน ถ้าไม่มีให้บอกตรงๆ]" if ctx.get("budget_per_person") else "")
             )
         else:
             user_content = (
