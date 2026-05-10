@@ -2139,14 +2139,9 @@ def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: s
                    needs_review=True, review_reason="image_handoff")
     save_lead_supabase(sender_id, ctx, new_stage, "ส่งรูปให้เช็กโปรแกรม")
 
-    reply = (
-        "ได้รับรูปแล้วค่ะ 😊\n"
-        "เดี๋ยวส่งให้ทีมงานช่วยเช็กโปรแกรมในรูปให้ก่อนนะคะ\n"
-        "ถ้าสะดวก พิมพ์ประเทศ/เมือง หรือรหัสทัวร์ที่เห็นในรูปมาเพิ่มได้เลย จะช่วยเช็กได้เร็วขึ้นค่ะ"
-    )
-    send_message(sender_id, reply)
-    save_to_history(sender_id, "assistant", reply)
-    logger.info(f"📷 image_handoff for {sender_id}: stage={new_stage}")
+    # Silent handoff — ไม่ตอบลูกค้า ไม่บันทึก assistant history
+    # ให้พนักงานดูรูปและตอบเองผ่าน LINE notification ด้านบน
+    logger.info(f"📷 image_handoff (silent) for {sender_id}: stage={new_stage}")
 
 
 def process_payment_pending_review(sender_id: str, image_urls: list, accompanying_text: str = ""):
@@ -2180,13 +2175,9 @@ def process_payment_pending_review(sender_id: str, image_urls: list, accompanyin
                    needs_review=True, review_reason="payment_pending_review")
     save_lead_supabase(sender_id, ctx, "booking", "ส่งรูปสลิป — รอตรวจสอบ")
 
-    reply = (
-        "ได้รับรูปแล้วค่ะ ขอบคุณนะคะ 😊\n"
-        "เดี๋ยวทีมงานตรวจสอบและยืนยันการชำระเงินกลับให้นะคะ"
-    )
-    send_message(sender_id, reply)
-    save_to_history(sender_id, "assistant", reply)
-    logger.info(f"💳 payment_pending_review for {sender_id}")
+    # Silent handoff — ไม่ตอบลูกค้า ไม่บันทึก assistant history
+    # ให้พนักงานตรวจสลิปและยืนยันเองผ่าน LINE notification ด้านบน
+    logger.info(f"💳 payment_pending_review (silent) for {sender_id}")
 
 
 def process_payment_slip(sender_id: str, image_urls: list = None):
