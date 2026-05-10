@@ -2146,37 +2146,49 @@ def process_image_received(sender_id: str, image_urls: list, accompanying_text: 
             "พิมพ์มาได้เลยนะคะ 😊"
         )
     else:
-        # Plain image — ask for confirmation, do not change lead_stage
+        # P0 patch v2 (2026-05-10): non-payment image → handoff to human team.
+        # No "slip vs photo?" question; team will inspect.
         ctx["_lead_needs_review"] = True
-        ctx["_lead_review_reason"] = "image_received"
+        ctx["_lead_review_reason"] = "image_handoff"
+        ctx["_lead_status"] = "waiting_team"
+        ctx["_lead_handoff_requested"] = True
+        from datetime import datetime as _dt
+        ctx["_lead_handoff_at"] = _dt.now().isoformat()
+        ctx["_lead_channel"] = "messenger"
         save_context(sender_id, ctx)
 
-        summary_lines = ["📷 ลูกค้าส่งรูป (ยังไม่ระบุว่าโอน)", "PSID: " + sender_id]
+        summary_lines = ["📷 ลูกค้าส่งรูปให้ทีมงานเช็กโปรแกรม", "PSID: " + sender_id]
         if ctx.get("customer_name"): summary_lines.append("ชื่อ: " + str(ctx["customer_name"]))
+        if ctx.get("phone"):         summary_lines.append("เบอร์: " + str(ctx["phone"]))
+        if ctx.get("country"):       summary_lines.append("ประเทศ: " + str(ctx["country"]))
         if accompanying_text:        summary_lines.append("ข้อความ: " + accompanying_text[:200])
         if image_urls:               summary_lines.append("รูป: " + str(image_urls[0])[:120])
-        summary_lines.append("→ ทีมตรวจสอบว่าเป็นสลิปหรือรูปประกอบ")
+        summary_lines.append("→ ทีมงานช่วยเช็กโปรแกรมในรูปแล้วตอบลูกค้ากลับ")
         notify_line("\n".join(summary_lines))
 
         try:
             log_chat_event(
                 sender_id,
-                event_type="image_received",
+                event_type="image_handoff",
                 ctx=ctx,
                 message=accompanying_text or "[image only]",
                 bot_reply="",
-                intent="image_received",
+                intent="image_handoff",
                 needs_review=True,
-                review_reason="image_received",
+                review_reason="image_handoff",
                 metadata={"image_urls": (image_urls or [])[:3]},
             )
         except Exception as _e:
-            logger.warning("log_chat_event(image_received) error: " + str(_e))
+            logger.warning("log_chat_event(image_handoff) error: " + str(_e))
+
+        # Persist handoff flags onto leads row
+        save_lead_supabase(sender_id, ctx, ctx.get("lead_stage") or "warm",
+                           accompanying_text or "[ลูกค้าส่งรูป]")
 
         reply = (
-            "ได้รับรูปแล้วค่ะ 😊 "
-            "ขอเช็กให้ถูกต้องนะคะ — รูปนี้เป็น สลิปโอนเงิน "
-            "หรือเป็น รูปประกอบการสอบถาม (เช่น รูปจากโพสต์เพจ / รูปทัวร์ที่สนใจ) คะ?"
+            "ได้รับรูปแล้วค่ะ 😊\n"
+            "เดี๋ยวส่งให้ทีมงานช่วยเช็กโปรแกรมในรูปให้ก่อนนะคะ\n"
+            "ถ้าสะดวก พิมพ์ประเทศ/เมือง หรือรหัสทัวร์ที่เห็นในรูปมาเพิ่มได้เลย จะช่วยเช็กได้เร็วขึ้นค่ะ"
         )
 
     save_to_history(sender_id, "assistant", reply)
@@ -2883,26 +2895,17 @@ def webhook():
             image_list   = [a for a in attachments if a.get("type") == "image"]
             if image_list:
                 image_urls = [a.get("payload", {}).get("url", "") for a in image_list]
-                post_kw = ["โพส", "เพจ", "ราคาในรูป", "ตัวนี้", "อันนี้", "ทัวร์นี้", "ตัวที่", "ในรูป"]
-                is_post = text and any(k in text for k in post_kw)
-                if is_post:
-                    # Screenshot of a tour post — let normal flow handle (search/describe)
-                    logger.info(f"📷 Post screenshot from {sender_id}")
-                    notify_line("📸 ลูกค้าส่งรูปจากโพส!\nPSID: " + sender_id + "\nข้อความ: " + text + "\nรูป: " + image_urls[0][:80])
-                    t = threading.Thread(target=process_message, args=(sender_id, text + " [ลูกค้าส่งรูปจากโพสเพจ]"))
-                    t.daemon = True
-                    t.start()
-                else:
-                    # P0 fix (2026-05-10): images are NEVER auto-paid.
-                    # Hand off to process_image_received which only flags
-                    # payment_pending_review when accompanying text carries
-                    # an explicit keyword. lead_stage=paid is now reserved
-                    # for human verification only.
-                    logger.info(f"📷 Image from {sender_id} — image_received (no auto-paid)")
-                    t = threading.Thread(target=process_image_received,
-                                         args=(sender_id, image_urls, text or ""))
-                    t.daemon = True
-                    t.start()
+                # P0 fix v2 (2026-05-10): unified image handler.
+                # All non-payment images → image_handoff (let team inspect).
+                # process_image_received internally branches into:
+                #   - payment_pending_review (if text has keyword "โอน/สลิป/ชำระ/...")
+                #   - image_handoff          (otherwise — incl. "ตัวนี้/โพส/ในรูป")
+                # lead_stage=paid is reserved for HUMAN verification only.
+                logger.info(f"📷 Image from {sender_id} — routing to image_handoff/payment_pending_review (no auto-paid)")
+                t = threading.Thread(target=process_image_received,
+                                     args=(sender_id, image_urls, text or ""))
+                t.daemon = True
+                t.start()
                 continue
 
             if not text:
