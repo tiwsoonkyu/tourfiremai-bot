@@ -2075,6 +2075,115 @@ _PAYMENT_KEYWORDS = [
     "โอนมัดจำแล้ว", "โอนค่าทัวร์แล้ว", "ส่งหลักฐาน",
 ]
 
+# P0 patch (2026-05-10): images alone are NEVER auto-paid.
+# Only flag for review when text accompanying image carries explicit keyword.
+_PAYMENT_SLIP_HINTS = [
+    "โอนแล้ว", "โอนเงิน", "จ่ายแล้ว", "ชำระแล้ว", "ชำระเงิน",
+    "สลิป", "แนบสลิป", "ใบเสร็จ", "หลักฐานการโอน", "หลักฐานโอน",
+    "มัดจำแล้ว", "โอนมัดจำ",
+]
+
+def process_image_received(sender_id: str, image_urls: list, accompanying_text: str = ""):
+    """P0 patch: handle inbound image WITHOUT auto-marking lead as paid.
+
+    Behaviour:
+      - records `image_received` event in ai_chat_events / leads.last_message
+      - if accompanying_text has payment keyword → marks as
+        `payment_pending_review` (NOT `paid` — humans must verify)
+      - replies asking the customer to confirm (slip vs other photo)
+    """
+    text_lc = (accompanying_text or "").lower()
+    has_payment_kw = any(k in text_lc for k in _PAYMENT_SLIP_HINTS)
+
+    ctx = get_context(sender_id)
+
+    # Save inbound user message so history reflects image arrival
+    user_log = (accompanying_text + " [ลูกค้าส่งรูป]").strip() if accompanying_text else "[ลูกค้าส่งรูป]"
+    save_to_history(sender_id, "user", user_log)
+
+    if has_payment_kw:
+        # Pending review — NOT paid yet. Bump to booking, leave payment_received=False.
+        ctx["payment_received"] = False
+        if ctx.get("lead_stage") not in ("hot", "booking"):
+            ctx["lead_stage"] = "booking"
+        ctx["_lead_status"] = "waiting_team"
+        ctx["_lead_needs_review"] = True
+        ctx["_lead_review_reason"] = "payment_pending_review"
+        save_context(sender_id, ctx)
+
+        summary_lines = ["⚠️ Possible slip — รอทีมตรวจสอบ", "PSID: " + sender_id]
+        if ctx.get("customer_name"):       summary_lines.append("ชื่อ: " + str(ctx["customer_name"]))
+        if ctx.get("phone"):               summary_lines.append("เบอร์: " + str(ctx["phone"]))
+        if ctx.get("selected_tour_name"):  summary_lines.append("โปรแกรม: " + str(ctx["selected_tour_name"]))
+        if ctx.get("selected_tour_code"):  summary_lines.append("รหัสทัวร์: " + str(ctx["selected_tour_code"]))
+        if accompanying_text:              summary_lines.append("ข้อความ: " + accompanying_text[:200])
+        if image_urls:                     summary_lines.append("รูป: " + str(image_urls[0])[:120])
+        summary_lines.append("→ กรุณาตรวจรูปและยืนยันก่อนเปลี่ยน lead_stage เป็น paid")
+        notify_line("\n".join(summary_lines))
+
+        try:
+            log_chat_event(
+                sender_id,
+                event_type="payment_pending_review",
+                ctx=ctx,
+                message=accompanying_text or "[image + payment keyword]",
+                bot_reply="",
+                intent="payment_pending_review",
+                needs_review=True,
+                review_reason="payment_pending_review",
+                metadata={"image_urls": (image_urls or [])[:3]},
+            )
+        except Exception as _e:
+            logger.warning("log_chat_event(payment_pending_review) error: " + str(_e))
+
+        save_lead_supabase(sender_id, ctx, ctx.get("lead_stage", "booking"),
+                           accompanying_text or "[ส่งรูป + คำว่าโอน/สลิป]")
+
+        reply = (
+            "ได้รับรูปแล้วค่ะ ขอบคุณนะคะ 🙏 "
+            "ทีมงานจะตรวจสอบและยืนยันการชำระเงินกลับให้ค่ะ "
+            "ระหว่างนี้ถ้าต้องการแจ้งข้อมูลเพิ่ม เช่น เลขอ้างอิงสลิป หรือเวลาที่โอน "
+            "พิมพ์มาได้เลยนะคะ 😊"
+        )
+    else:
+        # Plain image — ask for confirmation, do not change lead_stage
+        ctx["_lead_needs_review"] = True
+        ctx["_lead_review_reason"] = "image_received"
+        save_context(sender_id, ctx)
+
+        summary_lines = ["📷 ลูกค้าส่งรูป (ยังไม่ระบุว่าโอน)", "PSID: " + sender_id]
+        if ctx.get("customer_name"): summary_lines.append("ชื่อ: " + str(ctx["customer_name"]))
+        if accompanying_text:        summary_lines.append("ข้อความ: " + accompanying_text[:200])
+        if image_urls:               summary_lines.append("รูป: " + str(image_urls[0])[:120])
+        summary_lines.append("→ ทีมตรวจสอบว่าเป็นสลิปหรือรูปประกอบ")
+        notify_line("\n".join(summary_lines))
+
+        try:
+            log_chat_event(
+                sender_id,
+                event_type="image_received",
+                ctx=ctx,
+                message=accompanying_text or "[image only]",
+                bot_reply="",
+                intent="image_received",
+                needs_review=True,
+                review_reason="image_received",
+                metadata={"image_urls": (image_urls or [])[:3]},
+            )
+        except Exception as _e:
+            logger.warning("log_chat_event(image_received) error: " + str(_e))
+
+        reply = (
+            "ได้รับรูปแล้วค่ะ 😊 "
+            "ขอเช็กให้ถูกต้องนะคะ — รูปนี้เป็น สลิปโอนเงิน "
+            "หรือเป็น รูปประกอบการสอบถาม (เช่น รูปจากโพสต์เพจ / รูปทัวร์ที่สนใจ) คะ?"
+        )
+
+    save_to_history(sender_id, "assistant", reply)
+    send_message(sender_id, reply)
+    logger.info("📷 image_received handled for " + sender_id + " (payment_kw=" + str(has_payment_kw) + ")")
+
+
 def process_payment_slip(sender_id: str, image_urls: list = None):
     """เรียกเมื่อลูกค้าส่งสลิปการโอนเงิน (รูปภาพ หรือ text keyword)"""
     ctx = get_context(sender_id)
@@ -2158,7 +2267,14 @@ def process_message(sender_id: str, text: str):
         _rule_option_idx = parse_option_index_rule_based(text) if _last_opts_count > 0 else None
         if _rule_option_idx:
             logger.info(f"[OPTION_SELECT] rule-based detected: index={_rule_option_idx} text={text[:40]!r}")
-        action_data = decide_action(text, history, last_options_count=_last_opts_count)
+        # P1-A patch (2026-05-10): pass current_search_mode so classifier
+        # keeps faimai sticky across turns (e.g., "มีโปรไฟไหม้" → "ขอญี่ปุ่น")
+        _current_search_mode = ctx.get("search_mode") or "normal"
+        action_data = decide_action(
+            text, history,
+            last_options_count=_last_opts_count,
+            current_search_mode=_current_search_mode,
+        )
         action               = action_data.get("action", "reply")
         country_id           = action_data.get("country_id")
         selected_option_idx  = action_data.get("selected_option_index")
@@ -2192,6 +2308,14 @@ def process_message(sender_id: str, text: str):
             ctx["country"] = classifier_country
         if country_id and not ctx.get("country_id"):
             ctx["country_id"] = country_id
+        # P1-A patch (2026-05-10): persist classifier-resolved search_mode/deal_type
+        _new_sm = action_data.get("search_mode")
+        if _new_sm in ("normal", "faimai", "any") and _new_sm != ctx.get("search_mode"):
+            ctx["search_mode"] = _new_sm
+            logger.info(f"🔁 search_mode → {_new_sm} (was {_current_search_mode})")
+        _new_dt = action_data.get("deal_type")
+        if _new_dt in ("normal", "faimai") and _new_dt != ctx.get("deal_type"):
+            ctx["deal_type"] = _new_dt
 
         # ── Resolve selected_option_index → set selected_tour ────────────
         if uses_previous and selected_option_idx and ctx.get("last_options"):
@@ -2292,7 +2416,11 @@ def process_message(sender_id: str, text: str):
                         budget_max = int(b)
                     except Exception:
                         pass
-                result = fetch_tours(country_id, city_hint=city_hint, budget_max=budget_max)
+                # P1-B patch (2026-05-10): forward search_mode so Supabase filter
+                # is_faimai=true / source_type=normal works correctly.
+                _sm = action_data.get("search_mode") or ctx.get("search_mode") or "normal"
+                result = fetch_tours(country_id, city_hint=city_hint,
+                                     budget_max=budget_max, search_mode=_sm)
                 if isinstance(result, tuple):
                     tour_data, tour_meta = result
                 else:
@@ -2758,14 +2886,21 @@ def webhook():
                 post_kw = ["โพส", "เพจ", "ราคาในรูป", "ตัวนี้", "อันนี้", "ทัวร์นี้", "ตัวที่", "ในรูป"]
                 is_post = text and any(k in text for k in post_kw)
                 if is_post:
+                    # Screenshot of a tour post — let normal flow handle (search/describe)
                     logger.info(f"📷 Post screenshot from {sender_id}")
                     notify_line("📸 ลูกค้าส่งรูปจากโพส!\nPSID: " + sender_id + "\nข้อความ: " + text + "\nรูป: " + image_urls[0][:80])
                     t = threading.Thread(target=process_message, args=(sender_id, text + " [ลูกค้าส่งรูปจากโพสเพจ]"))
                     t.daemon = True
                     t.start()
                 else:
-                    logger.info(f"📷 Image from {sender_id} — treating as payment slip")
-                    t = threading.Thread(target=process_payment_slip, args=(sender_id, image_urls))
+                    # P0 fix (2026-05-10): images are NEVER auto-paid.
+                    # Hand off to process_image_received which only flags
+                    # payment_pending_review when accompanying text carries
+                    # an explicit keyword. lead_stage=paid is now reserved
+                    # for human verification only.
+                    logger.info(f"📷 Image from {sender_id} — image_received (no auto-paid)")
+                    t = threading.Thread(target=process_image_received,
+                                         args=(sender_id, image_urls, text or ""))
                     t.daemon = True
                     t.start()
                 continue
