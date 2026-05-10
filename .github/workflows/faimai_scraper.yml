@@ -1,0 +1,49 @@
+name: Faimai Scraper (4x Daily)
+
+on:
+  schedule:
+    # Bangkok time (ICT = UTC+7) → UTC
+    # 08:00 BKK = 01:00 UTC
+    # 12:00 BKK = 05:00 UTC
+    # 16:00 BKK = 09:00 UTC
+    # 21:00 BKK = 14:00 UTC
+    - cron: "0 1,5,9,14 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Scrape mode"
+        required: false
+        default: "faimai"
+        type: choice
+        options:
+          - faimai
+          - normal
+          - all
+
+jobs:
+  scrape-faimai:
+    name: Scrape /faimai
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Faimai scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          MODE="${{ github.event.inputs.mode || 'faimai' }}"
+          echo "Running scraper --mode $MODE"
+          python scraper.py --mode $MODE
