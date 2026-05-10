@@ -2263,8 +2263,10 @@ def process_message(sender_id: str, text: str):
                 ctx_summary += f"\nจำนวน: {ctx['pax']} ท่าน"
             if ctx.get("budget_per_person"):
                 ctx_summary += f"\nงบ: {ctx['budget_per_person']:,}" if isinstance(ctx['budget_per_person'], (int, float)) else f"\nงบ: {ctx['budget_per_person']}"
+            # แสดงชื่อลูกค้าถ้ามี ไม่งั้นใช้ PSID ย่อ
+            display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
             notify_line(
-                f"{stage_emoji} Lead [{lead_stage.upper()}]\nPSID: {sender_id}\nข้อความ: {text}{ctx_summary}"
+                f"{stage_emoji} Lead [{lead_stage.upper()}]\n👤 {display_name}\n💬 {text}{ctx_summary}"
             )
 
         # Save user message
