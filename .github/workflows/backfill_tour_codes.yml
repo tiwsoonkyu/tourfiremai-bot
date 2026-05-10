@@ -1,0 +1,33 @@
+name: Backfill Tour Codes (One-off)
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max tours to backfill"
+        required: false
+        default: "1000"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run backfill
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scraper.py --mode backfill-codes --limit ${{ github.event.inputs.limit }}
