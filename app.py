@@ -656,6 +656,48 @@ def fetch_tour_detail_full(tour_url: str) -> str:
         logger.error(f"fetch_tour_detail_full error {tour_url}: {e}")
         return ""
 
+def _fetch_tour_code_real_quick(url: str) -> str:
+    """On-demand fetch of tour_code_real from detail page — called when DB has null."""
+    if not url:
+        return ""
+    try:
+        import re as _re
+        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; TourFiremaiBot/1.0)"}, timeout=6)
+        m = _re.search(r'tcode=([A-Z0-9\-]+)', resp.text)
+        if m:
+            return m.group(1).strip()
+        # fallback: label รหัสทัวร์
+        m2 = _re.search(r'รหัสทัวร์[^<]{0,60}<p[^>]*class="txt-pd-l"[^>]*>([^<]+)</p>', resp.text)
+        if m2:
+            return m2.group(1).strip()
+    except Exception as e:
+        logger.debug(f"_fetch_tour_code_real_quick error {url}: {e}")
+    return ""
+
+
+def _update_tour_code_real_bg(url: str, web_code: str, tour_code_real: str):
+    """Update tour_code_real in Supabase in background thread."""
+    if not SUPABASE_URL or not SUPABASE_KEY or not tour_code_real:
+        return
+    try:
+        import urllib.request as _ur
+        payload = json.dumps({"tour_code_real": tour_code_real}).encode()
+        req = _ur.Request(
+            f"{SUPABASE_URL}/rest/v1/tours?tour_code=eq.{web_code}",
+            data=payload, method="PATCH",
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            }
+        )
+        with _ur.urlopen(req, timeout=5):
+            logger.info(f"✅ Updated tour_code_real={tour_code_real} for {web_code}")
+    except Exception as e:
+        logger.debug(f"_update_tour_code_real_bg error: {e}")
+
+
 def fetch_tours_from_db(country_id: str, city_hint: str = None,
                         budget_max: int = None,
                         search_mode: str = "normal") -> list:
@@ -777,6 +819,19 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
             else:
                 display_tours = display_tours[:6]
 
+            # ── On-demand fetch tour_code_real for tours missing it ──────────
+            tours_need_code = [t for t in display_tours if not t.get("tour_code_real") and t.get("url")]
+            if tours_need_code:
+                def _fetch_one(t):
+                    rc = _fetch_tour_code_real_quick(t.get("url", ""))
+                    if rc:
+                        t["tour_code_real"] = rc
+                        wc = t.get("web_code") or t.get("tour_code") or ""
+                        threading.Thread(target=_update_tour_code_real_bg, args=(t["url"], wc, rc), daemon=True).start()
+                    return t
+                with ThreadPoolExecutor(max_workers=min(len(tours_need_code), 4)) as _ex:
+                    list(_ex.map(_fetch_one, tours_need_code))
+
             parts = []
             meta = []
             for i, t in enumerate(display_tours):
@@ -795,7 +850,7 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                         line += f"\n   🔑 รหัสเว็บ: {web_code_str}"
                 elif web_code_str:
                     line += f"\n   🔑 รหัสเว็บ: {web_code_str}"
-                    line += f"\n   🏷 รหัสทัวร์จริง: กำลังเช็กจากหน้าโปรแกรม"
+                    line += f"\n   🏷 รหัสทัวร์: (ตรวจสอบหน้าโปรแกรม)"
                 # Faimai: show discount info
                 if t.get("is_faimai"):
                     orig = t.get("original_price")
