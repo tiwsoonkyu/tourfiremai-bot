@@ -1229,6 +1229,7 @@ def _system_prompt(ctx: dict = None) -> str:
             known_rules.append("❌ ห้ามถามงบประมาณ — ทราบแล้ว")
         if ctx.get("customer_name"):
             known_rules.append(f"❌ ห้ามถามชื่อลูกค้า — ทราบแล้วว่า {ctx['customer_name']}")
+            known_rules.append(f"❌ ห้ามทับศัพท์หรือแปลชื่อลูกค้า — ถ้าชื่อเป็นภาษาอังกฤษให้ใช้ตรงๆ เช่น คุณ Supakit ไม่ใช่ คุณสุพากิตย์")
         if ctx.get("phone"):
             known_rules.append("❌ ห้ามถามเบอร์/LINE — ทราบแล้ว")
 
