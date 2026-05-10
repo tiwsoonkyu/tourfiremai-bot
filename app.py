@@ -307,15 +307,22 @@ def save_lead_supabase(psid: str, context: dict, lead_stage: str, user_message: 
         }
         # เพิ่มเฉพาะ field ที่มีข้อมูล
         field_map = {
-            "customer_name": "customer_name",
-            "phone": "phone",
-            "destination": "destination",
-            "country": "country",
-            "month": "month",
-            "budget_per_person": "budget_per_person",
-            "pax": "pax",
-            "travel_date": "travel_date",
-            "selected_tour_name": "selected_tour_name",
+            "customer_name":    "customer_name",
+            "phone":            "phone",
+            "destination":      "destination",
+            "country":          "country",
+            "month":            "month",
+            "budget_per_person":"budget_per_person",
+            "pax":              "pax",
+            "travel_date":      "travel_date",
+            "selected_tour_name":"selected_tour_name",
+            # Dashboard fields
+            "selected_tour_code":     "selected_tour_code_real",
+            "selected_tour_web_code": "selected_web_code",
+            "selected_tour_airline":  "selected_tour_airline",
+            "ad_id":            "ad_id",
+            "ad_ref":           "ad_ref",
+            "ad_title":         "ad_title",
         }
         for ctx_key, db_col in field_map.items():
             v = context.get(ctx_key)
@@ -329,6 +336,17 @@ def save_lead_supabase(psid: str, context: dict, lead_stage: str, user_message: 
         if user_message:
             payload["last_message"] = user_message[:500]
 
+        # Last bot message
+        lbm = context.get("last_bot_message", "")
+        if lbm:
+            payload["last_bot_message"] = lbm[:600]
+
+        # Dashboard operational fields (pass as kwargs via context extras)
+        for fld in ("needs_review", "review_reason", "status", "handoff_requested", "handoff_at", "channel"):
+            v = context.get(f"_lead_{fld}")
+            if v is not None:
+                payload[fld] = v
+
         resp = requests.post(url, json=payload, headers=_sb_headers(prefer_upsert=True), timeout=10)
         if resp.ok or resp.status_code == 201:
             logger.info(f"✅ Lead upserted: {psid} [{lead_stage}]")
@@ -336,6 +354,59 @@ def save_lead_supabase(psid: str, context: dict, lead_stage: str, user_message: 
             logger.error(f"❌ Supabase {resp.status_code}: {resp.text[:300]}")
     except Exception as e:
         logger.error(f"save_lead_supabase error: {e}")
+
+def log_chat_event(
+    psid: str,
+    event_type: str,
+    ctx: dict = None,
+    message: str = "",
+    bot_reply: str = "",
+    intent: str = "",
+    needs_review: bool = False,
+    review_reason: str = "",
+    metadata: dict = None,
+):
+    """บันทึก event ลง ai_chat_events table สำหรับ Dashboard"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    try:
+        ctx = ctx or {}
+        payload = {
+            "psid":                   psid,
+            "event_type":             event_type,
+            "role":                   "user" if event_type == "user_message" else "assistant",
+            "message":                (message or "")[:1000],
+            "bot_reply":              (bot_reply or "")[:1000],
+            "intent":                 intent or "",
+            "lead_stage":             ctx.get("lead_stage") or ctx.get("_lead_stage") or "cold",
+            "destination":            ctx.get("destination") or "",
+            "country":                ctx.get("country") or "",
+            "country_id":             str(ctx.get("country_id") or ""),
+            "city_hint":              ctx.get("city_hint") or "",
+            "selected_tour_code_real":ctx.get("selected_tour_code") or "",
+            "selected_web_code":      ctx.get("selected_tour_web_code") or "",
+            "selected_tour_name":     ctx.get("selected_tour_name") or "",
+            "selected_tour_url":      ctx.get("selected_tour_url") or "",
+            "selected_tour_airline":  ctx.get("selected_tour_airline") or "",
+            "ad_id":                  ctx.get("ad_id") or "",
+            "ad_ref":                 ctx.get("ad_ref") or "",
+            "ad_title":               ctx.get("ad_title") or "",
+            "needs_review":           needs_review,
+            "review_reason":          review_reason or "",
+        }
+        if metadata:
+            payload["metadata"] = metadata
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/ai_chat_events",
+            json=payload,
+            headers=_sb_headers(),
+            timeout=8,
+        )
+        if not resp.ok:
+            logger.warning(f"log_chat_event {event_type}: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        logger.warning(f"log_chat_event error: {e}")
+
 
 def list_leads_supabase(stage_filter: str = None, limit: int = 50) -> list:
     """ดึง leads จาก Supabase สำหรับ Dashboard"""
@@ -2113,6 +2184,8 @@ def process_message(sender_id: str, text: str):
             except Exception as e:
                 logger.error(f"fetch_tours error: {e}")
                 tour_data, tour_meta = "", []
+                ctx["_lead_needs_review"] = True
+                ctx["_lead_review_reason"] = "no_tour_found"
 
         # Fetch PDF info
         if action == "detail_pdf":
@@ -2213,11 +2286,35 @@ def process_message(sender_id: str, text: str):
                     save_customers_supabase(sender_id, new_ctx)
 
                 # Save to Supabase for hot/booking leads, or any handoff
-                if lead_stage in ("hot", "booking", "paid", "awaiting_docs", "complete") or action == "handoff":
+                is_handoff_action = (action == "handoff")
+                if is_handoff_action:
+                    new_ctx["_lead_handoff_requested"] = True
+                    new_ctx["_lead_handoff_at"] = datetime.now().isoformat()
+                    new_ctx["_lead_status"] = "waiting_team"
+                    new_ctx["_lead_channel"] = "messenger"
+
+                if lead_stage in ("hot", "booking", "paid", "awaiting_docs", "complete") or is_handoff_action:
                     save_lead_supabase(sender_id, new_ctx, lead_stage, text)
                 elif lead_stage == "warm" and new_ctx.get("destination"):
                     # warm leads with destination also worth tracking
+                    new_ctx["_lead_channel"] = "messenger"
                     save_lead_supabase(sender_id, new_ctx, lead_stage, text)
+
+                # Log chat event for dashboard
+                threading.Thread(
+                    target=log_chat_event,
+                    args=(sender_id,),
+                    kwargs={
+                        "event_type":   "handoff" if is_handoff_action else ("user_message" if tour_data == "" else "search_result"),
+                        "ctx":          new_ctx,
+                        "message":      text,
+                        "bot_reply":    reply[:600] if reply else "",
+                        "intent":       action,
+                        "needs_review": new_ctx.get("_lead_needs_review", False),
+                        "review_reason":new_ctx.get("_lead_review_reason", ""),
+                    },
+                    daemon=True,
+                ).start()
             except Exception as e:
                 logger.error(f"_update_crm error: {e}", exc_info=True)
 
