@@ -903,10 +903,14 @@ _CHANGE_TOUR_KEYWORDS = {
     "ขอดูเพิ่มเติม", "ดูโปรอื่น", "เปลี่ยนโปรแกรม", "ขอเปลี่ยน",
     "ลองดูตัวอื่น", "มีตัวอื่นไหม", "ขอดูตัวอื่น", "ขอเปรียบเทียบ",
     "ดูตัวอื่นด้วย", "มีโปรอื่นไหม", "ขอดูโปรอื่น",
+    # Fix 2: "ตัวใหม่" intent
+    "ตัวใหม่", "ขอใหม่", "ดูตัวใหม่", "ขอรายการใหม่",
+    "ดูเพิ่ม", "ขอเพิ่ม", "โปรใหม่", "ดูโปรใหม่",
+    "ขอดูโปรใหม่", "รายการใหม่", "ดูรายการใหม่",
 }
 
 def is_change_tour_request(text: str) -> bool:
-    """True ถ้า user ต้องการดูโปรแกรมอื่น (unlock booking lock)"""
+    """True ถ้า user ต้องการดูโปรแกรมอื่น (unlock booking lock + search new)"""
     return any(k in text for k in _CHANGE_TOUR_KEYWORDS)
 
 def extract_booking_fields_from_text(text: str, existing: dict) -> dict:
@@ -3070,8 +3074,15 @@ def process_message(sender_id: str, text: str):
             action = "search"
             logger.info(f"Continuation detected → search country_id={country_id}")
 
-        # ── Change-tour unlock: ลูกค้าพูดชัดว่าต้องการเปลี่ยนโปรแกรม ─────────
-        if is_change_tour_request(text) and ctx.get("booking_context_locked"):
+        # ── Change-tour unlock + Fix 2: "ตัวใหม่" → clear options + search again ──
+        if is_change_tour_request(text):
+            # preserve destination info ก่อน clear
+            _preserve_cid    = country_id or ctx.get("country_id")
+            _preserve_city   = city_hint or ctx.get("city_hint")
+            _preserve_mode   = ctx.get("search_mode", "normal")
+            _preserve_budget = ctx.get("budget_per_person")
+            _preserve_urgency= departure_urgency or ctx.get("departure_urgency")
+            # clear options + lock
             ctx["booking_context_locked"] = False
             ctx["selected_tour"]          = None
             ctx["selected_tour_name"]     = None
@@ -3079,8 +3090,52 @@ def process_message(sender_id: str, text: str):
             ctx["selected_tour_code"]     = None
             ctx["selected_tour_web_code"] = None
             ctx["booking_fields"]         = {}
+            ctx["last_options"]           = []
             ctx["pending_action"]         = None
-            logger.info(f"[BOOKING_UNLOCK] user requested change tour — clearing lock")
+            logger.info(f"[BOOKING_UNLOCK] user wants new options — clearing + re-search")
+            # force new search with preserved destination
+            if _preserve_cid:
+                action        = "search"
+                should_search = True
+                missing_field_to_ask = None
+                country_id    = str(_preserve_cid)
+                city_hint     = _preserve_city
+                if _preserve_urgency:
+                    departure_urgency = _preserve_urgency
+                logger.info(f"[NEW_SEARCH] country={_preserve_cid} city={_preserve_city} mode={_preserve_mode}")
+
+        # ── Fix 3: Repeated destination = confirmation → search now ──────────
+        # ถ้า user พิมพ์ประเทศ/เมืองที่รู้แล้วซ้ำ → treat as confirmation ไม่ถามซ้ำ
+        if not should_search and action in ("search", "reply"):
+            _ctx_country_name = (ctx.get("country") or "").strip()
+            _ctx_city         = (ctx.get("city_hint") or "").strip()
+            _ctx_cid          = ctx.get("country_id")
+            _text_clean       = text.strip()
+            _dest_repeated = (
+                (_ctx_country_name and _ctx_country_name in _text_clean)
+                or (_ctx_city and _ctx_city in _text_clean)
+            )
+            if _dest_repeated and _ctx_cid:
+                should_search = True
+                action = "search"
+                missing_field_to_ask = None
+                if not country_id:
+                    country_id = str(_ctx_cid)
+                if not city_hint and _ctx_city and _ctx_city in _text_clean:
+                    city_hint = _ctx_city
+                logger.info(f"[DEST_REPEAT] '{_text_clean[:30]}' matches ctx → force search")
+
+        # ── Fix 5: Fee question + selected_tour → redirect to detail_pdf ────
+        # ป้องกัน booking SM ตัดสาย → fee question ต้อง detail_pdf เสมอ
+        _FEE_KW_EARLY = {"ค่าทิป", "ทิปไกด์", "ทิปคนขับ", "มัดจำ", "ค่ามัดจำ",
+                         "วีซ่า", "ค่าวีซ่า", "พักเดี่ยว", "ค่าพักเดี่ยว",
+                         "จ่ายจริง", "ค่าใช้จ่าย", "ราคาจริง"}
+        _is_fee_q_early = any(k in text for k in _FEE_KW_EARLY)
+        if _is_fee_q_early and ctx.get("selected_tour"):
+            action        = "detail_pdf"
+            should_search = False
+            missing_field_to_ask = None
+            logger.info(f"[FEE_REDIRECT] fee question + selected_tour → detail_pdf")
 
         # ── Booking State Machine — ถ้าล็อคโปรแกรมแล้ว ─────────────────────
         _booking_locked = ctx.get("booking_context_locked") and ctx.get("selected_tour")
@@ -3255,12 +3310,12 @@ def process_message(sender_id: str, text: str):
             else:
                 action = "reply"
 
-        # ── Fix 4: Fee-only question + ไม่มีข้อมูลค่าธรรมเนียม → ตอบสั้น ──────
-        # ถ้าลูกค้าถามแค่ค่าทิป/มัดจำ/วีซ่า/พักเดี่ยว และไม่มีข้อมูลจาก DB → handoff
+        # ── Fix 4 (Task #74 Fix 1): Fee-only question + ไม่มีข้อมูลค่าธรรมเนียม → handoff + pause ──
+        # ถ้าลูกค้าถามค่าทิป/มัดจำ/วีซ่า/พักเดี่ยว และมี selected_tour แต่ไม่มีข้อมูล → handoff ทันที
         _FEE_KEYWORDS = {"ค่าทิป", "ทิปไกด์", "ทิปคนขับ", "มัดจำ", "ค่ามัดจำ",
                          "วีซ่า", "ค่าวีซ่า", "พักเดี่ยว", "ค่าพักเดี่ยว"}
         _is_fee_question = any(k in text for k in _FEE_KEYWORDS)
-        if _is_fee_question and action == "detail_pdf" and not is_handoff:
+        if _is_fee_question and ctx.get("selected_tour") and not is_handoff:
             # ตรวจว่ามี fee ใน last_options หรือ selected_tour หรือ tour_data ไหม
             _sel = ctx.get("selected_tour") or {}
             _has_fee = (
@@ -3272,16 +3327,28 @@ def process_message(sender_id: str, text: str):
                 or ("วีซ่า" in tour_data)
             )
             if not _has_fee and not tour_data:
-                # ไม่มีข้อมูล → ตอบสั้นแล้ว handoff
+                # ไม่มีข้อมูล → ตอบสั้น + handoff + pause bot 2h
                 _fee_short = (
                     "ขออภัยค่ะ ข้อมูลค่าทิป/มัดจำ/วีซ่า ของโปรแกรมนี้ยังไม่มีในระบบ 🙏\n"
                     "ทีมแอดมินจะติดต่อกลับเพื่อแจ้งรายละเอียดภายใน 15 นาทีนะคะ ☺️"
                 )
                 send_message(sender_id, _fee_short)
                 is_handoff = True
-                save_history(sender_id, "user", text)
-                save_history(sender_id, "assistant", _fee_short)
-                log_chat_event(sender_id, "fee_handoff", text, "detail_pdf", lead_stage, ctx)
+                _fee_tour_name = _sel.get("name") or ctx.get("selected_tour_name") or "ไม่ระบุ"
+                _fee_case_id   = ctx.get("case_id") or sender_id[-6:]
+                notify_line(
+                    f"⚠️ [FEE MISSING] ลูกค้าถาม {text[:40]}\n"
+                    f"โปรแกรม: {_fee_tour_name}\n"
+                    f"PSID: ...{sender_id[-6:]} | Case: {_fee_case_id}\n"
+                    "→ Bot หยุด 2 ชม. รอแอดมินตอบ"
+                )
+                ctx["needs_review"]   = True
+                ctx["review_reason"]  = "fee_detail_missing"
+                pause_bot(sender_id, ctx, "fee_missing_handoff", hours=2)
+                save_context(sender_id, ctx)
+                save_to_history(sender_id, "user", text)
+                save_to_history(sender_id, "assistant", _fee_short)
+                log_chat_event(sender_id, "fee_handoff", text, action, lead_stage, ctx)
                 return jsonify({"status": "ok"}), 200
 
         # ── Departure month filter ────────────────────────────────────────────
