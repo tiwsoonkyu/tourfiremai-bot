@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🔥 TourFireMai — AI Chat Control Room</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #1e293b; }
+  ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  .tab-btn { transition: all .15s; }
+  .tab-btn.active { background: #f97316; color: #fff; }
+  .tab-btn:not(.active):hover { background: #1e293b; }
+  .kpi-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 18px 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th { background: #1e293b; color: #94a3b8; font-weight: 600; text-align: left; padding: 8px 10px;
+       position: sticky; top: 0; z-index: 10; border-bottom: 1px solid #334155; white-space: nowrap; }
+  td { padding: 7px 10px; border-bottom: 1px solid #1e293b; vertical-align: top; max-width: 240px; }
+  tr:hover td { background: #1e293b88; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .badge-cold     { background: #334155; color: #94a3b8; }
+  .badge-warm     { background: #7c3aed22; color: #a78bfa; border: 1px solid #7c3aed44; }
+  .badge-hot      { background: #dc262622; color: #f87171; border: 1px solid #dc262644; }
+  .badge-booking  { background: #05966922; color: #34d399; border: 1px solid #05966944; }
+  .badge-paid     { background: #0891b222; color: #38bdf8; border: 1px solid #0891b244; }
+  .badge-open     { background: #33415522; color: #94a3b8; }
+  .badge-waiting  { background: #d9770622; color: #fb923c; }
+  .badge-contacted{ background: #7c3aed22; color: #a78bfa; }
+  .badge-booked   { background: #05966922; color: #34d399; }
+  .badge-review   { background: #dc262622; color: #f87171; border: 1px solid #dc262666; }
+  .badge-ok       { background: #05966922; color: #34d399; }
+  .truncate-cell  { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+  .config-panel { background: #1e293b; border: 1px solid #f97316; border-radius: 10px; padding: 16px; margin: 12px; }
+  input[type=text], select { background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+    border-radius: 6px; padding: 5px 10px; font-size: 12px; outline: none; }
+  input[type=text]:focus, select:focus { border-color: #f97316; }
+  .loader { border: 3px solid #334155; border-top: 3px solid #f97316; border-radius: 50%;
+    width: 24px; height: 24px; animation: spin .8s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .empty-state { text-align: center; padding: 40px; color: #475569; font-size: 14px; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- ══════════════════════════════════════════════════════════
+     CONFIG PANEL (fill once — saved in memory per session)
+═══════════════════════════════════════════════════════════ -->
+<div id="configPanel" class="config-panel">
+  <div class="flex items-center gap-3 flex-wrap">
+    <span class="text-orange-400 font-bold text-sm">⚙️ Supabase Config</span>
+    <input type="text" id="cfgUrl"  placeholder="https://xxxx.supabase.co" style="width:280px" />
+    <input type="text" id="cfgKey"  placeholder="anon public key" style="width:340px" />
+    <button onclick="connectSupabase()" class="bg-orange-500 hover:bg-orange-400 text-white text-sm font-semibold px-4 py-1 rounded-lg">Connect</button>
+    <span id="connStatus" class="text-xs text-slate-400"></span>
+    <button onclick="document.getElementById('configPanel').style.display='none'"
+      class="ml-auto text-slate-500 hover:text-slate-300 text-xs">hide</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     HEADER
+═══════════════════════════════════════════════════════════ -->
+<header class="flex items-center gap-3 px-4 py-3 bg-slate-900 border-b border-slate-700">
+  <span class="text-2xl">🔥</span>
+  <div>
+    <div class="font-bold text-orange-400 text-base leading-tight">รวมทัวร์ไฟไหม้ — AI Chat Control Room</div>
+    <div class="text-xs text-slate-400" id="lastRefresh">กำลังโหลด...</div>
+  </div>
+  <div class="ml-auto flex items-center gap-3">
+    <!-- Date Filter -->
+    <select id="dateFilter" onchange="refreshAll()" class="text-xs">
+      <option value="1">วันนี้</option>
+      <option value="2">เมื่อวาน</option>
+      <option value="7" selected>7 วัน</option>
+      <option value="30">30 วัน</option>
+    </select>
+    <!-- Search -->
+    <input type="text" id="globalSearch" placeholder="ค้นหา PSID / ชื่อ / รหัสทัวร์" style="width:200px"
+      oninput="applySearch()" />
+    <button onclick="refreshAll()" class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-1 rounded">🔄 Refresh</button>
+    <button onclick="document.getElementById('configPanel').style.display=''" class="text-slate-400 text-xs">⚙️</button>
+  </div>
+</header>
+
+<!-- ══════════════════════════════════════════════════════════
+     TABS
+═══════════════════════════════════════════════════════════ -->
+<div class="flex gap-1 px-4 py-2 bg-slate-900 border-b border-slate-700">
+  <button class="tab-btn active px-4 py-1.5 text-sm rounded-lg font-semibold" data-tab="overview"    onclick="switchTab(this,'overview')">📊 Overview</button>
+  <button class="tab-btn px-4 py-1.5 text-sm rounded-lg font-semibold"        data-tab="inbox"       onclick="switchTab(this,'inbox')">💬 Live Inbox</button>
+  <button class="tab-btn px-4 py-1.5 text-sm rounded-lg font-semibold"        data-tab="hotleads"    onclick="switchTab(this,'hotleads')">🔥 Hot Leads</button>
+  <button class="tab-btn px-4 py-1.5 text-sm rounded-lg font-semibold"        data-tab="review"      onclick="switchTab(this,'review')">⚠️ Needs Review</button>
+  <button class="tab-btn px-4 py-1.5 text-sm rounded-lg font-semibold"        data-tab="ads"         onclick="switchTab(this,'ads')">📣 Ads / Source</button>
+</div>
+
+<div id="mainContent" class="p-4" style="max-height: calc(100vh - 120px); overflow-y: auto;">
+
+<!-- ══════════════════════════════════════════════════════════
+     TAB: OVERVIEW
+═══════════════════════════════════════════════════════════ -->
+<div id="tab-overview">
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4" id="kpiCards">
+    <div class="kpi-card"><div class="text-3xl font-bold text-white" id="kpi-total">—</div><div class="text-xs text-slate-400 mt-1">Conversations (period)</div></div>
+    <div class="kpi-card"><div class="text-3xl font-bold text-orange-400" id="kpi-hot">—</div><div class="text-xs text-slate-400 mt-1">Hot / Booking Leads</div></div>
+    <div class="kpi-card"><div class="text-3xl font-bold text-purple-400" id="kpi-handoff">—</div><div class="text-xs text-slate-400 mt-1">Handoff Pending</div></div>
+    <div class="kpi-card"><div class="text-3xl font-bold text-red-400" id="kpi-review">—</div><div class="text-xs text-slate-400 mt-1">Needs Review</div></div>
+    <div class="kpi-card"><div class="text-3xl font-bold text-green-400" id="kpi-booked">—</div><div class="text-xs text-slate-400 mt-1">Booked / Paid</div></div>
+    <div class="kpi-card"><div class="text-3xl font-bold text-yellow-400" id="kpi-new">—</div><div class="text-xs text-slate-400 mt-1">New Customers</div></div>
+    <div class="kpi-card col-span-2"><div class="text-lg font-bold text-cyan-400 truncate" id="kpi-top-dest">—</div><div class="text-xs text-slate-400 mt-1">🗺️ Top Destination</div><div class="text-sm font-semibold text-slate-300 mt-1 truncate" id="kpi-top-code">—</div><div class="text-xs text-slate-400">🏷️ Top Tour Code</div></div>
+  </div>
+
+  <!-- Stage breakdown chart (bar) -->
+  <div class="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4">
+    <div class="text-sm font-semibold text-slate-300 mb-3">Lead Stage Distribution</div>
+    <div id="stageBar" class="flex gap-2 items-end h-20"></div>
+    <div id="stageLabels" class="flex gap-2 mt-2 text-xs text-slate-400 flex-wrap"></div>
+  </div>
+
+  <!-- Recent events mini table -->
+  <div class="bg-slate-800 border border-slate-700 rounded-xl p-4">
+    <div class="text-sm font-semibold text-slate-300 mb-2">Recent Events (last 10)</div>
+    <div style="overflow-x:auto"><table id="recentEventsTable">
+      <thead><tr><th>เวลา</th><th>PSID</th><th>Type</th><th>ข้อความ</th><th>Intent</th><th>Stage</th></tr></thead>
+      <tbody id="recentEventsBody"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     TAB: LIVE INBOX
+═══════════════════════════════════════════════════════════ -->
+<div id="tab-inbox" style="display:none">
+  <div class="flex gap-2 mb-3 flex-wrap">
+    <select id="inboxStage" onchange="loadInbox()" class="text-xs"><option value="">All Stages</option><option>cold</option><option>warm</option><option>hot</option><option>booking</option><option>paid</option></select>
+    <select id="inboxStatus" onchange="loadInbox()" class="text-xs"><option value="">All Status</option><option>open</option><option>waiting_team</option><option>contacted</option><option>booked</option><option>lost</option></select>
+    <select id="inboxCountry" onchange="loadInbox()" class="text-xs" id="countryFilter">
+      <option value="">All Destinations</option>
+      <option>ญี่ปุ่น</option><option>เกาหลี</option><option>จีน</option><option>เวียดนาม</option>
+      <option>ฮ่องกง</option><option>สิงคโปร์</option><option>มาเลเซีย</option><option>ไต้หวัน</option>
+    </select>
+    <label class="flex items-center gap-1 text-xs text-slate-300 cursor-pointer">
+      <input type="checkbox" id="inboxReview" onchange="loadInbox()"> Needs Review only
+    </label>
+    <span class="text-xs text-slate-500 ml-auto" id="inboxCount"></span>
+  </div>
+  <div style="overflow-x:auto"><table id="inboxTable">
+    <thead><tr>
+      <th>เวลาอัพเดท</th><th>ชื่อ / PSID</th><th>ปลายทาง</th><th>ข้อความล่าสุด</th><th>บอทตอบล่าสุด</th>
+      <th>Stage</th><th>Status</th><th>รหัสทัวร์จริง</th><th>รหัสเว็บ</th><th>สายการบิน</th>
+      <th>Ad Ref</th><th>Review</th>
+    </tr></thead>
+    <tbody id="inboxBody"><tr><td colspan="12" class="empty-state">Loading...</td></tr></tbody>
+  </table></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     TAB: HOT LEADS
+═══════════════════════════════════════════════════════════ -->
+<div id="tab-hotleads" style="display:none">
+  <div class="flex gap-2 mb-3 flex-wrap items-center">
+    <span class="text-xs text-orange-400 font-semibold">🔥 Hot / Booking / Handoff Pending</span>
+    <span class="text-xs text-slate-500 ml-auto" id="hotCount"></span>
+  </div>
+  <div style="overflow-x:auto"><table id="hotTable">
+    <thead><tr>
+      <th>อัพเดท</th><th>ชื่อ</th><th>เบอร์ / LINE</th><th>ปลายทาง</th>
+      <th>รหัสทัวร์จริง</th><th>รหัสเว็บ</th><th>คน</th><th>งบ/คน</th>
+      <th>ข้อความล่าสุด</th><th>Stage</th><th>Status</th><th>Ad</th>
+    </tr></thead>
+    <tbody id="hotBody"><tr><td colspan="12" class="empty-state">Loading...</td></tr></tbody>
+  </table></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     TAB: NEEDS REVIEW
+═══════════════════════════════════════════════════════════ -->
+<div id="tab-review" style="display:none">
+  <div class="flex gap-2 mb-3 flex-wrap items-center">
+    <select id="reviewReason" onchange="loadReview()" class="text-xs">
+      <option value="">All Reasons</option>
+      <option>no_tour_found</option><option>pdf_read_failed</option><option>fee_detail_missing</option>
+      <option>fallback</option><option>handoff_requested</option>
+      <option>price_confirmation_needed</option><option>seat_confirmation_needed</option>
+    </select>
+    <span class="text-xs text-slate-500 ml-auto" id="reviewCount"></span>
+  </div>
+  <div style="overflow-x:auto"><table id="reviewTable">
+    <thead><tr>
+      <th>เวลา</th><th>PSID / ชื่อ</th><th>เหตุผล</th><th>ข้อความลูกค้า</th>
+      <th>บอทตอบ</th><th>รหัสทัวร์</th><th>Action ที่ต้องทำ</th>
+    </tr></thead>
+    <tbody id="reviewBody"><tr><td colspan="7" class="empty-state">Loading...</td></tr></tbody>
+  </table></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     TAB: ADS / SOURCE PERFORMANCE
+═══════════════════════════════════════════════════════════ -->
+<div id="tab-ads" style="display:none">
+  <div class="mb-3 text-xs text-slate-400">ที่มาของ lead แยกตาม ad_id / ad_ref (จาก FB Messenger referral)</div>
+  <div style="overflow-x:auto"><table id="adsTable">
+    <thead><tr>
+      <th>Ad / Source</th><th>Ad ID</th><th>Ad Ref</th>
+      <th>Conversations</th><th>Hot Leads</th><th>Handoff</th>
+      <th>Needs Review</th><th>Top Destination</th><th>Top Tour Code</th>
+    </tr></thead>
+    <tbody id="adsBody"><tr><td colspan="9" class="empty-state">Loading...</td></tr></tbody>
+  </table></div>
+</div>
+
+</div><!-- /mainContent -->
+
+<script>
+// ══════════════════════════════════════════════════════════════
+// CONFIG & INIT
+// ══════════════════════════════════════════════════════════════
+const CONFIG = {
+  url: '',
+  key: ''
+};
+let supabaseClient = null;
+
+// Pre-fill from session storage (not localStorage per policy — uses module-level vars)
+(function() {
+  const saved = sessionStorage.getItem('sb_config');
+  if (saved) {
+    const c = JSON.parse(saved);
+    document.getElementById('cfgUrl').value = c.url || '';
+    document.getElementById('cfgKey').value = c.key || '';
+    CONFIG.url = c.url; CONFIG.key = c.key;
+    if (c.url && c.key) connectSupabase(true);
+  }
+})();
+
+function connectSupabase(silent = false) {
+  const url = document.getElementById('cfgUrl').value.trim();
+  const key = document.getElementById('cfgKey').value.trim();
+  if (!url || !key) { alert('กรุณากรอก Supabase URL และ Anon Key'); return; }
+  CONFIG.url = url; CONFIG.key = key;
+  sessionStorage.setItem('sb_config', JSON.stringify({url, key}));
+  supabaseClient = supabase.createClient(url, key);
+  document.getElementById('connStatus').textContent = '✅ Connected';
+  document.getElementById('connStatus').className = 'text-xs text-green-400';
+  if (!silent) refreshAll();
+}
+
+// ══════════════════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════════════════
+function getDateFilter() {
+  const days = parseInt(document.getElementById('dateFilter').value);
+  const d = new Date();
+  d.setDate(d.getDate() - days + 1);
+  d.setHours(0,0,0,0);
+  return d.toISOString();
+}
+
+function fmtDt(s) {
+  if (!s) return '—';
+  const d = new Date(s);
+  const now = new Date();
+  const diff = Math.floor((now - d) / 60000);
+  if (diff < 60) return `${diff}นาทีที่แล้ว`;
+  if (diff < 1440) return `${Math.floor(diff/60)}ชม.ที่แล้ว`;
+  return d.toLocaleDateString('th-TH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+
+function stageBadge(s) {
+  const map = {cold:'badge-cold',warm:'badge-warm',hot:'badge-hot',booking:'badge-booking',paid:'badge-paid'};
+  return `<span class="badge ${map[s]||'badge-cold'}">${s||'cold'}</span>`;
+}
+
+function statusBadge(s) {
+  const map = {open:'badge-open',waiting_team:'badge-waiting',waiting_customer:'badge-waiting',contacted:'badge-contacted',booked:'badge-booked',lost:'badge-review'};
+  return `<span class="badge ${map[s]||'badge-open'}">${s||'open'}</span>`;
+}
+
+function reviewBadge(needs, reason) {
+  if (!needs) return '<span class="badge badge-ok">OK</span>';
+  return `<span class="badge badge-review" title="${reason||''}">⚠️ ${reason||'review'}</span>`;
+}
+
+function shortMsg(s, n=80) {
+  if (!s) return '<span class="text-slate-500">—</span>';
+  const clean = s.replace(/\n/g,' ').trim();
+  return `<span class="truncate-cell" title="${clean.replace(/"/g,'&quot;')}">${clean.length>n?clean.slice(0,n)+'…':clean}</span>`;
+}
+
+function actionMap(reason) {
+  const m = {
+    no_tour_found: 'ค้นหาทัวร์ด้วยตัวเอง / แจ้งลูกค้าว่าไม่มีช่วงนั้น',
+    pdf_read_failed: 'เปิด PDF ด้วยตัวเอง ส่งข้อมูลเพิ่มเติม',
+    fallback: 'ตรวจ conversation — bot ตอบถูกไหม',
+    handoff_requested: '🔴 ติดต่อลูกค้าด่วน',
+    price_confirmation_needed: 'เช็กราคาล่าสุดกับ Wholesale',
+    seat_confirmation_needed: 'เช็กที่นั่งว่างกับ Wholesale',
+    fee_detail_missing: 'ส่งค่าใช้จ่ายเพิ่มเติมให้ลูกค้า',
+  };
+  return m[reason] || 'ตรวจสอบ conversation';
+}
+
+function sb() { return supabaseClient; }
+
+// ══════════════════════════════════════════════════════════════
+// TAB SWITCHING
+// ══════════════════════════════════════════════════════════════
+const TABS = ['overview','inbox','hotleads','review','ads'];
+function switchTab(btn, tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  TABS.forEach(t => document.getElementById('tab-'+t).style.display = t===tab?'':'none');
+  loadTab(tab);
+}
+
+function loadTab(tab) {
+  if (tab==='overview')  loadOverview();
+  if (tab==='inbox')     loadInbox();
+  if (tab==='hotleads')  loadHot();
+  if (tab==='review')    loadReview();
+  if (tab==='ads')       loadAds();
+}
+
+async function refreshAll() {
+  document.getElementById('lastRefresh').textContent = 'กำลังโหลด...';
+  const active = document.querySelector('.tab-btn.active')?.dataset?.tab || 'overview';
+  await loadTab(active);
+  document.getElementById('lastRefresh').textContent = 'อัพเดทล่าสุด: ' + new Date().toLocaleTimeString('th-TH');
+}
+
+function applySearch() {
+  const q = document.getElementById('globalSearch').value.toLowerCase();
+  document.querySelectorAll('#inboxBody tr, #hotBody tr, #reviewBody tr').forEach(tr => {
+    tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+// ══════════════════════════════════════════════════════════════
+// OVERVIEW
+// ══════════════════════════════════════════════════════════════
+async function loadOverview() {
+  if (!sb()) return showError('overview');
+  const since = getDateFilter();
+
+  // KPIs from leads table
+  const { data: leads, error } = await sb()
+    .from('leads')
+    .select('id,lead_stage,status,needs_review,handoff_requested,country,selected_tour_code_real,created_at')
+    .gte('updated_at', since);
+
+  if (error) { console.error(error); return; }
+  const leads_data = leads || [];
+
+  document.getElementById('kpi-total').textContent    = leads_data.length;
+  document.getElementById('kpi-hot').textContent      = leads_data.filter(l=>['hot','booking','paid','awaiting_docs'].includes(l.lead_stage)).length;
+  document.getElementById('kpi-handoff').textContent  = leads_data.filter(l=>l.handoff_requested).length;
+  document.getElementById('kpi-review').textContent   = leads_data.filter(l=>l.needs_review).length;
+  document.getElementById('kpi-booked').textContent   = leads_data.filter(l=>['booked'].includes(l.status)||['paid','complete'].includes(l.lead_stage)).length;
+
+  // New customers
+  const { count: newCount } = await sb().from('customers').select('id',{count:'exact'}).gte('created_at',since);
+  document.getElementById('kpi-new').textContent = newCount || 0;
+
+  // Top destination
+  const destCount = {};
+  leads_data.forEach(l => { if(l.country) destCount[l.country] = (destCount[l.country]||0)+1; });
+  const topDest = Object.entries(destCount).sort((a,b)=>b[1]-a[1])[0];
+  document.getElementById('kpi-top-dest').textContent = topDest ? `${topDest[0]} (${topDest[1]})` : '—';
+
+  // Top tour code
+  const codeCount = {};
+  leads_data.forEach(l => { if(l.selected_tour_code_real) codeCount[l.selected_tour_code_real] = (codeCount[l.selected_tour_code_real]||0)+1; });
+  const topCode = Object.entries(codeCount).sort((a,b)=>b[1]-a[1])[0];
+  document.getElementById('kpi-top-code').textContent = topCode ? `${topCode[0]} (${topCode[1]} leads)` : '—';
+
+  // Stage bar chart
+  const stages = ['cold','warm','hot','booking','paid'];
+  const stageCounts = {};
+  leads_data.forEach(l => { const s=l.lead_stage||'cold'; stageCounts[s]=(stageCounts[s]||0)+1; });
+  const max = Math.max(...stages.map(s=>stageCounts[s]||0), 1);
+  const colors = {cold:'#475569',warm:'#7c3aed',hot:'#dc2626',booking:'#059669',paid:'#0891b2'};
+  document.getElementById('stageBar').innerHTML = stages.map(s => {
+    const h = Math.round(((stageCounts[s]||0)/max)*70);
+    return `<div style="display:flex;flex-direction:column;align-items:center;flex:1">
+      <span style="font-size:10px;color:#94a3b8;margin-bottom:2px">${stageCounts[s]||0}</span>
+      <div style="background:${colors[s]};width:100%;height:${h+5}px;border-radius:4px 4px 0 0"></div>
+    </div>`;
+  }).join('');
+  document.getElementById('stageLabels').innerHTML = stages.map(s =>
+    `<span style="flex:1;text-align:center;font-size:10px">${s}</span>`).join('');
+
+  // Recent events
+  const { data: events } = await sb()
+    .from('ai_chat_events')
+    .select('created_at,psid,event_type,message,intent,lead_stage')
+    .order('created_at',{ascending:false})
+    .limit(10);
+
+  const tbody = document.getElementById('recentEventsBody');
+  if (!events?.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">ยังไม่มี events — bot จะเริ่ม log เมื่อมี conversation</td></tr>';
+    return;
+  }
+  tbody.innerHTML = events.map(e => `<tr>
+    <td class="text-slate-400 whitespace-nowrap">${fmtDt(e.created_at)}</td>
+    <td class="font-mono text-xs text-slate-300">${(e.psid||'').slice(-8)}</td>
+    <td><span class="badge" style="background:#1e293b;color:#94a3b8">${e.event_type||''}</span></td>
+    <td>${shortMsg(e.message)}</td>
+    <td class="text-slate-400 text-xs">${e.intent||'—'}</td>
+    <td>${stageBadge(e.lead_stage)}</td>
+  </tr>`).join('');
+}
+
+function showError(tab) {
+  document.querySelector(`#tab-${tab} tbody`).innerHTML =
+    '<tr><td colspan="20" class="empty-state text-red-400">⚠️ กรุณา Connect Supabase ก่อน</td></tr>';
+}
+
+// ══════════════════════════════════════════════════════════════
+// LIVE INBOX
+// ══════════════════════════════════════════════════════════════
+async function loadInbox() {
+  if (!sb()) { showError('inbox'); return; }
+  const since = getDateFilter();
+  let q = sb().from('leads')
+    .select('id,psid,customer_name,country,lead_stage,status,needs_review,review_reason,last_message,last_bot_message,selected_tour_code_real,selected_web_code,selected_tour_airline,ad_ref,ad_title,updated_at')
+    .gte('updated_at', since)
+    .order('updated_at',{ascending:false})
+    .limit(200);
+
+  const stage = document.getElementById('inboxStage').value;
+  if (stage) q = q.eq('lead_stage', stage);
+  const status = document.getElementById('inboxStatus').value;
+  if (status) q = q.eq('status', status);
+  const country = document.getElementById('inboxCountry').value;
+  if (country) q = q.eq('country', country);
+  if (document.getElementById('inboxReview').checked) q = q.eq('needs_review', true);
+
+  const { data, error } = await q;
+  if (error) { console.error(error); return; }
+  const rows = data || [];
+  document.getElementById('inboxCount').textContent = `${rows.length} rows`;
+
+  const tbody = document.getElementById('inboxBody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="empty-state">ยังไม่มีข้อมูลในช่วงนี้</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `<tr>
+    <td class="text-slate-400 whitespace-nowrap text-xs">${fmtDt(r.updated_at)}</td>
+    <td>
+      <div class="font-semibold text-slate-200 text-xs">${r.customer_name||'—'}</div>
+      <div class="font-mono text-xs text-slate-500">${(r.psid||'').slice(-8)}</div>
+    </td>
+    <td class="text-sm">${r.country||'—'}</td>
+    <td>${shortMsg(r.last_message, 70)}</td>
+    <td class="text-slate-400">${shortMsg(r.last_bot_message, 70)}</td>
+    <td>${stageBadge(r.lead_stage)}</td>
+    <td>${statusBadge(r.status)}</td>
+    <td class="font-mono text-xs text-green-400">${r.selected_tour_code_real||'—'}</td>
+    <td class="font-mono text-xs text-slate-400">${r.selected_web_code||'—'}</td>
+    <td class="text-xs text-slate-400">${r.selected_tour_airline||'—'}</td>
+    <td class="text-xs text-slate-500">${r.ad_ref||r.ad_title||'—'}</td>
+    <td>${reviewBadge(r.needs_review, r.review_reason)}</td>
+  </tr>`).join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+// HOT LEADS
+// ══════════════════════════════════════════════════════════════
+async function loadHot() {
+  if (!sb()) { showError('hotleads'); return; }
+  const since = getDateFilter();
+
+  const { data, error } = await sb()
+    .from('leads')
+    .select('*')
+    .gte('updated_at', since)
+    .or('lead_stage.in.(hot,booking,paid),handoff_requested.eq.true')
+    .order('updated_at',{ascending:false})
+    .limit(100);
+
+  if (error) { console.error(error); return; }
+  const rows = data || [];
+  document.getElementById('hotCount').textContent = `${rows.length} leads`;
+
+  const tbody = document.getElementById('hotBody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="empty-state">🎉 ยังไม่มี hot leads ในช่วงนี้</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `<tr>
+    <td class="text-slate-400 whitespace-nowrap text-xs">${fmtDt(r.updated_at)}</td>
+    <td>
+      <div class="font-semibold text-orange-300">${r.customer_name||'—'}</div>
+      <div class="font-mono text-xs text-slate-500">${(r.psid||'').slice(-8)}</div>
+    </td>
+    <td class="text-green-400 text-sm">${r.phone||'—'}</td>
+    <td class="text-sm">${r.country||''} ${r.destination&&r.destination!==r.country?r.destination:''}</td>
+    <td class="font-mono text-xs text-green-400 font-bold">${r.selected_tour_code_real||r.selected_tour_name||'—'}</td>
+    <td class="font-mono text-xs text-slate-400">${r.selected_web_code||'—'}</td>
+    <td class="text-center">${r.pax||'—'}</td>
+    <td class="text-right">${r.budget_per_person?r.budget_per_person.toLocaleString()+'฿':'—'}</td>
+    <td>${shortMsg(r.last_message, 60)}</td>
+    <td>${stageBadge(r.lead_stage)}</td>
+    <td>${statusBadge(r.status)}</td>
+    <td class="text-xs text-slate-500 truncate-cell">${r.ad_title||r.ad_ref||r.ad_id||'—'}</td>
+  </tr>`).join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+// NEEDS REVIEW
+// ══════════════════════════════════════════════════════════════
+async function loadReview() {
+  if (!sb()) { showError('review'); return; }
+  const since = getDateFilter();
+
+  // Pull from ai_chat_events (more granular) + fallback to leads
+  let q = sb().from('ai_chat_events')
+    .select('created_at,psid,review_reason,message,bot_reply,selected_tour_code_real,selected_web_code,lead_stage')
+    .eq('needs_review', true)
+    .gte('created_at', since)
+    .order('created_at',{ascending:false})
+    .limit(200);
+
+  const reason = document.getElementById('reviewReason').value;
+  if (reason) q = q.eq('review_reason', reason);
+
+  const { data: events, error } = await q;
+
+  // Also pull from leads table for leads flagged needs_review (before events table has data)
+  const { data: flaggedLeads } = await sb().from('leads')
+    .select('updated_at,psid,customer_name,review_reason,last_message,last_bot_message,selected_tour_code_real,lead_stage')
+    .eq('needs_review', true)
+    .gte('updated_at', since)
+    .order('updated_at',{ascending:false})
+    .limit(100);
+
+  const tbody = document.getElementById('reviewBody');
+  const totalCount = (events?.length||0) + (flaggedLeads?.length||0);
+  document.getElementById('reviewCount').textContent = `${totalCount} cases`;
+
+  let html = '';
+
+  // Events rows
+  (events||[]).forEach(e => {
+    html += `<tr>
+      <td class="text-slate-400 whitespace-nowrap text-xs">${fmtDt(e.created_at)}</td>
+      <td class="font-mono text-xs text-slate-300">${(e.psid||'').slice(-8)}</td>
+      <td><span class="badge badge-review">${e.review_reason||'review'}</span></td>
+      <td>${shortMsg(e.message)}</td>
+      <td class="text-slate-400">${shortMsg(e.bot_reply)}</td>
+      <td class="font-mono text-xs text-green-400">${e.selected_tour_code_real||'—'}</td>
+      <td class="text-xs text-orange-300">${actionMap(e.review_reason)}</td>
+    </tr>`;
+  });
+
+  // Leads rows (supplement — show only if events is empty or different psids)
+  const seenPsid = new Set((events||[]).map(e=>e.psid));
+  (flaggedLeads||[]).filter(l=>!seenPsid.has(l.psid)).forEach(l => {
+    html += `<tr style="opacity:0.75">
+      <td class="text-slate-400 whitespace-nowrap text-xs">${fmtDt(l.updated_at)}</td>
+      <td>
+        <div class="text-slate-300 text-xs">${l.customer_name||'—'}</div>
+        <div class="font-mono text-xs text-slate-500">${(l.psid||'').slice(-8)}</div>
+      </td>
+      <td><span class="badge badge-review">${l.review_reason||'review'}</span></td>
+      <td>${shortMsg(l.last_message)}</td>
+      <td class="text-slate-400">${shortMsg(l.last_bot_message)}</td>
+      <td class="font-mono text-xs text-green-400">${l.selected_tour_code_real||'—'}</td>
+      <td class="text-xs text-orange-300">${actionMap(l.review_reason)}</td>
+    </tr>`;
+  });
+
+  if (!html) html = '<tr><td colspan="7" class="empty-state">✅ ไม่มีเคสที่ต้องตรวจสอบ</td></tr>';
+  tbody.innerHTML = html;
+}
+
+// ══════════════════════════════════════════════════════════════
+// ADS / SOURCE PERFORMANCE
+// ══════════════════════════════════════════════════════════════
+async function loadAds() {
+  if (!sb()) { showError('ads'); return; }
+  const since = getDateFilter();
+
+  // Aggregate from leads table grouped by ad_id
+  const { data: leadsAll } = await sb().from('leads')
+    .select('ad_id,ad_title,ad_ref,lead_stage,handoff_requested,needs_review,country,selected_tour_code_real')
+    .gte('updated_at', since);
+
+  const { data: adAttr } = await sb().from('ad_attributions')
+    .select('ad_id,ad_title,ad_ref,inferred_destination,psid')
+    .gte('created_at', since);
+
+  const tbody = document.getElementById('adsBody');
+  const rows = leadsAll || [];
+
+  // Group by ad_id
+  const groups = {};
+  rows.forEach(l => {
+    const key = l.ad_id || l.ad_ref || 'unknown';
+    if (!groups[key]) groups[key] = {
+      ad_title: l.ad_title || l.ad_ref || key,
+      ad_id: l.ad_id || '—',
+      ad_ref: l.ad_ref || '—',
+      convs: 0, hot: 0, handoff: 0, review: 0,
+      dests: {}, codes: {}
+    };
+    const g = groups[key];
+    g.convs++;
+    if (['hot','booking','paid'].includes(l.lead_stage)) g.hot++;
+    if (l.handoff_requested) g.handoff++;
+    if (l.needs_review) g.review++;
+    if (l.country) g.dests[l.country] = (g.dests[l.country]||0)+1;
+    if (l.selected_tour_code_real) g.codes[l.selected_tour_code_real] = (g.codes[l.selected_tour_code_real]||0)+1;
+  });
+
+  const sorted = Object.entries(groups).sort((a,b)=>b[1].convs-a[1].convs);
+  if (!sorted.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty-state">ยังไม่มีข้อมูล ad attribution — จะแสดงเมื่อลูกค้าเข้ามาผ่านโฆษณา</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = sorted.map(([key, g]) => {
+    const topDest = Object.entries(g.dests).sort((a,b)=>b[1]-a[1])[0];
+    const topCode = Object.entries(g.codes).sort((a,b)=>b[1]-a[1])[0];
+    return `<tr>
+      <td class="font-semibold text-slate-200 text-xs">${g.ad_title}</td>
+      <td class="font-mono text-xs text-slate-400">${g.ad_id}</td>
+      <td class="font-mono text-xs text-slate-400">${g.ad_ref}</td>
+      <td class="text-center font-bold text-white">${g.convs}</td>
+      <td class="text-center text-orange-400 font-bold">${g.hot}</td>
+      <td class="text-center text-purple-400">${g.handoff}</td>
+      <td class="text-center text-red-400">${g.review}</td>
+      <td class="text-xs text-cyan-400">${topDest?topDest[0]:'—'}</td>
+      <td class="font-mono text-xs text-green-400">${topCode?topCode[0]:'—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+// AUTO-REFRESH every 60s
+// ══════════════════════════════════════════════════════════════
+setInterval(() => {
+  if (supabaseClient) refreshAll();
+}, 60000);
+
+// Load overview on start if already connected
+window.addEventListener('load', () => {
+  if (supabaseClient) loadOverview();
+});
+</script>
+</body>
+</html>
