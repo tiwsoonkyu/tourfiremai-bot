@@ -2,11 +2,6 @@ name: Faimai Scraper (4x Daily)
 
 on:
   schedule:
-    # Bangkok time (ICT = UTC+7) → UTC
-    # 08:00 BKK = 01:00 UTC
-    # 12:00 BKK = 05:00 UTC
-    # 16:00 BKK = 09:00 UTC
-    # 21:00 BKK = 14:00 UTC
     - cron: "0 1,5,9,14 * * *"
   workflow_dispatch:
     inputs:
@@ -27,8 +22,7 @@ jobs:
   scrape-faimai:
     name: Scrape /faimai
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,4 +42,5 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           MODE="${{ github.event.inputs.mode || 'faimai' }}"
-          echo "Running scraper --mode
+          echo "Running scraper --mode $MODE"
+          python scraper.py --mode $MODE
