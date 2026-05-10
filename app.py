@@ -733,7 +733,7 @@ def fetch_customers_batch(psid_list: list) -> dict:
             f"{SUPABASE_URL}/rest/v1/customers",
             params={
                 "psid": f"in.{psid_in}",
-                "select": "psid,name,full_name,first_name,last_name,profile_pic",
+                "select": "psid,name",
             },
             headers=_sb_headers(),
             timeout=10,
@@ -3722,3 +3722,4 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+                                           
