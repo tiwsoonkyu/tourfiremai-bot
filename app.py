@@ -215,6 +215,9 @@ _EMPTY_CTX = {
     # ── Case ID ──────────────────────────────────────────────────────────
     "case_id":     None,  # TF-HHMM-XXXX
     "case_status": None,  # waiting_team | resolved
+    # ── Booking State Machine ─────────────────────────────────────────────
+    "booking_context_locked": False,   # True = ล็อคโปรแกรมแล้ว ห้ามเปลี่ยนจน user พูดชัด
+    "booking_fields": {},              # {departure_date, pax, contact_name, phone, line_id}
 }
 
 def get_context(psid: str) -> dict:
@@ -893,6 +896,72 @@ _SOONEST_KEYWORDS = {
 def is_soonest_request(text: str) -> bool:
     """True ถ้า user ต้องการวันเดินทางใกล้ที่สุด"""
     return any(k in text for k in _SOONEST_KEYWORDS)
+
+# คำที่แสดงว่า user ต้องการเปลี่ยนโปรแกรม — unlock booking_context_locked
+_CHANGE_TOUR_KEYWORDS = {
+    "เปลี่ยนตัว", "ขอโปรอื่น", "ไม่เอาตัวนี้", "ดูตัวอื่น",
+    "ขอดูเพิ่มเติม", "ดูโปรอื่น", "เปลี่ยนโปรแกรม", "ขอเปลี่ยน",
+    "ลองดูตัวอื่น", "มีตัวอื่นไหม", "ขอดูตัวอื่น", "ขอเปรียบเทียบ",
+    "ดูตัวอื่นด้วย", "มีโปรอื่นไหม", "ขอดูโปรอื่น",
+}
+
+def is_change_tour_request(text: str) -> bool:
+    """True ถ้า user ต้องการดูโปรแกรมอื่น (unlock booking lock)"""
+    return any(k in text for k in _CHANGE_TOUR_KEYWORDS)
+
+def extract_booking_fields_from_text(text: str, existing: dict) -> dict:
+    """ดึงข้อมูล booking fields จากข้อความของ user
+    คืน dict ที่มีเฉพาะ field ที่เจอในข้อความนี้"""
+    found = {}
+    # departure_date — "วันที่ 12" / "12 มิ.ย." / "เดือนมิถุนา วันที่ 12"
+    date_m = re.search(r"วันที่\s*(\d{1,2})", text)
+    if date_m and not existing.get("departure_date"):
+        found["departure_date"] = date_m.group(1)
+    # เดินทาง X คน / X ท่าน / X ที่นั่ง
+    pax_m = re.search(r"(\d+)\s*(?:คน|ท่าน|ที่นั่ง|person|pax)", text)
+    if pax_m and not existing.get("pax"):
+        found["pax"] = int(pax_m.group(1))
+    # phone — 10 digit starting 06/08/09
+    phone_m = re.search(r"\b(0[6-9]\d{8})\b", text)
+    if phone_m and not existing.get("phone"):
+        found["phone"] = phone_m.group(1)
+    # LINE ID — starts with @ or "ไอดีไลน์" prefix
+    line_m = re.search(r"(?:ไอดีไลน์|line\s*id|ไลน์)[:\s]*(@?[\w.]+)", text, re.IGNORECASE)
+    if line_m and not existing.get("line_id"):
+        found["line_id"] = line_m.group(1)
+    # contact_name — "ชื่อ X" or Thai name pattern (2-3 words)
+    name_m = re.search(r"(?:ชื่อ|นาม)[:\s]*([฀-๿\w]+(?:\s+[฀-๿\w]+)?)", text)
+    if name_m and not existing.get("contact_name"):
+        found["contact_name"] = name_m.group(1).strip()
+    return found
+
+def booking_fields_complete(fields: dict) -> bool:
+    """True ถ้ามีข้อมูลครบ: วันเดินทาง + จำนวนคน + ชื่อ + เบอร์"""
+    return bool(
+        fields.get("departure_date")
+        and fields.get("pax")
+        and fields.get("contact_name")
+        and (fields.get("phone") or fields.get("line_id"))
+    )
+
+def next_missing_booking_field(fields: dict) -> str:
+    """คืนชื่อ field แรกที่ยังขาด"""
+    if not fields.get("departure_date"):
+        return "departure_date"
+    if not fields.get("pax"):
+        return "pax"
+    if not fields.get("contact_name"):
+        return "contact_name"
+    if not fields.get("phone") and not fields.get("line_id"):
+        return "phone"
+    return None
+
+_BOOKING_ASK = {
+    "departure_date": "รบกวนขอทราบวันที่เดินทาง (วันที่เท่าไหร่) ด้วยนะคะ 📅",
+    "pax":            "เดินทางกี่ท่านคะ? 👥",
+    "contact_name":   "ขอชื่อผู้ติดต่อด้วยนะคะ 😊",
+    "phone":          "ขอเบอร์โทรหรือ LINE ID สำหรับให้ทีมงานติดต่อกลับด้วยนะคะ 📱",
+}
 
 def _earliest_departure_sort_key(tour: dict) -> int:
     """คืน sort key (เดือน*100+วัน) จาก departure_dates — น้อย=ใกล้สุด"""
@@ -2697,7 +2766,11 @@ def process_payment_slip(sender_id: str, image_urls: list = None):
 # ─── Core message processing ──────────────────────────────────────────────────
 def process_message(sender_id: str, text: str):
     """Main logic — รันใน background thread"""
-    logger.info(f"Processing [{sender_id}]: {text[:80]}")
+    # Fix 5: strip [REPLY_TO_BOT] hint injected by webhook but keep it for LLM context
+    _is_reply_to_bot = text.startswith("[REPLY_TO_BOT] ")
+    if _is_reply_to_bot:
+        text = text[len("[REPLY_TO_BOT] "):]
+    logger.info(f"Processing [{sender_id}]{' (reply)' if _is_reply_to_bot else ''}: {text[:80]}")
     try:
         history = list(get_history(sender_id))
         ctx = get_context(sender_id)
@@ -2896,6 +2969,9 @@ def process_message(sender_id: str, text: str):
                 ctx["selected_tour_airline"]  = _locked_tour.get("airline", "") or ""
                 lead_stage = "hot"
                 ctx["_lead_stage"] = "hot"
+                ctx["booking_context_locked"] = True
+                if not ctx.get("booking_fields"):
+                    ctx["booking_fields"] = {}
                 action = "detail_pdf"
                 should_search = False
                 missing_field_to_ask = None
@@ -2939,6 +3015,11 @@ def process_message(sender_id: str, text: str):
                 if lead_stage not in ("hot", "booking", "paid"):
                     lead_stage = "hot"
                     ctx["_lead_stage"] = "hot"
+                # Lock booking context
+                ctx["booking_context_locked"] = True
+                if not ctx.get("booking_fields"):
+                    ctx["booking_fields"] = {}
+                ctx["pending_action"] = "collect_booking_info"
 
         # ── clear_previous_options: ลูกค้าเปลี่ยนประเทศ ──────────────────
         if clear_prev_options:
@@ -2947,6 +3028,8 @@ def process_message(sender_id: str, text: str):
             ctx["selected_tour_name"] = None
             ctx["selected_tour_url"] = None
             ctx["city_hint"] = None
+            ctx["booking_context_locked"] = False
+            ctx["booking_fields"] = {}
             logger.info(f"🔄 clear_previous_options triggered for {sender_id}")
         save_context(sender_id, ctx)
 
@@ -2986,6 +3069,68 @@ def process_message(sender_id: str, text: str):
                             break
             action = "search"
             logger.info(f"Continuation detected → search country_id={country_id}")
+
+        # ── Change-tour unlock: ลูกค้าพูดชัดว่าต้องการเปลี่ยนโปรแกรม ─────────
+        if is_change_tour_request(text) and ctx.get("booking_context_locked"):
+            ctx["booking_context_locked"] = False
+            ctx["selected_tour"]          = None
+            ctx["selected_tour_name"]     = None
+            ctx["selected_tour_url"]      = None
+            ctx["selected_tour_code"]     = None
+            ctx["selected_tour_web_code"] = None
+            ctx["booking_fields"]         = {}
+            ctx["pending_action"]         = None
+            logger.info(f"[BOOKING_UNLOCK] user requested change tour — clearing lock")
+
+        # ── Booking State Machine — ถ้าล็อคโปรแกรมแล้ว ─────────────────────
+        _booking_locked = ctx.get("booking_context_locked") and ctx.get("selected_tour")
+        if _booking_locked and action not in ("detail_pdf", "departure_filter", "handoff"):
+            # ดึง booking fields จากข้อความ
+            _bf = ctx.get("booking_fields") or {}
+            _new_fields = extract_booking_fields_from_text(text, _bf)
+            if _new_fields:
+                _bf.update(_new_fields)
+                ctx["booking_fields"] = _bf
+                # ซิงค์ไปยัง top-level ctx ด้วย
+                if _new_fields.get("phone"):
+                    ctx["phone"] = _new_fields["phone"]
+                if _new_fields.get("contact_name"):
+                    ctx["customer_name"] = _new_fields["contact_name"]
+                if _new_fields.get("pax"):
+                    ctx["pax"] = _new_fields["pax"]
+                if _new_fields.get("departure_date"):
+                    ctx["travel_date"] = _new_fields["departure_date"]
+                logger.info(f"[BOOKING_SM] updated fields: {list(_new_fields.keys())}")
+                save_context(sender_id, ctx)
+
+            # ตรวจว่าครบแล้วไหม
+            if booking_fields_complete(_bf):
+                # ครบ → trigger handoff
+                action = "handoff"
+                should_search = False
+                missing_field_to_ask = None
+                lead_stage = "booking"
+                logger.info(f"[BOOKING_SM] all fields complete → handoff")
+            else:
+                # ยังขาด → ถามต่อ อย่า search/propose ใหม่
+                _next_ask = next_missing_booking_field(_bf)
+                if action in ("search", "flash_sale", "reply") and not _new_fields:
+                    # ไม่มีข้อมูลใหม่ และ action ไม่ใช่ detail/handoff → ถามเฉพาะ field ที่ขาด
+                    action = "reply"
+                    should_search = False
+                    missing_field_to_ask = None
+                    # ตอบสั้นทันทีโดยไม่ผ่าน LLM
+                    if _next_ask:
+                        _ask_msg = _BOOKING_ASK.get(_next_ask, "รบกวนขอข้อมูลเพิ่มเติมด้วยนะคะ 🙏")
+                        send_message(sender_id, _ask_msg)
+                        save_to_history(sender_id, "user", text)
+                        save_to_history(sender_id, "assistant", _ask_msg)
+                        log_chat_event(sender_id, "booking_field_ask", text, "booking_sm", lead_stage, ctx)
+                        return jsonify({"status": "ok"}), 200
+                elif action in ("search", "flash_sale"):
+                    # มีข้อมูลใหม่ → อย่า re-search แต่ให้ LLM ตอบ
+                    action = "reply"
+                    should_search = False
 
         # ── Flash sale context override ────────────────────────────────────
         # ถ้ายังอยู่ใน flash_sale context และ action=search/reply → ดึง faimai แทน
@@ -3248,11 +3393,49 @@ def process_message(sender_id: str, text: str):
         elif action == "handoff":
             is_handoff = True
             stage_emoji = {"hot": "🔔", "booking": "📋", "warm": "💬", "paid": "💳"}.get(lead_stage, "📩")
+
+            # ── Fix 3: Mandatory Tip/Fee Gate ─────────────────────────────────
+            # ถ้ามีโปรแกรมที่เลือก → เช็ก tip_fee ก่อน handoff
+            _sel_tour_for_fee = ctx.get("selected_tour") or {}
+            _has_tip_fee = bool(
+                _sel_tour_for_fee.get("tip_fee")
+                or _sel_tour_for_fee.get("visa_fee")
+                or _sel_tour_for_fee.get("single_supplement")
+            )
+            if ctx.get("selected_tour_name") and not _has_tip_fee:
+                # ยังไม่มี fee → ลอง lookup ใน last_options
+                _lo = ctx.get("last_options") or []
+                if isinstance(_lo, str):
+                    try: _lo = json.loads(_lo)
+                    except: _lo = []
+                _wc_key = ctx.get("selected_tour_web_code") or ""
+                for _lo_t in _lo:
+                    if (_lo_t.get("web_code") == _wc_key or _lo_t.get("tour_code") == _wc_key) and _lo_t.get("tip_fee"):
+                        _sel_tour_for_fee = _lo_t
+                        _has_tip_fee = True
+                        ctx["selected_tour"]["tip_fee"] = _lo_t["tip_fee"]
+                        break
+
+            _needs_fee_review = ctx.get("selected_tour_name") and not _has_tip_fee
+            if _needs_fee_review:
+                ctx["needs_review"]   = True
+                ctx["review_reason"]  = "fee_detail_missing"
+                ctx["_lead_stage"]    = "hot"
+                stage_emoji = "⚠️"
+                logger.info(f"[FEE_GATE] tip_fee missing for {ctx.get('selected_tour_name')}")
+
             ctx_summary = ""
             if ctx.get("customer_name"):
                 ctx_summary += f"\nชื่อ: {ctx['customer_name']}"
             if ctx.get("phone"):
                 ctx_summary += f"\nเบอร์/LINE: {ctx['phone']}"
+            _bf_disp = ctx.get("booking_fields") or {}
+            if _bf_disp.get("departure_date"):
+                ctx_summary += f"\nวันเดินทาง: {_bf_disp['departure_date']}"
+            elif ctx.get("travel_date"):
+                ctx_summary += f"\nวันเดินทาง: {ctx['travel_date']}"
+            if _bf_disp.get("pax") or ctx.get("pax"):
+                ctx_summary += f"\nจำนวน: {_bf_disp.get('pax') or ctx.get('pax')} ท่าน"
             if ctx.get("selected_tour_name"):
                 ctx_summary += f"\nโปรแกรม: {ctx['selected_tour_name']}"
                 if ctx.get("selected_tour_code"):
@@ -3261,14 +3444,14 @@ def process_message(sender_id: str, text: str):
                     ctx_summary += f"\nรหัสเว็บ: {ctx['selected_tour_web_code']}"
                 if ctx.get("selected_tour_airline"):
                     ctx_summary += f"\nสายการบิน: {ctx['selected_tour_airline']}"
+                if _sel_tour_for_fee.get("tip_fee"):
+                    ctx_summary += f"\nทิปไกด์: {_sel_tour_for_fee['tip_fee']:,} บาท/ท่าน"
                 if ctx.get("selected_tour_url"):
                     ctx_summary += f"\nลิงก์: {ctx['selected_tour_url']}"
+                if _needs_fee_review:
+                    ctx_summary += "\n⚠️ ยังไม่พบค่าทิปในระบบ — กรุณาเช็กยอดจ่ายจริง"
             elif ctx.get("destination"):
                 ctx_summary += f"\nปลายทาง: {ctx['destination']}"
-            if ctx.get("travel_date"):
-                ctx_summary += f"\nวันเดินทาง: {ctx['travel_date']}"
-            if ctx.get("pax"):
-                ctx_summary += f"\nจำนวน: {ctx['pax']} ท่าน"
             if ctx.get("budget_per_person"):
                 ctx_summary += f"\nงบ: {ctx['budget_per_person']:,}" if isinstance(ctx['budget_per_person'], (int, float)) else f"\nงบ: {ctx['budget_per_person']}"
             # แสดงชื่อลูกค้าถ้ามี ไม่งั้นใช้ PSID ย่อ
@@ -3285,6 +3468,21 @@ def process_message(sender_id: str, text: str):
 
         # Save user message
         save_to_history(sender_id, "user", text)
+
+        # ── Fix 3 cont.: ถ้า handoff + fee missing → ตอบสั้น แล้ว return ────
+        if action == "handoff" and locals().get("_needs_fee_review"):
+            _fee_review_reply = (
+                f"ขอบคุณที่สนใจโปรแกรม {ctx.get('selected_tour_name', '')} นะคะ 😊\n"
+                "โปรนี้ยังไม่พบข้อมูลค่าทิปในระบบค่ะ\n"
+                "เดี๋ยวส่งให้ทีมงานเช็กยอดจ่ายจริงและที่นั่งให้เลยนะคะ ☺️\n"
+                "รอสักครู่นะคะ ทีมงานจะติดต่อกลับภายใน 15 นาทีค่ะ 🙏"
+            )
+            save_to_history(sender_id, "assistant", _fee_review_reply)
+            log_chat_event(sender_id, "fee_review_handoff", text, "handoff", lead_stage, ctx,
+                           needs_review=True, review_reason="fee_detail_missing")
+            save_context(sender_id, ctx)
+            send_message(sender_id, _fee_review_reply)
+            return jsonify({"status": "ok"}), 200
 
         # Generate response (with context injected into system prompt)
         reply = generate_response(text, history, tour_data, is_handoff, ctx=ctx, action=action, missing_field_to_ask=missing_field_to_ask)
@@ -3582,6 +3780,17 @@ async function resumeBot(psid) {
   try {
     const r = await fetch('/admin/resume', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Pass': ADMIN_      body: JSON.stringify({ psid, hours })
+    });
+    const d = await r.json();
+    if (r.ok) { showToast('⏸ Bot หยุด ' + hours + 'h (' + psid.slice(-6) + ')', true); setTimeout(() => location.reload(), 1500); }
+    else showToast('❌ ' + (d.error || 'error'), false);
+  } catch(e) { showToast('❌ ' + e.message, false); }
+}
+async function resumeBot(psid) {
+  try {
+    const r = await fetch('/admin/resume', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Admin-Pass': ADMIN_PASS },
       body: JSON.stringify({ psid })
     });
@@ -3709,6 +3918,30 @@ def webhook():
 
             if not text:
                 continue
+
+            # ── Fix 5: Reply-to context — map quoted message to tour ────────
+            # ถ้า Messenger webhook มี reply_to → ลอง map หา web_code / tour_code
+            _reply_to = message.get("reply_to") or {}
+            if _reply_to:
+                _quoted_mid = _reply_to.get("mid") or ""
+                _quoted_text = ""
+                # Meta ไม่ส่ง content ของ reply_to โดยตรง แต่ log mid ไว้
+                logger.info(f"[REPLY_TO] sender={sender_id[-6:]} mid={_quoted_mid[:20]}")
+                # พยายาม match ใน last_options — ถ้า text มีรหัสทัวร์ก็ CODE_LOCK จะจัดการ
+                # ถ้าไม่มีรหัส → prefix text ด้วย context note เพื่อให้ decide_action รู้
+                _ctx_peek = get_context(sender_id)
+                _lo_peek = _ctx_peek.get("last_options") or []
+                if isinstance(_lo_peek, str):
+                    try: _lo_peek = json.loads(_lo_peek)
+                    except: _lo_peek = []
+                if _lo_peek and not any(
+                    (t3.get("tour_code_real") or t3.get("web_code") or "").upper() in text.upper()
+                    for t3 in _lo_peek
+                ):
+                    # เพิ่ม hint ใน text เพื่อให้ bot รู้ว่าเป็น reply
+                    text = f"[REPLY_TO_BOT] {text}"
+                    logger.info(f"[REPLY_TO] injected REPLY_TO_BOT hint")
+
             t = threading.Thread(target=process_message, args=(sender_id, text))
             t.daemon = True
             t.start()
