@@ -2125,12 +2125,12 @@ def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: s
         parts.append(f"📞 {ctx['phone']}")
     if accompanying_text:
         parts.append(f"💬 ข้อความ: {accompanying_text[:150]}")
-    if image_urls:
-        parts.append(f"🖼 รูป: {image_urls[0][:150]}")
     parts.append("📋 บริบทล่าสุด:")
     parts.extend(_build_tour_context_summary(ctx))
     parts.append(f"   stage: {new_stage}")
-    parts.append("✅ Action: ทีมงานช่วยดูรูปและตอบกลับ/อัปเดต lead")
+    if ctx.get("search_mode"):
+        parts.append(f"   search_mode: {ctx['search_mode']}")
+    parts.append("✅ Action: เปิด Messenger เพื่อดูรูปและตอบลูกค้า")
     notify_line("\n".join(parts))
 
     # Log & save
@@ -2158,15 +2158,15 @@ def process_payment_pending_review(sender_id: str, image_urls: list, accompanyin
     save_context(sender_id, ctx)
 
     # Build LINE notification
-    parts = [f"💳 สลิป/หลักฐานการโอน — รอตรวจสอบ", f"👤 {display_name}"]
+    parts = [f"💳 ลูกค้าอาจส่งสลิป/หลักฐานการโอน", f"👤 {display_name}"]
     if ctx.get("phone"):
         parts.append(f"📞 {ctx['phone']}")
     if accompanying_text:
         parts.append(f"💬 ข้อความ: {accompanying_text[:150]}")
-    if image_urls:
-        parts.append(f"🖼 รูป: {image_urls[0][:150]}")
+    parts.append("📋 บริบทล่าสุด:")
     parts.extend(_build_tour_context_summary(ctx))
-    parts.append("⚠️ ยังไม่ยืนยัน paid — ต้องตรวจสอบและ confirm ก่อน")
+    parts.append("   stage: booking")
+    parts.append("✅ Action: เปิด Messenger เพื่อตรวจสลิป และยืนยันก่อนเปลี่ยนสถานะเป็น paid")
     notify_line("\n".join(parts))
 
     # Log & save
