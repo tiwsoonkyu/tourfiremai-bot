@@ -2349,6 +2349,17 @@ def _build_tour_context_summary(ctx: dict) -> list:
     return lines
 
 
+def pause_bot(sender_id: str, ctx: dict, reason: str, hours: int) -> None:
+    """Set bot_paused_until ใน ctx dict (ยังไม่ save — ให้ caller save หลังจากนี้)
+    reason: image_handoff | payment_pending_review | handoff_requested | booking
+    """
+    until = (datetime.utcnow() + timedelta(hours=hours)).isoformat() + "Z"
+    ctx["bot_paused_until"] = until
+    ctx["bot_pause_reason"] = reason
+    ctx["human_takeover"]   = True
+    logger.info(f"🛑 Bot paused: psid=...{sender_id[-6:]}, reason={reason}, hours={hours}, until={until}")
+
+
 def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: str = ""):
     """รูปภาพทั่วไป — handoff ให้ทีมงาน ห้าม Bot วิเคราะห์ภาพเอง"""
     ctx = get_context(sender_id)
@@ -2363,6 +2374,7 @@ def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: s
     ctx["_lead_needs_review"] = True
     ctx["_lead_review_reason"] = "image_handoff"
     ctx["handoff_requested"] = True
+    pause_bot(sender_id, ctx, "image_handoff", hours=2)
     save_context(sender_id, ctx)
 
     # Build LINE notification
@@ -2401,6 +2413,7 @@ def process_payment_pending_review(sender_id: str, image_urls: list, accompanyin
     ctx["_lead_review_reason"] = "payment_pending_review"
     ctx["payment_received"] = False   # ยังไม่ verified — ห้าม auto paid
     ctx["handoff_requested"] = True
+    pause_bot(sender_id, ctx, "payment_pending_review", hours=6)
     save_context(sender_id, ctx)
 
     # Build LINE notification
@@ -2467,6 +2480,30 @@ def process_message(sender_id: str, text: str):
     try:
         history = list(get_history(sender_id))
         ctx = get_context(sender_id)
+
+        # ── Bot Pause Check (Human Takeover) ──────────────────────────────────
+        paused_until_str = ctx.get("bot_paused_until")
+        if paused_until_str:
+            try:
+                paused_until = datetime.fromisoformat(paused_until_str.rstrip("Z"))
+                if datetime.utcnow() < paused_until:
+                    remaining_min = int((paused_until - datetime.utcnow()).total_seconds() / 60)
+                    reason = ctx.get("bot_pause_reason", "human_takeover")
+                    logger.info(f"🛑 Bot paused [{reason}] psid=...{sender_id[-6:]}, {remaining_min}m left — skip AI")
+                    display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+                    notify_line(
+                        f"💬 ลูกค้าพิมพ์เพิ่มระหว่าง Human Takeover\n"
+                        f"👤 {display_name}\n"
+                        f"💬 {text[:200]}\n"
+                        f"⏳ Bot หยุดอีก {remaining_min} นาที (สาเหตุ: {reason})\n"
+                        f"✅ กรุณาตอบลูกค้าเองผ่าน Messenger"
+                    )
+                    log_chat_event(sender_id, "bot_paused_message", ctx=ctx,
+                                   message=text, needs_review=True, review_reason=reason)
+                    return
+            except Exception as _pe:
+                logger.warning(f"bot_paused_until parse error for {sender_id}: {_pe}")
+                # ถ้า parse ไม่ได้ → ปล่อยผ่าน ไม่หยุด bot
 
         # ── Auto-fetch FB profile name ถ้ายังไม่มีชื่อ ───────────────────────
         if not ctx.get("customer_name"):
@@ -2852,6 +2889,9 @@ def process_message(sender_id: str, text: str):
             ctx["pending_action"] = f"{action}_{country_id or 'unknown'}"
         elif action == "handoff":
             ctx["pending_action"] = "handoff_sent"
+            # Pause bot — human takes over for 2h (covers handoff_requested + booking)
+            pause_reason = "booking" if lead_stage == "booking" else "handoff_requested"
+            pause_bot(sender_id, ctx, pause_reason, hours=2)
         elif action == "flash_sale":
             ctx["pending_action"] = "flash_sale"  # maintain context for next turn
         else:
