@@ -1,5 +1,8 @@
 -- Migration: แยก web_code / tour_code_real / airline ให้ชัดเจน
 
+-- 0. เพิ่ม updated_at ก่อน (trigger set_updated_at() ต้องการ field นี้)
+ALTER TABLE tours ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
 -- 1. เพิ่ม columns ใหม่
 ALTER TABLE tours ADD COLUMN IF NOT EXISTS web_code       TEXT;
 ALTER TABLE tours ADD COLUMN IF NOT EXISTS tour_code_real TEXT;
@@ -11,9 +14,4 @@ WHERE web_code IS NULL
   AND tour_code LIKE 'ap%';
 
 -- 3. Indexes
-CREATE INDEX IF NOT EXISTS tours_web_code_idx       ON tours(web_code);
-CREATE INDEX IF NOT EXISTS tours_tour_code_real_idx ON tours(tour_code_real);
-
--- 4. ตรวจสอบ
--- SELECT web_code, tour_code_real, airline, name
--- FROM tours LIMIT 10;
+CREATE INDEX IF NOT EXISTS tours_web_code_idx       ON tours
