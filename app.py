@@ -663,13 +663,14 @@ def fetch_tours_from_db(country_id: str, city_hint: str = None,
     try:
         params = {
             "country_id": f"eq.{country_id}",
-            "select":     "name,url,tour_code,price_min,airline,departure_dates,is_faimai,discount_text",
+            "select":     "name,url,tour_code,price_min,promo_price,original_price,discount_amount,discount_percent,discount_text,promo_badge,airline,departure_dates,is_faimai,tip_fee,visa_fee,visa_status,single_supplement",
             "order":      "price_min.asc.nullslast",
             "limit":      "60",
         }
         # Filter by source type
         if search_mode == "faimai":
             params["is_faimai"] = "eq.true"
+            params["is_active"] = "eq.true"   # ไม่เอา stale faimai tours
         elif search_mode == "normal":
             params["source_type"] = "eq.normal"
         # search_mode="any" → no filter
@@ -748,17 +749,57 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
         # Check if DB has price/dates data (v2 scraper)
         has_price_data = any(t.get("price_min") for t in db_tours)
         if has_price_data:
-            # Format directly from DB — no detail page fetching needed
+            # Format directly from DB — faimai tours show discount/fee info
+            # Sort faimai by discount_amount desc, then price asc
+            display_tours = db_tours[:8]  # fetch extra, will slice to 6 after sort
+            if search_mode == "faimai":
+                def _faimai_sort_key(t):
+                    disc = t.get("discount_amount") or 0
+                    price = t.get("promo_price") or t.get("price_min") or 999999
+                    return (-disc, price)
+                display_tours = sorted(display_tours, key=_faimai_sort_key)[:6]
+            else:
+                display_tours = display_tours[:6]
+
             parts = []
             meta = []
-            for i, t in enumerate(db_tours[:6]):
-                price_str = f"{t['price_min']:,} บาท" if t.get("price_min") else "ติดต่อสอบถาม"
+            for i, t in enumerate(display_tours):
+                promo  = t.get("promo_price") or t.get("price_min")
+                price_str = f"{promo:,} บาท" if promo else "ติดต่อสอบถาม"
                 dates_str = t.get("departure_dates") or "ติดต่อเช็กวัน"
                 airline_str = t.get("airline") or ""
                 line = f"📌 {t['name']}"
                 if airline_str:
                     line += f" ({airline_str})"
-                line += f"\n   💰 ราคาเริ่ม: {price_str}"
+                # Faimai: show discount info
+                if t.get("is_faimai"):
+                    orig = t.get("original_price")
+                    disc_amt = t.get("discount_amount")
+                    disc_pct = t.get("discount_percent")
+                    disc_txt = t.get("discount_text")
+                    if orig and promo and disc_amt:
+                        line += f"\n   ~~ราคาเดิม: {orig:,} บาท~~"
+                        line += f"\n   🔥 ราคาโปร: {price_str}"
+                        pct_str = f" ({disc_pct:.0f}%)" if disc_pct else ""
+                        line += f"\n   ลดทันที: {disc_amt:,} บาท{pct_str}"
+                    elif disc_txt:
+                        line += f"\n   🔥 ราคาโปร: {price_str}"
+                        line += f"\n   โปรโมชัน: {disc_txt}"
+                    else:
+                        line += f"\n   🔥 ราคาโปร: {price_str}"
+                    # Fee summary
+                    tip = t.get("tip_fee")
+                    visa = t.get("visa_status")
+                    if tip:
+                        est = (promo or 0) + tip + (t.get("visa_fee") or 0)
+                        line += f"\n   ทิปไกด์: {tip:,} บาท/คน"
+                        if visa:
+                            line += f"  |  วีซ่า: {visa}"
+                        line += f"\n   💳 จ่ายจริงประมาณ: {est:,} บาท/คน"
+                    else:
+                        line += f"\n   ⚠️ ทิปไกด์/ค่าบังคับ: ต้องเช็ก PDF ก่อน"
+                else:
+                    line += f"\n   💰 ราคาเริ่ม: {price_str}"
                 line += f"\n   📅 วันเดินทาง: {dates_str}"
                 line += f"\n   🔗 [LINK:{t['url']}]"
                 parts.append(line)
@@ -766,8 +807,11 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                     "index": i + 1,
                     "tour_code": t.get("tour_code", ""),
                     "name": t["name"],
-                    "price_min": t.get("price_min"),
+                    "price_min": promo,
                     "url": t.get("url", ""),
+                    "is_faimai": t.get("is_faimai", False),
+                    "discount_amount": t.get("discount_amount"),
+                    "tip_fee": t.get("tip_fee"),
                 })
             return "\n\n".join(parts), meta
         # DB has no price data yet → fallback to detail fetch
