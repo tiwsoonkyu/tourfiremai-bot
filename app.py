@@ -159,6 +159,7 @@ _EMPTY_CTX = {
     "selected_tour": None,        # full dict ของทัวร์ที่เลือก {name, url, code, price, airline}
     "selected_tour_name": None,   # shortcut สำหรับ backward compat
     "selected_tour_url": None,
+    "selected_tour_code": None,   # รหัสทัวร์ที่เลือก เช่น AP232919
     # ── Booking flow ──────────────────────────────────────────────────────
     "lead_stage": None,           # cold/warm/hot/booking/paid/awaiting_docs/complete
     "travel_date": None,          # วันเดินทางที่ลูกค้าเลือก
@@ -224,7 +225,9 @@ def extract_context_after_response(psid: str, history: list, ai_response: str) -
         f"งบ/คน: {existing.get('budget_per_person') or 'ไม่ทราบ'}\n"
         f"จำนวนคน: {existing.get('pax') or 'ไม่ทราบ'}\n"
         f"วันเดินทางที่เลือก: {existing.get('travel_date') or 'ยังไม่เลือก'}\n"
-        f"โปรแกรมที่เลือก: {existing.get('selected_tour_name') or 'ยังไม่เลือก'}\n\n"
+        f"โปรแกรมที่เลือก: {existing.get('selected_tour_name') or 'ยังไม่เลือก'}"
+        + (f" [รหัส: {existing['selected_tour_code']}]" if existing.get('selected_tour_code') else "")
+        + "\n\n"
         "สกัดข้อมูลจากบทสนทนา ตอบเป็น JSON เท่านั้น (อัปเดตเฉพาะที่มีในบทสนทนา):\n"
         "{\n"
         '  "customer_name": "ชื่อลูกค้า หรือ null",\n'
@@ -726,6 +729,9 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
             line = f"📌 {t['name']}"
             if t.get("airline"):
                 line += f" ({t['airline']})"
+            _tc = t.get("tour_code", "") or t.get("code", "") or ""
+            if _tc:
+                line += f"\n   🏷 รหัสทัวร์: {_tc}"
             if t.get("dates"):
                 line += f"\n   วันเดินทาง: {t['dates']}"
             if t.get("price"):
@@ -768,9 +774,12 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                 price_str = f"{promo:,} บาท" if promo else "ติดต่อสอบถาม"
                 dates_str = t.get("departure_dates") or "ติดต่อเช็กวัน"
                 airline_str = t.get("airline") or ""
+                code_str = t.get("tour_code", "") or ""
                 line = f"📌 {t['name']}"
                 if airline_str:
                     line += f" ({airline_str})"
+                if code_str:
+                    line += f"\n   🏷 รหัสทัวร์: {code_str}"
                 # Faimai: show discount info
                 if t.get("is_faimai"):
                     orig = t.get("original_price")
@@ -1247,6 +1256,31 @@ Conversation Brain — หัวใจสำคัญ
 
 ถ้า data ว่างเปล่า (อ่านไม่ได้เลย) → ตอบว่า:
 "ขอโทษนะคะ ระบบอ่านเอกสารโปรแกรมนี้ไม่ได้ในขณะนี้ ขอส่งให้ทีมงานเช็กและแจ้งรายละเอียดกลับให้ค่ะ ขอชื่อและเบอร์ติดต่อได้เลยนะคะ"
+
+══════════════════════════════════
+กฎรหัสทัวร์ — ต้องแสดงทุกครั้ง (สำคัญมาก)
+══════════════════════════════════
+ทุกครั้งที่เสนอโปรแกรมทัวร์ ไม่ว่าจะเป็น Top 3, ตัวเดียว, เปรียบเทียบ, รายละเอียด → ต้องแสดง รหัสทัวร์ เสมอ
+รูปแบบที่ถูกต้อง (ทัวร์ปกติ):
+  ✈️ [ชื่อโปรแกรม]
+  🏷 รหัสทัวร์: [tour_code]
+  💰 ราคาเริ่ม: [ราคา] บาท
+  📅 วันเดินทาง: [วัน]
+  🔗 [ลิงก์]
+
+รูปแบบที่ถูกต้อง (ทัวร์ไฟไหม้):
+  🔥 [ชื่อโปรแกรม]
+  🏷 รหัสทัวร์: [tour_code]
+  ~~ราคาเดิม: [original_price] บาท~~
+  🔥 ราคาโปร: [promo_price] บาท | ลดทันที [discount_amount] บาท
+  💳 จ่ายจริงประมาณ: [est_total] บาท/คน
+
+เมื่อลูกค้าเลือกโปรแกรม (พิมพ์ตัวที่ 1/สนใจครับ/เช็กเลย):
+  → ต้องยืนยันด้วยรหัสทัวร์: "รับทราบค่ะ สนใจรหัสทัวร์ [tour_code] — [ชื่อโปรแกรม] ใช่ไหมคะ? 😊"
+  → ห้ามพูดแค่ "ตัวนี้" โดยไม่อ้างรหัส
+
+❌ ห้ามเสนอโปรแกรมโดยไม่มีรหัสทัวร์
+❌ ห้ามส่งต่อเซลล์โดยไม่มี tour_code ถ้ามีโปรแกรมที่ลูกค้าเลือกแล้ว
 
 ══════════════════════════════════
 กฎราคา — ห้ามเดาราคาแต่ละรอบ (สำคัญมาก)
@@ -1807,6 +1841,10 @@ def process_payment_slip(sender_id: str, image_urls: list = None):
         summary_parts.append(f"เบอร์/LINE: {ctx['phone']}")
     if ctx.get("selected_tour_name"):
         summary_parts.append(f"โปรแกรม: {ctx['selected_tour_name']}")
+        if ctx.get("selected_tour_code"):
+            summary_parts.append(f"รหัสทัวร์: {ctx['selected_tour_code']}")
+        if ctx.get("selected_tour_url"):
+            summary_parts.append(f"ลิงก์: {ctx['selected_tour_url']}")
     elif ctx.get("last_options"):
         opts = ctx["last_options"]
         if isinstance(opts, str):
@@ -1814,6 +1852,8 @@ def process_payment_slip(sender_id: str, image_urls: list = None):
             except: opts = []
         if opts:
             summary_parts.append(f"โปรแกรม: {opts[0].get('name', '')}")
+            if opts[0].get("tour_code"):
+                summary_parts.append(f"รหัสทัวร์: {opts[0]['tour_code']}")
     if ctx.get("travel_date"):
         summary_parts.append(f"วันเดินทาง: {ctx['travel_date']}")
     if ctx.get("pax"):
@@ -1895,7 +1935,8 @@ def process_message(sender_id: str, text: str):
                 ctx["selected_tour"]      = selected
                 ctx["selected_tour_name"] = selected.get("name", "")
                 ctx["selected_tour_url"]  = selected.get("url", selected.get("link", ""))
-                logger.info(f"✅ Resolved option #{selected_option_idx}: {ctx['selected_tour_name']}")
+                ctx["selected_tour_code"] = selected.get("tour_code", "") or selected.get("code", "") or ""
+                logger.info(f"✅ Resolved option #{selected_option_idx}: {ctx['selected_tour_name']} [{ctx['selected_tour_code']}]")
 
         # ── clear_previous_options: ลูกค้าเปลี่ยนประเทศ ──────────────────
         if clear_prev_options:
@@ -1975,6 +2016,7 @@ def process_message(sender_id: str, text: str):
                         ctx["selected_tour"] = t0
                         ctx["selected_tour_name"] = t0.get("name", "")
                         ctx["selected_tour_url"]  = t0.get("url", t0.get("link", ""))
+                        ctx["selected_tour_code"] = t0.get("tour_code", "") or t0.get("code", "") or ""
                         logger.info(f"🎯 Auto-selected single tour: {ctx['selected_tour_name']}")
                     save_context(sender_id, ctx)
                     logger.info(f"last_options updated immediately: {len(tour_meta)} tours")
@@ -2025,6 +2067,10 @@ def process_message(sender_id: str, text: str):
                 ctx_summary += f"\nเบอร์/LINE: {ctx['phone']}"
             if ctx.get("selected_tour_name"):
                 ctx_summary += f"\nโปรแกรม: {ctx['selected_tour_name']}"
+                if ctx.get("selected_tour_code"):
+                    ctx_summary += f"\nรหัสทัวร์: {ctx['selected_tour_code']}"
+                if ctx.get("selected_tour_url"):
+                    ctx_summary += f"\nลิงก์: {ctx['selected_tour_url']}"
             elif ctx.get("destination"):
                 ctx_summary += f"\nปลายทาง: {ctx['destination']}"
             if ctx.get("travel_date"):
