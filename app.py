@@ -525,7 +525,7 @@ def fetch_fb_profile(psid: str) -> dict:
         resp = requests.get(
             f"https://graph.facebook.com/v19.0/{psid}",
             params={
-                "fields": "name,first_name,last_name",
+                "fields": "name,first_name,last_name,profile_pic",
                 "access_token": FB_PAGE_TOKEN,
             },
             timeout=6,
@@ -691,6 +691,59 @@ def save_customers_supabase(psid: str, ctx: dict):
             logger.warning(f"save_customers: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         logger.error(f"save_customers_supabase error: {e}")
+
+
+def save_customer_profile_supabase(psid: str, profile: dict):
+    """Upsert customer profile (Meta name + pic) to Supabase customers table"""
+    if not SUPABASE_URL or not SUPABASE_KEY or not profile:
+        return
+    try:
+        now_iso = datetime.utcnow().isoformat()
+        payload = {
+            "psid":               psid,
+            "full_name":          profile.get("full_name", ""),
+            "first_name":         profile.get("first_name", ""),
+            "last_name":          profile.get("last_name", ""),
+            "profile_pic":        profile.get("profile_pic", ""),
+            "profile_updated_at": now_iso,
+        }
+        if profile.get("full_name"):
+            payload["name"] = profile["full_name"]
+        resp = requests.post(
+            f"{SUPABASE_URL}/rest/v1/customers",
+            json=payload,
+            headers=_sb_headers(prefer_upsert=True),
+            timeout=10,
+        )
+        if resp.ok or resp.status_code == 201:
+            logger.info(f"✅ Customer profile saved: {psid} → {profile.get('full_name','')}")
+        else:
+            logger.warning(f"save_customer_profile: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        logger.error(f"save_customer_profile_supabase error: {e}")
+
+
+def fetch_customers_batch(psid_list: list) -> dict:
+    """Batch fetch customer profiles from Supabase. Returns {psid: customer_dict}"""
+    if not psid_list or not SUPABASE_URL or not SUPABASE_KEY:
+        return {}
+    try:
+        psid_in = "(" + ",".join(psid_list) + ")"
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/customers",
+            params={
+                "psid": f"in.{psid_in}",
+                "select": "psid,name,full_name,first_name,last_name,profile_pic",
+            },
+            headers=_sb_headers(),
+            timeout=10,
+        )
+        if resp.ok:
+            return {c["psid"]: c for c in resp.json() if "psid" in c}
+        logger.warning(f"fetch_customers_batch: {resp.status_code}")
+    except Exception as e:
+        logger.error(f"fetch_customers_batch error: {e}")
+    return {}
 
 
 def _parse_listing_cards(html_text: str) -> list:
@@ -2517,6 +2570,7 @@ def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: s
     if ctx.get("search_mode"):
         parts.append(f"   search_mode: {ctx['search_mode']}")
     parts.append("✅ Action: เปิด Messenger เพื่อดูรูปและตอบลูกค้า")
+    parts.append("🔗 Dashboard: เปิด Lead Dashboard เพื่อ Pause/Resume Bot")
     notify_line("\n".join(parts))
 
     # Log & save
@@ -2555,6 +2609,7 @@ def process_payment_pending_review(sender_id: str, image_urls: list, accompanyin
     parts.extend(_build_tour_context_summary(ctx))
     parts.append("   stage: booking")
     parts.append("✅ Action: เปิด Messenger เพื่อตรวจสลิป และยืนยันก่อนเปลี่ยนสถานะเป็น paid")
+    parts.append("🔗 Dashboard: เปิด Lead Dashboard เพื่อ Pause/Resume Bot")
     notify_line("\n".join(parts))
 
     # Log & save
@@ -2588,6 +2643,7 @@ def process_payment_slip(sender_id: str, image_urls: list = None):
     if image_urls:
         summary_parts.append(f"🖼 รูปแนบ: {image_urls[0]}")
     summary_parts.append("⚠️ รอตรวจสอบ — ห้าม auto paid")
+    summary_parts.append("🔗 Dashboard: เปิด Lead Dashboard เพื่อ Pause/Resume Bot")
     notify_line("\n".join(summary_parts))
 
     log_chat_event(sender_id, "payment_pending_review", ctx=ctx,
@@ -3066,7 +3122,8 @@ def process_message(sender_id: str, text: str):
                 f"🆔 Case: {case_id}\n"
                 f"👤 {display_name}\n"
                 f"💬 {text}"
-                f"{ctx_summary}"
+                f"{ctx_summary}\n"
+                f"🔗 Dashboard: เปิด Lead Dashboard เพื่อ Pause/Resume Bot"
             )
 
         # Save user message
@@ -3173,88 +3230,101 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                box-shadow: 0 2px 8px rgba(0,0,0,0.07); text-align: center; }
   .stat-card .num { font-size: 2rem; font-weight: 700; }
   .stat-card .label { font-size: 0.8rem; color: #666; margin-top: 4px; }
-  .cold .num { color: #aaa; }
-  .warm .num { color: #f59e0b; }
-  .hot .num { color: #ef4444; }
-  .booking .num { color: #10b981; }
+  .cold .num { color: #aaa; } .warm .num { color: #f59e0b; }
+  .hot .num { color: #ef4444; } .booking .num { color: #10b981; }
   .section { padding: 0 28px 28px; }
-  .section h2 { font-size: 1rem; margin-bottom: 14px; color: #444; border-left: 4px solid #e63946;
-                padding-left: 10px; }
+  .section h2 { font-size: 1rem; margin-bottom: 14px; color: #444;
+                border-left: 4px solid #e63946; padding-left: 10px; }
   table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px;
           overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
   th { background: #fef2f2; color: #666; font-size: 0.78rem; text-transform: uppercase;
        padding: 10px 14px; text-align: left; }
-  td { padding: 10px 14px; font-size: 0.88rem; border-top: 1px solid #f3f4f6; }
+  td { padding: 8px 12px; font-size: 0.86rem; border-top: 1px solid #f3f4f6; vertical-align: middle; }
   tr:hover td { background: #fef9f9; }
-  .badge { display: inline-block; border-radius: 6px; padding: 2px 8px; font-size: 0.75rem;
-           font-weight: 600; }
+  .badge { display: inline-block; border-radius: 6px; padding: 2px 8px;
+           font-size: 0.75rem; font-weight: 600; }
   .badge-cold { background: #f3f4f6; color: #9ca3af; }
   .badge-warm { background: #fef3c7; color: #d97706; }
-  .badge-hot { background: #fee2e2; color: #dc2626; }
+  .badge-hot  { background: #fee2e2; color: #dc2626; }
   .badge-booking { background: #d1fae5; color: #059669; }
+  .badge-paused  { background: #fee2e2; color: #dc2626; }
+  .badge-active  { background: #d1fae5; color: #059669; }
   .no-data { text-align: center; color: #aaa; padding: 40px; font-size: 0.9rem; }
   .refresh { float: right; background: #e63946; color: #fff; border: none; border-radius: 8px;
              padding: 6px 14px; cursor: pointer; font-size: 0.82rem; margin-top: -2px; }
   .refresh:hover { background: #c1121f; }
-  .options-list { font-size: 0.78rem; color: #555; }
-  .updated { font-size: 0.72rem; color: #aaa; }
+  .options-list { font-size: 0.76rem; color: #555; }
+  .updated { font-size: 0.7rem; color: #aaa; }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; flex-shrink: 0; background: #e5e7eb; }
+  .customer-cell { display: flex; align-items: center; gap: 8px; min-width: 130px; }
+  .customer-info strong { display: block; font-size: 0.84rem; line-height: 1.2; }
+  .psid-sub { font-size: 0.66rem; color: #bbb; }
+  .btn-pause  { background: #f59e0b; color: #fff; border: none; border-radius: 5px;
+                padding: 3px 7px; font-size: 0.68rem; cursor: pointer; display: block; margin: 2px 0; width: 62px; }
+  .btn-pause:hover  { background: #d97706; }
+  .btn-resume { background: #10b981; color: #fff; border: none; border-radius: 5px;
+                padding: 3px 7px; font-size: 0.68rem; cursor: pointer; display: block; margin: 2px 0; width: 62px; }
+  .btn-resume:hover { background: #059669; }
+  #toast { position: fixed; bottom: 24px; right: 24px; background: #1f2937; color: #fff;
+           padding: 12px 20px; border-radius: 10px; font-size: 0.84rem; display: none;
+           z-index: 9999; box-shadow: 0 4px 16px rgba(0,0,0,0.25); max-width: 300px; }
   @media (max-width: 600px) {
-    .stats { flex-direction: column; }
-    table { font-size: 0.8rem; }
-    td, th { padding: 8px 10px; }
+    .stats { flex-direction: column; } table { font-size: 0.78rem; }
+    td, th { padding: 6px 8px; } .customer-cell { flex-direction: column; align-items: flex-start; gap: 2px; }
   }
 </style>
 </head>
 <body>
 <header>
-  <h1>🔥 รวมทัวร์ไฟไหม้ — Lead Dashboard</h1>
+  <h1>&#128293; รวมทัวร์ไฟไหม้ — Lead Dashboard</h1>
   <p>ข้อมูล Lead จาก AI Sales Bot (Messenger)</p>
 </header>
 
 <div class="stats">
   <div class="stat-card booking">
     <div class="num">{{ counts.get('booking', 0) }}</div>
-    <div class="label">📋 Booking</div>
+    <div class="label">&#128203; Booking</div>
   </div>
   <div class="stat-card hot">
     <div class="num">{{ counts.get('hot', 0) }}</div>
-    <div class="label">🔔 Hot</div>
+    <div class="label">&#128276; Hot</div>
   </div>
   <div class="stat-card warm">
     <div class="num">{{ counts.get('warm', 0) }}</div>
-    <div class="label">💬 Warm</div>
+    <div class="label">&#128172; Warm</div>
   </div>
   <div class="stat-card cold">
     <div class="num">{{ counts.get('cold', 0) }}</div>
-    <div class="label">❄️ Cold</div>
+    <div class="label">&#10052;&#65039; Cold</div>
   </div>
 </div>
 
 <div class="section">
-  <h2>📋 Booking + 🔔 Hot Leads
-    <button class="refresh" onclick="location.reload()">🔄 รีเฟรช</button>
+  <h2>&#128203; Booking + &#128276; Hot Leads
+    <button class="refresh" onclick="location.reload()">&#128260; รีเฟรช</button>
   </h2>
   {% if hot_leads %}
   <table>
-    <thead>
-      <tr>
-        <th>Stage</th>
-        <th>ชื่อ</th>
-        <th>เบอร์/LINE</th>
-        <th>ปลายทาง</th>
-        <th>เดือน</th>
-        <th>งบ/คน</th>
-        <th>จำนวน</th>
-        <th>โปรแกรมที่สนใจ</th>
-        <th>ข้อความล่าสุด</th>
-        <th>อัปเดต</th>
-      </tr>
-    </thead>
+    <thead><tr>
+      <th>Stage</th><th>ลูกค้า</th><th>เบอร์/LINE</th>
+      <th>ปลายทาง</th><th>เดือน</th><th>งบ/คน</th><th>จำนวน</th>
+      <th>โปรแกรม</th><th>ข้อความล่าสุด</th><th>บอท</th><th>อัปเดต</th><th>Action</th>
+    </tr></thead>
     <tbody>
     {% for lead in hot_leads %}
+      {% set psid_val = lead.get('psid') or '' %}
+      {% set display_name = lead.get('full_name') or lead.get('customer_name') or ('ลูกค้าใหม่ (...' + psid_val[-4:] + ')') %}
       <tr>
         <td><span class="badge badge-{{ lead.lead_stage }}">{{ lead.lead_stage }}</span></td>
-        <td>{{ lead.customer_name or '—' }}</td>
+        <td>
+          <div class="customer-cell">
+            {% if lead.get('profile_pic') %}<img class="avatar" src="{{ lead.profile_pic }}" onerror="this.style.display='none'">{% endif %}
+            <div class="customer-info">
+              <strong>{{ display_name }}</strong>
+              <span class="psid-sub">...{{ psid_val[-6:] }}</span>
+            </div>
+          </div>
+        </td>
         <td>{{ lead.phone or '—' }}</td>
         <td>{{ lead.destination or '—' }}</td>
         <td>{{ lead.month or '—' }}</td>
@@ -3262,15 +3332,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <td>{{ lead.pax or '—' }}</td>
         <td class="options-list">
           {% set opts = lead.last_options %}
-          {% if opts %}
-            {% if opts is string %}{% set opts = opts | from_json %}{% endif %}
-            {% for o in opts[:2] %}
-              <div>{{ o.get('index','') }}. {{ o.get('name','')[:30] }}</div>
-            {% endfor %}
+          {% if opts %}{% for o in opts[:2] %}<div>{{ o.get('index','') }}. {{ o.get('name','')[:26] }}</div>{% endfor %}
           {% else %}—{% endif %}
         </td>
-        <td>{{ (lead.last_message or '')[:60] }}{% if lead.last_message and lead.last_message|length > 60 %}…{% endif %}</td>
+        <td>{{ (lead.last_message or '')[:50] }}{% if lead.last_message and lead.last_message|length > 50 %}…{% endif %}</td>
+        <td>
+          {% if lead.get('human_takeover') %}<span class="badge badge-paused">&#9208; หยุด</span>
+          {% else %}<span class="badge badge-active">&#9654; เปิด</span>{% endif %}
+        </td>
         <td class="updated">{{ lead.updated_at[:16].replace('T',' ') if lead.updated_at else '—' }}</td>
+        <td>
+          {% if psid_val %}
+          <button class="btn-pause"  onclick="pauseBot('{{ psid_val }}',2)">&#9208; 2h</button>
+          <button class="btn-pause"  onclick="pauseBot('{{ psid_val }}',24)">&#9208; 24h</button>
+          <button class="btn-resume" onclick="resumeBot('{{ psid_val }}')">&#9654; เปิด</button>
+          {% else %}—{% endif %}
+        </td>
       </tr>
     {% endfor %}
     </tbody>
@@ -3281,31 +3358,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </div>
 
 <div class="section">
-  <h2>💬 Warm Leads ล่าสุด</h2>
+  <h2>&#128172; Warm Leads ล่าสุด</h2>
   {% if warm_leads %}
   <table>
-    <thead>
-      <tr>
-        <th>ชื่อ</th>
-        <th>เบอร์/LINE</th>
-        <th>ปลายทาง</th>
-        <th>ประเทศ</th>
-        <th>เดือน</th>
-        <th>งบ/คน</th>
-        <th>ข้อความล่าสุด</th>
-        <th>อัปเดต</th>
-      </tr>
-    </thead>
+    <thead><tr>
+      <th>ลูกค้า</th><th>เบอร์/LINE</th><th>ปลายทาง</th>
+      <th>ประเทศ</th><th>เดือน</th><th>งบ/คน</th><th>ข้อความล่าสุด</th><th>อัปเดต</th>
+    </tr></thead>
     <tbody>
     {% for lead in warm_leads %}
+      {% set psid_val = lead.get('psid') or '' %}
+      {% set display_name = lead.get('full_name') or lead.get('customer_name') or ('ลูกค้าใหม่ (...' + psid_val[-4:] + ')') %}
       <tr>
-        <td>{{ lead.customer_name or '—' }}</td>
+        <td>
+          <div class="customer-cell">
+            {% if lead.get('profile_pic') %}<img class="avatar" src="{{ lead.profile_pic }}" onerror="this.style.display='none'">{% endif %}
+            <div class="customer-info">
+              <strong>{{ display_name }}</strong>
+              <span class="psid-sub">...{{ psid_val[-6:] }}</span>
+            </div>
+          </div>
+        </td>
         <td>{{ lead.phone or '—' }}</td>
         <td>{{ lead.destination or '—' }}</td>
         <td>{{ lead.country or '—' }}</td>
         <td>{{ lead.month or '—' }}</td>
         <td>{{ '{:,}'.format(lead.budget_per_person) if lead.budget_per_person else '—' }}</td>
-        <td>{{ (lead.last_message or '')[:60] }}{% if lead.last_message and lead.last_message|length > 60 %}…{% endif %}</td>
+        <td>{{ (lead.last_message or '')[:55] }}{% if lead.last_message and lead.last_message|length > 55 %}…{% endif %}</td>
         <td class="updated">{{ lead.updated_at[:16].replace('T',' ') if lead.updated_at else '—' }}</td>
       </tr>
     {% endfor %}
@@ -3316,12 +3395,47 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   {% endif %}
 </div>
 
-<div style="text-align:center; padding: 20px; color: #bbb; font-size: 0.8rem;">
+<div style="text-align:center;padding:20px;color:#bbb;font-size:0.8rem;">
   รวมทัวร์ไฟไหม้ AI Sales Bot v3 • <a href="/health" style="color:#bbb">health check</a>
 </div>
+
+<div id="toast"></div>
+<script>
+const ADMIN_PASS = new URLSearchParams(window.location.search).get('pass') || '';
+function showToast(msg, ok) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.background = ok ? '#059669' : '#dc2626';
+  t.style.display = 'block';
+  setTimeout(() => { t.style.display = 'none'; }, 3200);
+}
+async function pauseBot(psid, hours) {
+  try {
+    const r = await fetch('/admin/pause', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Pass': ADMIN_PASS },
+      body: JSON.stringify({ psid, hours })
+    });
+    const d = await r.json();
+    if (r.ok) { showToast('⏸ Bot หยุด ' + hours + 'h (' + psid.slice(-6) + ')', true); setTimeout(() => location.reload(), 1500); }
+    else showToast('❌ ' + (d.error || 'error'), false);
+  } catch(e) { showToast('❌ ' + e.message, false); }
+}
+async function resumeBot(psid) {
+  try {
+    const r = await fetch('/admin/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Pass': ADMIN_PASS },
+      body: JSON.stringify({ psid })
+    });
+    const d = await r.json();
+    if (r.ok) { showToast('▶ Bot เปิดแล้ว (' + psid.slice(-6) + ')', true); setTimeout(() => location.reload(), 1500); }
+    else showToast('❌ ' + (d.error || 'error'), false);
+  } catch(e) { showToast('❌ ' + e.message, false); }
+}
+</script>
 </body>
-</html>
-"""
+</html>"""
 
 @app.route("/dashboard", methods=["GET"])
 def dashboard():
@@ -3350,11 +3464,23 @@ def dashboard():
             except Exception:
                 lead["last_options"] = []
 
+    # Enrich leads with customer profile data (name + profile pic)
+    all_psids = list({l.get("psid", "") for l in booking_hot + warm if l.get("psid")})
+    if all_psids:
+        cust_map = fetch_customers_batch(all_psids)
+        for lead in booking_hot + warm:
+            cust = cust_map.get(lead.get("psid", ""), {})
+            lead["full_name"]   = (cust.get("full_name") or cust.get("name") or
+                                   lead.get("customer_name") or
+                                   f"\u0e25\u0e39\u0e01\u0e04\u0e49\u0e32\u0e43\u0e2b\u0e21\u0e48 (...{lead.get('psid','????')[-4:]})")
+            lead["profile_pic"] = cust.get("profile_pic", "")
+
     return render_template_string(
         DASHBOARD_HTML,
         counts=counts,
         hot_leads=booking_hot,
         warm_leads=warm,
+        admin_pass=pw,
     )
 
 
@@ -3431,6 +3557,70 @@ def webhook():
             t.start()
 
     return jsonify({"status": "ok"}), 200
+
+
+
+@app.route("/admin/pause", methods=["POST"])
+def admin_pause():
+    """Admin: หยุด bot สำหรับ PSID ที่ระบุ (X-Admin-Pass header required)"""
+    auth = (request.headers.get("X-Admin-Pass") or
+            (request.get_json(silent=True) or {}).get("pass", ""))
+    if auth != DASHBOARD_PASS:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    psid = data.get("psid", "").strip()
+    hours = max(1, min(168, int(data.get("hours", 2))))
+    if not psid:
+        return jsonify({"error": "psid required"}), 400
+    ctx = get_context(psid)
+    pause_bot(psid, ctx, "manual_admin_pause", hours=hours)
+    save_context(psid, ctx)
+    # Best-effort: update leads table
+    try:
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/leads",
+            params={"psid": f"eq.{psid}"},
+            json={"human_takeover": True},
+            headers=_sb_headers(),
+            timeout=6,
+        )
+    except Exception:
+        pass
+    logger.info(f"⛔ Admin paused bot: ...{psid[-6:]}, {hours}h")
+    return jsonify({"status": "paused", "psid": psid,
+                    "until": ctx.get("bot_paused_until"), "hours": hours})
+
+
+@app.route("/admin/resume", methods=["POST"])
+def admin_resume():
+    """เปิด bot สำหรับ PSID ที่ระบุ (X-Admin-Pass header required)"""
+    auth = (request.headers.get("X-Admin-Pass") or
+            (request.get_json(silent=True) or {}).get("pass", ""))
+    if auth != DASHBOARD_PASS:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    psid = data.get("psid", "").strip()
+    if not psid:
+        return jsonify({"error": "psid required"}), 400
+    ctx = get_context(psid)
+    ctx["human_takeover"]   = False
+    ctx["bot_paused_until"] = None
+    ctx["bot_pause_reason"] = None
+    # legacy_conversation stays blocked unless manually cleared in future phase
+    save_context(psid, ctx)
+    # Best-effort: update leads table
+    try:
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/leads",
+            params={"psid": f"eq.{psid}"},
+            json={"human_takeover": False},
+            headers=_sb_headers(),
+            timeout=6,
+        )
+    except Exception:
+        pass
+    logger.info(f"▶ Admin resumed bot: ...{psid[-6:]}")
+    return jsonify({"status": "resumed", "psid": psid})
 
 
 @app.route("/test-line", methods=["GET"])
