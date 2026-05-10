@@ -423,6 +423,7 @@ def log_chat_event(
             "selected_tour_name":     ctx.get("selected_tour_name") or "",
             "selected_tour_url":      ctx.get("selected_tour_url") or "",
             "selected_tour_airline":  ctx.get("selected_tour_airline") or "",
+            "customer_name":          ctx.get("customer_name") or "",
             "ad_id":                  ctx.get("ad_id") or "",
             "ad_ref":                 ctx.get("ad_ref") or "",
             "ad_title":               ctx.get("ad_title") or "",
@@ -3720,5 +3721,4 @@ def health():
 
 # ─── Entry point ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    port = int(os.environ.g
