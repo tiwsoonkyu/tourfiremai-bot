@@ -2074,57 +2074,153 @@ _PAYMENT_KEYWORDS = [
     "โอนเงินแล้ว", "ชำระเงินแล้ว", "จ่ายเงินแล้ว", "มัดจำแล้ว",
     "โอนมัดจำแล้ว", "โอนค่าทัวร์แล้ว", "ส่งหลักฐาน",
 ]
+# Keywords ที่บ่งบอกว่ารูปที่ส่งมาคือสลิปการโอนเงิน
+_PAYMENT_IMAGE_KEYWORDS = [
+    "โอนแล้ว", "จ่ายแล้ว", "ชำระแล้ว", "สลิป", "แนบสลิป",
+    "หลักฐานการโอน", "มัดจำแล้ว", "โอนมัดจำ", "โอนค่าทัวร์",
+    "ส่งสลิป", "สลิปแล้ว", "โอนเงินแล้ว", "จ่ายเงินแล้ว",
+    "ชำระเงินแล้ว", "โอนมาแล้ว", "จ่ายมาแล้ว",
+]
 
-def process_payment_slip(sender_id: str, image_urls: list = None):
-    """เรียกเมื่อลูกค้าส่งสลิปการโอนเงิน (รูปภาพ หรือ text keyword)"""
+def _build_tour_context_summary(ctx: dict) -> list:
+    """Helper — build tour context lines for notifications"""
+    lines = []
+    if ctx.get("selected_tour_name"):
+        lines.append(f"🏷 ทัวร์: {ctx['selected_tour_name']}")
+        if ctx.get("selected_tour_code"):
+            lines.append(f"   รหัสทัวร์: {ctx['selected_tour_code']}")
+        if ctx.get("selected_tour_web_code"):
+            lines.append(f"   รหัสเว็บ: {ctx['selected_tour_web_code']}")
+        if ctx.get("selected_tour_airline"):
+            lines.append(f"   สายการบิน: {ctx['selected_tour_airline']}")
+    dest = " / ".join(filter(None, [ctx.get("country"), ctx.get("city_hint")]))
+    if dest:
+        lines.append(f"📍 ปลายทาง: {dest}")
+    if ctx.get("pax"):
+        lines.append(f"👥 จำนวน: {ctx['pax']} ท่าน")
+    if ctx.get("travel_date"):
+        lines.append(f"📅 วันเดินทาง: {ctx['travel_date']}")
+    return lines
+
+
+def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: str = ""):
+    """รูปภาพทั่วไป — handoff ให้ทีมงาน ห้าม Bot วิเคราะห์ภาพเอง"""
     ctx = get_context(sender_id)
-    ctx["payment_received"] = True
-    ctx["lead_stage"] = "paid"
+    display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+
+    # Elevate stage if in active conversation
+    current_stage = ctx.get("_lead_stage") or "cold"
+    new_stage = "warm" if current_stage in ("cold",) else current_stage
+
+    ctx["_lead_stage"] = new_stage
+    ctx["_lead_status"] = "waiting_team"
+    ctx["_lead_needs_review"] = True
+    ctx["_lead_review_reason"] = "image_handoff"
+    ctx["handoff_requested"] = True
     save_context(sender_id, ctx)
 
-    summary_parts = [f"💳 สลิปการโอน!\nPSID: {sender_id}"]
-    if ctx.get("customer_name"):
-        summary_parts.append(f"ชื่อ: {ctx['customer_name']}")
+    # Build LINE notification
+    parts = [f"📷 ลูกค้าส่งรูปให้เช็กโปรแกรม", f"👤 {display_name}"]
     if ctx.get("phone"):
-        summary_parts.append(f"เบอร์/LINE: {ctx['phone']}")
-    if ctx.get("selected_tour_name"):
-        summary_parts.append(f"โปรแกรม: {ctx['selected_tour_name']}")
-        if ctx.get("selected_tour_code"):
-            summary_parts.append(f"รหัสทัวร์จริง: {ctx['selected_tour_code']}")
-        if ctx.get("selected_tour_web_code"):
-            summary_parts.append(f"รหัสเว็บ: {ctx['selected_tour_web_code']}")
-        if ctx.get("selected_tour_airline"):
-            summary_parts.append(f"สายการบิน: {ctx['selected_tour_airline']}")
-        if ctx.get("selected_tour_url"):
-            summary_parts.append(f"ลิงก์: {ctx['selected_tour_url']}")
-    elif ctx.get("last_options"):
-        opts = ctx["last_options"]
-        if isinstance(opts, str):
-            try: opts = json.loads(opts)
-            except: opts = []
-        if opts:
-            summary_parts.append(f"โปรแกรม: {opts[0].get('name', '')}")
-            if opts[0].get("tour_code"):
-                summary_parts.append(f"รหัสทัวร์: {opts[0]['tour_code']}")
-    if ctx.get("travel_date"):
-        summary_parts.append(f"วันเดินทาง: {ctx['travel_date']}")
-    if ctx.get("pax"):
-        summary_parts.append(f"จำนวน: {ctx['pax']} ท่าน")
+        parts.append(f"📞 {ctx['phone']}")
+    if accompanying_text:
+        parts.append(f"💬 ข้อความ: {accompanying_text[:150]}")
     if image_urls:
-        summary_parts.append(f"รูปสลิป: {image_urls[0]}")
-    summary_parts.append("→ กรุณาตรวจสอบและยืนยันการจองด่วน!")
-    notify_line("\n".join(summary_parts))
+        parts.append(f"🖼 รูป: {image_urls[0][:150]}")
+    parts.append("📋 บริบทล่าสุด:")
+    parts.extend(_build_tour_context_summary(ctx))
+    parts.append(f"   stage: {new_stage}")
+    parts.append("✅ Action: ทีมงานช่วยดูรูปและตอบกลับ/อัปเดต lead")
+    notify_line("\n".join(parts))
 
-    save_lead_supabase(sender_id, ctx, "paid", "ส่งสลิปการโอนเงิน")
+    # Log & save
+    log_chat_event(sender_id, "image_handoff", ctx=ctx,
+                   message=accompanying_text or "[รูปภาพ]",
+                   needs_review=True, review_reason="image_handoff")
+    save_lead_supabase(sender_id, ctx, new_stage, "ส่งรูปให้เช็กโปรแกรม")
 
     reply = (
-        "ได้รับสลิปแล้วค่ะ ขอบคุณมากนะคะ 🙏 "
-        "แจ้งทีมงานตรวจสอบและยืนยันการจองให้เลยค่ะ "
-        "กรุณารอสักครู่ ทีมงานจะติดต่อยืนยันกลับหาคุณอีกครั้งนะคะ 😊"
+        "ได้รับรูปแล้วค่ะ 😊\n"
+        "เดี๋ยวส่งให้ทีมงานช่วยเช็กโปรแกรมในรูปให้ก่อนนะคะ\n"
+        "ถ้าสะดวก พิมพ์ประเทศ/เมือง หรือรหัสทัวร์ที่เห็นในรูปมาเพิ่มได้เลย จะช่วยเช็กได้เร็วขึ้นค่ะ"
     )
     send_message(sender_id, reply)
     save_to_history(sender_id, "assistant", reply)
-    logger.info(f"✅ Payment slip processed for {sender_id}")
+    logger.info(f"📷 image_handoff for {sender_id}: stage={new_stage}")
+
+
+def process_payment_pending_review(sender_id: str, image_urls: list, accompanying_text: str = ""):
+    """รูป + keyword โอน/สลิป — รอทีมตรวจสอบ ห้าม auto paid"""
+    ctx = get_context(sender_id)
+    display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+
+    ctx["_lead_stage"] = "booking"
+    ctx["_lead_status"] = "waiting_team"
+    ctx["_lead_needs_review"] = True
+    ctx["_lead_review_reason"] = "payment_pending_review"
+    ctx["payment_received"] = False   # ยังไม่ verified — ห้าม auto paid
+    ctx["handoff_requested"] = True
+    save_context(sender_id, ctx)
+
+    # Build LINE notification
+    parts = [f"💳 สลิป/หลักฐานการโอน — รอตรวจสอบ", f"👤 {display_name}"]
+    if ctx.get("phone"):
+        parts.append(f"📞 {ctx['phone']}")
+    if accompanying_text:
+        parts.append(f"💬 ข้อความ: {accompanying_text[:150]}")
+    if image_urls:
+        parts.append(f"🖼 รูป: {image_urls[0][:150]}")
+    parts.extend(_build_tour_context_summary(ctx))
+    parts.append("⚠️ ยังไม่ยืนยัน paid — ต้องตรวจสอบและ confirm ก่อน")
+    notify_line("\n".join(parts))
+
+    # Log & save
+    log_chat_event(sender_id, "payment_pending_review", ctx=ctx,
+                   message=accompanying_text or "[รูปสลิป]",
+                   needs_review=True, review_reason="payment_pending_review")
+    save_lead_supabase(sender_id, ctx, "booking", "ส่งรูปสลิป — รอตรวจสอบ")
+
+    reply = (
+        "ได้รับรูปแล้วค่ะ ขอบคุณนะคะ 😊\n"
+        "เดี๋ยวทีมงานตรวจสอบและยืนยันการชำระเงินกลับให้นะคะ"
+    )
+    send_message(sender_id, reply)
+    save_to_history(sender_id, "assistant", reply)
+    logger.info(f"💳 payment_pending_review for {sender_id}")
+
+
+def process_payment_slip(sender_id: str, image_urls: list = None):
+    """Text-only keyword โอน/สลิป (ไม่มีรูป) — รอทีมตรวจสอบ ห้าม auto paid"""
+    ctx = get_context(sender_id)
+    display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+
+    ctx["_lead_stage"] = "booking"
+    ctx["_lead_status"] = "waiting_team"
+    ctx["_lead_needs_review"] = True
+    ctx["_lead_review_reason"] = "payment_pending_review"
+    ctx["payment_received"] = False   # ห้าม auto paid — ต้องตรวจสอบก่อน
+    ctx["handoff_requested"] = True
+    save_context(sender_id, ctx)
+
+    summary_parts = [f"💳 แจ้งโอนเงิน (ข้อความ)\nPSID: {sender_id}", f"👤 {display_name}"]
+    summary_parts.extend(_build_tour_context_summary(ctx))
+    if image_urls:
+        summary_parts.append(f"🖼 รูปแนบ: {image_urls[0]}")
+    summary_parts.append("⚠️ รอตรวจสอบ — ห้าม auto paid")
+    notify_line("\n".join(summary_parts))
+
+    log_chat_event(sender_id, "payment_pending_review", ctx=ctx,
+                   message="[แจ้งโอนผ่านข้อความ]",
+                   needs_review=True, review_reason="payment_pending_review")
+    save_lead_supabase(sender_id, ctx, "booking", "แจ้งโอนเงิน — รอตรวจสอบ")
+
+    reply = (
+        "ได้รับแล้วค่ะ ขอบคุณนะคะ 😊 "
+        "เดี๋ยวทีมงานตรวจสอบและยืนยันการชำระเงินกลับให้นะคะ"
+    )
+    send_message(sender_id, reply)
+    save_to_history(sender_id, "assistant", reply)
+    logger.info(f"✅ Payment slip (text) processed for {sender_id}")
 
 
 # ─── Core message processing ──────────────────────────────────────────────────
@@ -2750,24 +2846,28 @@ def webhook():
             if not text and msg_event.get("postback", {}).get("title"):
                 text = msg_event["postback"]["title"]
 
-            # Image attachment = potential payment slip
-            attachments  = message.get("attachments", [])
-            image_list   = [a for a in attachments if a.get("type") == "image"]
+            # ─── Image attachment handling (New Policy) ─────────────────
+            attachments = message.get("attachments", [])
+            image_list  = [a for a in attachments if a.get("type") == "image"]
             if image_list:
-                image_urls = [a.get("payload", {}).get("url", "") for a in image_list]
-                post_kw = ["โพส", "เพจ", "ราคาในรูป", "ตัวนี้", "อันนี้", "ทัวร์นี้", "ตัวที่", "ในรูป"]
-                is_post = text and any(k in text for k in post_kw)
-                if is_post:
-                    logger.info(f"📷 Post screenshot from {sender_id}")
-                    notify_line("📸 ลูกค้าส่งรูปจากโพส!\nPSID: " + sender_id + "\nข้อความ: " + text + "\nรูป: " + image_urls[0][:80])
-                    t = threading.Thread(target=process_message, args=(sender_id, text + " [ลูกค้าส่งรูปจากโพสเพจ]"))
-                    t.daemon = True
-                    t.start()
+                image_urls   = [a.get("payload", {}).get("url", "") for a in image_list]
+                _img_text    = (text or "").strip()
+                # Detect payment keyword in accompanying text
+                _is_payment  = any(kw in _img_text for kw in _PAYMENT_IMAGE_KEYWORDS)
+                if _is_payment:
+                    logger.info(f"💳 Payment image from {sender_id}: keyword detected")
+                    t = threading.Thread(
+                        target=process_payment_pending_review,
+                        args=(sender_id, image_urls, _img_text)
+                    )
                 else:
-                    logger.info(f"📷 Image from {sender_id} — treating as payment slip")
-                    t = threading.Thread(target=process_payment_slip, args=(sender_id, image_urls))
-                    t.daemon = True
-                    t.start()
+                    logger.info(f"📷 General image from {sender_id} → image_handoff")
+                    t = threading.Thread(
+                        target=process_image_handoff,
+                        args=(sender_id, image_urls, _img_text)
+                    )
+                t.daemon = True
+                t.start()
                 continue
 
             if not text:
