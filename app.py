@@ -159,7 +159,9 @@ _EMPTY_CTX = {
     "selected_tour": None,        # full dict ของทัวร์ที่เลือก {name, url, code, price, airline}
     "selected_tour_name": None,   # shortcut สำหรับ backward compat
     "selected_tour_url": None,
-    "selected_tour_code": None,   # รหัสทัวร์ที่เลือก เช่น AP232919
+    "selected_tour_code": None,      # tour_code_real เช่น ZGNRT-2618VZ
+    "selected_tour_web_code": None,  # web_code เช่น ap241533
+    "selected_tour_airline": None,   # airline เช่น VZ
     # ── Booking flow ──────────────────────────────────────────────────────
     "lead_stage": None,           # cold/warm/hot/booking/paid/awaiting_docs/complete
     "travel_date": None,          # วันเดินทางที่ลูกค้าเลือก
@@ -666,7 +668,7 @@ def fetch_tours_from_db(country_id: str, city_hint: str = None,
     try:
         params = {
             "country_id": f"eq.{country_id}",
-            "select":     "name,url,tour_code,price_min,promo_price,original_price,discount_amount,discount_percent,discount_text,promo_badge,airline,departure_dates,is_faimai,tip_fee,visa_fee,visa_status,single_supplement",
+            "select":     "name,url,tour_code,web_code,tour_code_real,price_min,promo_price,original_price,discount_amount,discount_percent,discount_text,promo_badge,airline,departure_dates,is_faimai,tip_fee,visa_fee,visa_status,single_supplement",
             "order":      "price_min.asc.nullslast",
             "limit":      "60",
         }
@@ -729,9 +731,14 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
             line = f"📌 {t['name']}"
             if t.get("airline"):
                 line += f" ({t['airline']})"
-            _tc = t.get("tour_code", "") or t.get("code", "") or ""
-            if _tc:
-                line += f"\n   🏷 รหัสทัวร์: {_tc}"
+            _real = t.get("tour_code_real", "") or ""
+            _wc   = t.get("web_code", "") or t.get("tour_code", "") or t.get("code", "") or ""
+            if _real:
+                line += f"\n   🏷 รหัสทัวร์: {_real}"
+                if _wc:
+                    line += f"\n   🔑 รหัสเว็บ: {_wc}"
+            elif _wc:
+                line += f"\n   🔑 รหัสเว็บ: {_wc}"
             if t.get("dates"):
                 line += f"\n   วันเดินทาง: {t['dates']}"
             if t.get("price"):
@@ -742,6 +749,9 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
             meta.append({
                 "index": i + 1,
                 "tour_code": t.get("tour_code", ""),
+                "web_code": t.get("web_code", "") or t.get("tour_code", ""),
+                "tour_code_real": t.get("tour_code_real", ""),
+                "airline": t.get("airline", ""),
                 "name": t["name"],
                 "price_min": t.get("price_min"),
                 "url": link,
@@ -774,12 +784,18 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                 price_str = f"{promo:,} บาท" if promo else "ติดต่อสอบถาม"
                 dates_str = t.get("departure_dates") or "ติดต่อเช็กวัน"
                 airline_str = t.get("airline") or ""
-                code_str = t.get("tour_code", "") or ""
+                web_code_str  = t.get("web_code", "") or t.get("tour_code", "") or ""
+                real_code_str = t.get("tour_code_real", "") or ""
                 line = f"📌 {t['name']}"
                 if airline_str:
                     line += f" ({airline_str})"
-                if code_str:
-                    line += f"\n   🏷 รหัสทัวร์: {code_str}"
+                if real_code_str:
+                    line += f"\n   🏷 รหัสทัวร์: {real_code_str}"
+                    if web_code_str:
+                        line += f"\n   🔑 รหัสเว็บ: {web_code_str}"
+                elif web_code_str:
+                    line += f"\n   🔑 รหัสเว็บ: {web_code_str}"
+                    line += f"\n   🏷 รหัสทัวร์จริง: กำลังเช็กจากหน้าโปรแกรม"
                 # Faimai: show discount info
                 if t.get("is_faimai"):
                     orig = t.get("original_price")
@@ -815,6 +831,9 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                 meta.append({
                     "index": i + 1,
                     "tour_code": t.get("tour_code", ""),
+                    "web_code": t.get("web_code", "") or t.get("tour_code", ""),
+                    "tour_code_real": t.get("tour_code_real", ""),
+                    "airline": t.get("airline", ""),
                     "name": t["name"],
                     "price_min": promo,
                     "url": t.get("url", ""),
@@ -1260,27 +1279,35 @@ Conversation Brain — หัวใจสำคัญ
 ══════════════════════════════════
 กฎรหัสทัวร์ — ต้องแสดงทุกครั้ง (สำคัญมาก)
 ══════════════════════════════════
-ทุกครั้งที่เสนอโปรแกรมทัวร์ ไม่ว่าจะเป็น Top 3, ตัวเดียว, เปรียบเทียบ, รายละเอียด → ต้องแสดง รหัสทัวร์ เสมอ
-รูปแบบที่ถูกต้อง (ทัวร์ปกติ):
-  ✈️ [ชื่อโปรแกรม]
-  🏷 รหัสทัวร์: [tour_code]
+ทุกครั้งที่เสนอโปรแกรมทัวร์ → ต้องแสดง รหัสที่มี เสมอ
+มี 3 รหัสคนละตัว: อย่าปนกัน
+  🏷 รหัสทัวร์จริง = เช่น ZGNRT-2618VZ (จาก label "รหัสทัวร์" ในหน้าโปรแกรม)
+  🔑 รหัสเว็บ = เช่น ap241533 (จาก URL tourfiremai.com/tour/ap241533)
+  ✈️ สายการบิน = เช่น VZ, XJ, TG (ชื่อย่อสายการบิน)
+
+❌ ห้ามนำ สายการบิน (VZ/XJ) ไปใส่ใน "รหัสทัวร์" เด็ดขาด
+❌ ห้ามเรียก ap241533 ว่า "รหัสทัวร์" — เรียกว่า "รหัสเว็บ" เท่านั้น
+
+รูปแบบที่ถูกต้อง (มีรหัสทัวร์จริง):
+  ✈️ [ชื่อโปรแกรม] (สายการบิน VZ)
+  🏷 รหัสทัวร์: ZGNRT-2618VZ
+  🔑 รหัสเว็บ: ap241533
   💰 ราคาเริ่ม: [ราคา] บาท
   📅 วันเดินทาง: [วัน]
   🔗 [ลิงก์]
 
-รูปแบบที่ถูกต้อง (ทัวร์ไฟไหม้):
-  🔥 [ชื่อโปรแกรม]
-  🏷 รหัสทัวร์: [tour_code]
-  ~~ราคาเดิม: [original_price] บาท~~
-  🔥 ราคาโปร: [promo_price] บาท | ลดทันที [discount_amount] บาท
-  💳 จ่ายจริงประมาณ: [est_total] บาท/คน
+รูปแบบ fallback (ยังไม่มีรหัสทัวร์จริง):
+  ✈️ [ชื่อโปรแกรม] (สายการบิน VZ)
+  🔑 รหัสเว็บ: ap241533
+  🏷 รหัสทัวร์จริง: กำลังเช็กจากหน้าโปรแกรม
+  💰 ราคาเริ่ม: [ราคา] บาท
 
-เมื่อลูกค้าเลือกโปรแกรม (พิมพ์ตัวที่ 1/สนใจครับ/เช็กเลย):
-  → ต้องยืนยันด้วยรหัสทัวร์: "รับทราบค่ะ สนใจรหัสทัวร์ [tour_code] — [ชื่อโปรแกรม] ใช่ไหมคะ? 😊"
-  → ห้ามพูดแค่ "ตัวนี้" โดยไม่อ้างรหัส
+เมื่อลูกค้าเลือกโปรแกรม:
+  → ยืนยัน: "รับทราบค่ะ สนใจ [ชื่อโปรแกรม] — รหัสทัวร์ [รหัสทัวร์จริง] ใช่ไหมคะ? 😊"
+  → ถ้าไม่มีรหัสทัวร์จริง: ใช้รหัสเว็บแทน "รหัสเว็บ [ap...]"
 
-❌ ห้ามเสนอโปรแกรมโดยไม่มีรหัสทัวร์
-❌ ห้ามส่งต่อเซลล์โดยไม่มี tour_code ถ้ามีโปรแกรมที่ลูกค้าเลือกแล้ว
+❌ ห้ามเสนอโปรแกรมโดยไม่มีรหัสใดเลย
+❌ ห้ามส่งต่อเซลล์โดยไม่มี รหัสทัวร์จริงหรือรหัสเว็บ
 
 ══════════════════════════════════
 กฎราคา — ห้ามเดาราคาแต่ละรอบ (สำคัญมาก)
@@ -1842,7 +1869,11 @@ def process_payment_slip(sender_id: str, image_urls: list = None):
     if ctx.get("selected_tour_name"):
         summary_parts.append(f"โปรแกรม: {ctx['selected_tour_name']}")
         if ctx.get("selected_tour_code"):
-            summary_parts.append(f"รหัสทัวร์: {ctx['selected_tour_code']}")
+            summary_parts.append(f"รหัสทัวร์จริง: {ctx['selected_tour_code']}")
+        if ctx.get("selected_tour_web_code"):
+            summary_parts.append(f"รหัสเว็บ: {ctx['selected_tour_web_code']}")
+        if ctx.get("selected_tour_airline"):
+            summary_parts.append(f"สายการบิน: {ctx['selected_tour_airline']}")
         if ctx.get("selected_tour_url"):
             summary_parts.append(f"ลิงก์: {ctx['selected_tour_url']}")
     elif ctx.get("last_options"):
@@ -1932,10 +1963,12 @@ def process_message(sender_id: str, text: str):
                     opts = []
             if isinstance(opts, list) and 1 <= (selected_option_idx or 0) <= len(opts):
                 selected = opts[selected_option_idx - 1]
-                ctx["selected_tour"]      = selected
-                ctx["selected_tour_name"] = selected.get("name", "")
-                ctx["selected_tour_url"]  = selected.get("url", selected.get("link", ""))
-                ctx["selected_tour_code"] = selected.get("tour_code", "") or selected.get("code", "") or ""
+                ctx["selected_tour"]           = selected
+                ctx["selected_tour_name"]      = selected.get("name", "")
+                ctx["selected_tour_url"]       = selected.get("url", selected.get("link", ""))
+                ctx["selected_tour_code"]      = selected.get("tour_code_real", "") or selected.get("tour_code", "") or ""
+                ctx["selected_tour_web_code"]  = selected.get("web_code", "") or selected.get("tour_code", "") or ""
+                ctx["selected_tour_airline"]   = selected.get("airline", "") or ""
                 logger.info(f"✅ Resolved option #{selected_option_idx}: {ctx['selected_tour_name']} [{ctx['selected_tour_code']}]")
 
         # ── clear_previous_options: ลูกค้าเปลี่ยนประเทศ ──────────────────
@@ -2015,8 +2048,10 @@ def process_message(sender_id: str, text: str):
                         t0 = tour_meta[0]
                         ctx["selected_tour"] = t0
                         ctx["selected_tour_name"] = t0.get("name", "")
-                        ctx["selected_tour_url"]  = t0.get("url", t0.get("link", ""))
-                        ctx["selected_tour_code"] = t0.get("tour_code", "") or t0.get("code", "") or ""
+                        ctx["selected_tour_url"]       = t0.get("url", t0.get("link", ""))
+                        ctx["selected_tour_code"]      = t0.get("tour_code_real", "") or t0.get("tour_code", "") or ""
+                        ctx["selected_tour_web_code"]  = t0.get("web_code", "") or t0.get("tour_code", "") or ""
+                        ctx["selected_tour_airline"]   = t0.get("airline", "") or ""
                         logger.info(f"🎯 Auto-selected single tour: {ctx['selected_tour_name']}")
                     save_context(sender_id, ctx)
                     logger.info(f"last_options updated immediately: {len(tour_meta)} tours")
@@ -2068,7 +2103,11 @@ def process_message(sender_id: str, text: str):
             if ctx.get("selected_tour_name"):
                 ctx_summary += f"\nโปรแกรม: {ctx['selected_tour_name']}"
                 if ctx.get("selected_tour_code"):
-                    ctx_summary += f"\nรหัสทัวร์: {ctx['selected_tour_code']}"
+                    ctx_summary += f"\nรหัสทัวร์จริง: {ctx['selected_tour_code']}"
+                if ctx.get("selected_tour_web_code"):
+                    ctx_summary += f"\nรหัสเว็บ: {ctx['selected_tour_web_code']}"
+                if ctx.get("selected_tour_airline"):
+                    ctx_summary += f"\nสายการบิน: {ctx['selected_tour_airline']}"
                 if ctx.get("selected_tour_url"):
                     ctx_summary += f"\nลิงก์: {ctx['selected_tour_url']}"
             elif ctx.get("destination"):
