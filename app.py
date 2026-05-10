@@ -964,7 +964,6 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                         line += f"\n   🔑 รหัสเว็บ: {web_code_str}"
                 elif web_code_str:
                     line += f"\n   🔑 รหัสเว็บ: {web_code_str}"
-                    line += f"\n   🏷 รหัสทัวร์: (ตรวจสอบหน้าโปรแกรม)"
                 # Faimai: show discount info
                 if t.get("is_faimai"):
                     orig = t.get("original_price")
@@ -2955,3 +2954,4 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
