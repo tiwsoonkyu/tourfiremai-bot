@@ -481,6 +481,32 @@ def send_message(recipient_id: str, text: str):
         except Exception as e:
             logger.error(f"❌ FB send exception: {e}")
 
+def fetch_fb_profile(psid: str) -> dict:
+    """ดึงชื่อลูกค้าจาก Facebook Graph API โดยใช้ PSID
+    คืน dict: {name, first_name, last_name} หรือ {} ถ้าดึงไม่ได้
+    """
+    if not FB_PAGE_TOKEN or not psid:
+        return {}
+    try:
+        resp = requests.get(
+            f"https://graph.facebook.com/v19.0/{psid}",
+            params={
+                "fields": "name,first_name,last_name",
+                "access_token": FB_PAGE_TOKEN,
+            },
+            timeout=6,
+        )
+        if resp.ok:
+            data = resp.json()
+            if "name" in data:
+                logger.info(f"✅ FB profile fetched: {data['name']}")
+                return data
+        logger.warning(f"fetch_fb_profile {resp.status_code}: {resp.text[:100]}")
+    except Exception as e:
+        logger.warning(f"fetch_fb_profile error: {e}")
+    return {}
+
+
 def notify_line(message: str):
     """ส่งแจ้งเตือนผ่าน LINE Messaging API (push message)
     - ส่งหา LINE_ADMIN_ID (แอดมิน personal) เสมอถ้าตั้งไว้
@@ -2056,6 +2082,14 @@ def process_message(sender_id: str, text: str):
     try:
         history = list(get_history(sender_id))
         ctx = get_context(sender_id)
+
+        # ── Auto-fetch FB profile name ถ้ายังไม่มีชื่อ ───────────────────────
+        if not ctx.get("customer_name"):
+            fb_profile = fetch_fb_profile(sender_id)
+            if fb_profile.get("name"):
+                ctx["customer_name"] = fb_profile["name"]
+                save_context(sender_id, ctx)
+                logger.info(f"👤 Auto-filled customer_name: {fb_profile['name']}")
 
         # ── Payment slip detection via text keywords ──────────────────────────
         text_lower = text.lower()
