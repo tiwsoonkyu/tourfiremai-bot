@@ -405,6 +405,19 @@ def fetch_detail(tour: dict, extract_fees: bool = False) -> dict:
         if unique:
             tour["departure_dates"] = ", ".join(unique[:12])
 
+        # tour_code_real — from tcode= param in booking URL
+        tcode_m = re.search(r'tcode=([A-Z0-9\-]+)', text)
+        if tcode_m:
+            tour["tour_code_real"] = tcode_m.group(1).strip()
+        else:
+            # fallback: label รหัสทัวร์ followed by txt-pd-l value
+            tc_label_m = re.search(
+                r'รหัสทัวร์[^<]{0,60}<p[^>]*class="txt-pd-l"[^>]*>([^<]+)</p>',
+                text
+            )
+            if tc_label_m:
+                tour["tour_code_real"] = tc_label_m.group(1).strip()
+
         # Fees (only for faimai tours — saves time on normal scrape)
         if extract_fees:
             fees = extract_fee_details(text)
@@ -460,7 +473,7 @@ def scrape_faimai_page() -> list:
         tc_m = re.search(r"/tour/(ap\w+)", url)
         if not tc_m:
             continue
-        tour_code = tc_m.group(1)
+        tour_code = tc_m.group(1)  # web_code (ap...)
 
         # Name
         name_m = re.search(r"<h3[^>]*>(.*?)</h3>", block, re.DOTALL)
@@ -486,7 +499,9 @@ def scrape_faimai_page() -> list:
         country_id, country_name = infer_country_from_name(name)
 
         tour = {
-            "tour_code":      tour_code,
+            "web_code":       tour_code,
+            "tour_code":      tour_code,   # kept for backward compat (upsert key)
+            "tour_code_real": None,         # populated by fetch_detail
             "name":           name,
             "url":            url,
             "country_id":     country_id,
@@ -612,7 +627,9 @@ def parse_listing_cards(html_text: str, country_id: str, country_name: str) -> l
             continue
 
         tours.append({
-            "tour_code":      tour_code,
+            "web_code":       tour_code,
+            "tour_code":      tour_code,   # kept for backward compat (upsert key)
+            "tour_code_real": None,         # populated by fetch_detail
             "name":           name,
             "url":            url,
             "country_id":     country_id,
