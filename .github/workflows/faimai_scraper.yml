@@ -20,6 +20,9 @@ on:
           - normal
           - all
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   scrape-faimai:
     name: Scrape /faimai
@@ -45,5 +48,4 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
           MODE="${{ github.event.inputs.mode || 'faimai' }}"
-          echo "Running scraper --mode $MODE"
-          python scraper.py --mode $MODE
+          echo "Running scraper --mode
