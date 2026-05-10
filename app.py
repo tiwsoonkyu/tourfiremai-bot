@@ -37,6 +37,28 @@ SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY      = os.environ.get("SUPABASE_KEY", "")
 DASHBOARD_PASS    = os.environ.get("DASHBOARD_PASSWORD", "tourfiremai2024")
 
+# ─── Go-Live Guard ────────────────────────────────────────────────────────────
+# Set BOT_GO_LIVE_STARTED_AT=2026-05-10T15:00:00+07:00 in Railway when going live
+# Set BOT_NEW_CONTEXT_ONLY=true to block legacy conversations
+BOT_GO_LIVE_STARTED_AT_STR = os.environ.get("BOT_GO_LIVE_STARTED_AT", "")
+BOT_NEW_CONTEXT_ONLY       = os.environ.get("BOT_NEW_CONTEXT_ONLY", "false").lower() == "true"
+
+def _go_live_dt() -> datetime | None:
+    """Parse BOT_GO_LIVE_STARTED_AT → UTC datetime (or None if unset)"""
+    if not BOT_GO_LIVE_STARTED_AT_STR:
+        return None
+    try:
+        s = BOT_GO_LIVE_STARTED_AT_STR
+        if s.endswith("+07:00"):
+            s = s[:-6]
+            return datetime.fromisoformat(s) - timedelta(hours=7)
+        if s.endswith("Z"):
+            return datetime.fromisoformat(s.rstrip("Z"))
+        return datetime.fromisoformat(s)
+    except Exception as e:
+        logger.warning(f"_go_live_dt parse error: {e}")
+        return None
+
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 
 # ─── Country Map ─────────────────────────────────────────────────────────────
@@ -181,6 +203,18 @@ _EMPTY_CTX = {
     "last_bot_message": None,
     "pending_action": None,
     "updated_at": None,
+    # ── Bot Session / Go-Live Guard ────────────────────────────────────────
+    "bot_session_started_at": None,  # ISO — เวลาที่ bot เริ่ม session (หลัง go-live)
+    "bot_memory_started_at":  None,  # ISO — เวลาที่ bot เริ่มจำ (= session start)
+    "bot_allowed":            None,  # True = bot ตอบได้ | False = legacy blocked
+    "legacy_conversation":    False, # True = มีประวัติก่อน go-live → block bot
+    # ── Human Takeover / Pause ────────────────────────────────────────────
+    "human_takeover":    False,
+    "bot_paused_until":  None,       # ISO — หยุด bot จนถึงเวลานี้
+    "bot_pause_reason":  None,       # image_handoff|payment|handoff|booking|legacy_conversation
+    # ── Case ID ──────────────────────────────────────────────────────────
+    "case_id":     None,  # TF-HHMM-XXXX
+    "case_status": None,  # waiting_team | resolved
 }
 
 def get_context(psid: str) -> dict:
@@ -2349,6 +2383,25 @@ def _build_tour_context_summary(ctx: dict) -> list:
     return lines
 
 
+def generate_case_id(sender_id: str) -> str:
+    """สร้าง Case ID รูปแบบ TF-HHMM-XXXX (เวลา Asia/Bangkok = UTC+7)
+    ตัวอย่าง: TF-1432-A7F9
+    """
+    now_bkk = datetime.utcnow() + timedelta(hours=7)
+    hhmm = now_bkk.strftime("%H%M")
+    xxxx = sender_id[-4:].upper()
+    return f"TF-{hhmm}-{xxxx}"
+
+
+def get_or_create_case_id(sender_id: str, ctx: dict) -> str:
+    """คืน case_id ที่มีอยู่แล้ว หรือสร้างใหม่ถ้ายังไม่มี"""
+    if ctx.get("case_id"):
+        return ctx["case_id"]
+    case_id = generate_case_id(sender_id)
+    ctx["case_id"] = case_id
+    return case_id
+
+
 def pause_bot(sender_id: str, ctx: dict, reason: str, hours: int) -> None:
     """Set bot_paused_until ใน ctx dict (ยังไม่ save — ให้ caller save หลังจากนี้)
     reason: image_handoff | payment_pending_review | handoff_requested | booking
@@ -2357,7 +2410,81 @@ def pause_bot(sender_id: str, ctx: dict, reason: str, hours: int) -> None:
     ctx["bot_paused_until"] = until
     ctx["bot_pause_reason"] = reason
     ctx["human_takeover"]   = True
+    ctx["case_status"]      = "waiting_team"
     logger.info(f"🛑 Bot paused: psid=...{sender_id[-6:]}, reason={reason}, hours={hours}, until={until}")
+
+
+# ─── Go-Live Guard Helpers ────────────────────────────────────────────────────
+def is_legacy_psid(sender_id: str) -> bool:
+    """ตรวจว่า PSID มี record ใน Supabase ก่อนเวลา go-live หรือไม่
+    คืน True = legacy conversation (bot ห้ามตอบ)
+    """
+    go_live = _go_live_dt()
+    if not go_live or not BOT_NEW_CONTEXT_ONLY:
+        return False
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    try:
+        go_live_iso = go_live.strftime("%Y-%m-%dT%H:%M:%S")
+        # ตรวจ leads table — created_at ก่อน go-live
+        url = f"{SUPABASE_URL}/rest/v1/leads"
+        params = {
+            "psid": f"eq.{sender_id}",
+            "created_at": f"lt.{go_live_iso}",
+            "select": "psid",
+            "limit": "1",
+        }
+        resp = requests.get(url, params=params, headers=_sb_headers(), timeout=5)
+        if resp.ok and resp.json():
+            logger.info(f"🔎 Legacy PSID detected (leads): ...{sender_id[-6:]}")
+            return True
+        # ตรวจ ai_chat_events table ด้วย
+        url2 = f"{SUPABASE_URL}/rest/v1/ai_chat_events"
+        params2 = {
+            "psid": f"eq.{sender_id}",
+            "created_at": f"lt.{go_live_iso}",
+            "select": "psid",
+            "limit": "1",
+        }
+        resp2 = requests.get(url2, params=params2, headers=_sb_headers(), timeout=5)
+        if resp2.ok and resp2.json():
+            logger.info(f"🔎 Legacy PSID detected (chat_events): ...{sender_id[-6:]}")
+            return True
+    except Exception as e:
+        logger.warning(f"is_legacy_psid error: {e}")
+    return False
+
+
+def handle_legacy_conversation(sender_id: str, ctx: dict, text: str) -> None:
+    """Block bot, pause 24h, notify team, log event"""
+    case_id = get_or_create_case_id(sender_id, ctx)
+    ctx["legacy_conversation"] = True
+    ctx["bot_allowed"]         = False
+    pause_bot(sender_id, ctx, "legacy_conversation", hours=24)
+    save_context(sender_id, ctx)
+
+    display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+    notify_line(
+        f"🔕 Legacy conversation — Bot ไม่ตอบเพื่อกันแทรกแอดมิน\n"
+        f"🆔 Case: {case_id}\n"
+        f"👤 {display_name}\n"
+        f"💬 ข้อความล่าสุด: {text[:200]}\n"
+        f"📋 เหตุผล: มีประวัติก่อนเริ่ม Go Live\n"
+        f"✅ Action: ทีมงานเปิด Messenger และตอบเอง"
+    )
+    log_chat_event(sender_id, "legacy_conversation_handoff", ctx=ctx,
+                   message=text, needs_review=True, review_reason="legacy_conversation")
+    logger.info(f"🔕 Legacy handoff complete: ...{sender_id[-6:]}")
+
+
+def init_new_session(sender_id: str, ctx: dict) -> None:
+    """ตั้ง session สำหรับ new customer หลัง go-live"""
+    now_iso = (datetime.utcnow() + timedelta(hours=7)).strftime("%Y-%m-%dT%H:%M:%S+07:00")
+    ctx["bot_session_started_at"] = now_iso
+    ctx["bot_memory_started_at"]  = now_iso
+    ctx["bot_allowed"]            = True
+    ctx["legacy_conversation"]    = False
+    logger.info(f"✅ New session init: ...{sender_id[-6:]} at {now_iso}")
 
 
 def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: str = ""):
@@ -2369,6 +2496,7 @@ def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: s
     current_stage = ctx.get("_lead_stage") or "cold"
     new_stage = "warm" if current_stage in ("cold",) else current_stage
 
+    case_id = get_or_create_case_id(sender_id, ctx)
     ctx["_lead_stage"] = new_stage
     ctx["_lead_status"] = "waiting_team"
     ctx["_lead_needs_review"] = True
@@ -2378,7 +2506,7 @@ def process_image_handoff(sender_id: str, image_urls: list, accompanying_text: s
     save_context(sender_id, ctx)
 
     # Build LINE notification
-    parts = [f"📷 ลูกค้าส่งรูปให้เช็กโปรแกรม", f"👤 {display_name}"]
+    parts = [f"📷 ลูกค้าส่งรูปให้เช็กโปรแกรม", f"🆔 Case: {case_id}", f"👤 {display_name}"]
     if ctx.get("phone"):
         parts.append(f"📞 {ctx['phone']}")
     if accompanying_text:
@@ -2407,6 +2535,7 @@ def process_payment_pending_review(sender_id: str, image_urls: list, accompanyin
     ctx = get_context(sender_id)
     display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
 
+    case_id = get_or_create_case_id(sender_id, ctx)
     ctx["_lead_stage"] = "booking"
     ctx["_lead_status"] = "waiting_team"
     ctx["_lead_needs_review"] = True
@@ -2417,7 +2546,7 @@ def process_payment_pending_review(sender_id: str, image_urls: list, accompanyin
     save_context(sender_id, ctx)
 
     # Build LINE notification
-    parts = [f"💳 ลูกค้าอาจส่งสลิป/หลักฐานการโอน", f"👤 {display_name}"]
+    parts = [f"💳 ลูกค้าอาจส่งสลิป/หลักฐานการโอน", f"🆔 Case: {case_id}", f"👤 {display_name}"]
     if ctx.get("phone"):
         parts.append(f"📞 {ctx['phone']}")
     if accompanying_text:
@@ -2444,15 +2573,17 @@ def process_payment_slip(sender_id: str, image_urls: list = None):
     ctx = get_context(sender_id)
     display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
 
+    case_id = get_or_create_case_id(sender_id, ctx)
     ctx["_lead_stage"] = "booking"
     ctx["_lead_status"] = "waiting_team"
     ctx["_lead_needs_review"] = True
     ctx["_lead_review_reason"] = "payment_pending_review"
     ctx["payment_received"] = False   # ห้าม auto paid — ต้องตรวจสอบก่อน
     ctx["handoff_requested"] = True
+    pause_bot(sender_id, ctx, "payment_pending_review", hours=6)
     save_context(sender_id, ctx)
 
-    summary_parts = [f"💳 แจ้งโอนเงิน (ข้อความ)\nPSID: {sender_id}", f"👤 {display_name}"]
+    summary_parts = [f"💳 แจ้งโอนเงิน (ข้อความ)", f"🆔 Case: {case_id}", f"👤 {display_name}"]
     summary_parts.extend(_build_tour_context_summary(ctx))
     if image_urls:
         summary_parts.append(f"🖼 รูปแนบ: {image_urls[0]}")
@@ -2481,6 +2612,47 @@ def process_message(sender_id: str, text: str):
         history = list(get_history(sender_id))
         ctx = get_context(sender_id)
 
+        # ── Go-Live Guard: Legacy Conversation Detection ───────────────────────
+        if BOT_NEW_CONTEXT_ONLY and _go_live_dt():
+            # ถ้า ctx บอกว่า legacy แล้ว → block ทันที (ไม่ต้อง query Supabase ซ้ำ)
+            if ctx.get("legacy_conversation") and ctx.get("bot_allowed") is False:
+                logger.info(f"🔕 Legacy (cached): ...{sender_id[-6:]} — skip AI")
+                # Re-use pause block to check if still within pause window
+                paused_until_str = ctx.get("bot_paused_until")
+                if paused_until_str:
+                    try:
+                        paused_until = datetime.fromisoformat(paused_until_str.rstrip("Z"))
+                        if datetime.utcnow() < paused_until:
+                            remaining_min = int((paused_until - datetime.utcnow()).total_seconds() / 60)
+                            display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+                            case_id = ctx.get("case_id", "N/A")
+                            notify_line(
+                                f"💬 ลูกค้าพิมพ์เพิ่มระหว่าง Human Takeover\n"
+                                f"🆔 Case: {case_id}\n"
+                                f"👤 {display_name}\n"
+                                f"💬 {text[:200]}\n"
+                                f"⏳ Bot หยุดอีก {remaining_min} นาที (สาเหตุ: legacy_conversation)\n"
+                                f"✅ กรุณาตอบลูกค้าเองผ่าน Messenger"
+                            )
+                            log_chat_event(sender_id, "bot_paused_message", ctx=ctx,
+                                           message=text, needs_review=True,
+                                           review_reason="legacy_conversation")
+                            return
+                    except Exception:
+                        pass
+                # pause หมดอายุแล้วแต่ยังเป็น legacy → re-pause 24h และ notify
+                handle_legacy_conversation(sender_id, ctx, text)
+                return
+            # ถ้ายังไม่รู้ว่า legacy → ไปถามDatabase
+            if ctx.get("bot_allowed") is None:
+                if is_legacy_psid(sender_id):
+                    handle_legacy_conversation(sender_id, ctx, text)
+                    return
+                else:
+                    # New customer หลัง go-live
+                    init_new_session(sender_id, ctx)
+                    save_context(sender_id, ctx)
+
         # ── Bot Pause Check (Human Takeover) ──────────────────────────────────
         paused_until_str = ctx.get("bot_paused_until")
         if paused_until_str:
@@ -2491,8 +2663,10 @@ def process_message(sender_id: str, text: str):
                     reason = ctx.get("bot_pause_reason", "human_takeover")
                     logger.info(f"🛑 Bot paused [{reason}] psid=...{sender_id[-6:]}, {remaining_min}m left — skip AI")
                     display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+                    case_id = ctx.get("case_id", "N/A")
                     notify_line(
                         f"💬 ลูกค้าพิมพ์เพิ่มระหว่าง Human Takeover\n"
+                        f"🆔 Case: {case_id}\n"
                         f"👤 {display_name}\n"
                         f"💬 {text[:200]}\n"
                         f"⏳ Bot หยุดอีก {remaining_min} นาที (สาเหตุ: {reason})\n"
@@ -2692,6 +2866,21 @@ def process_message(sender_id: str, text: str):
                 tour_data, tour_meta = "", []
                 ctx["_lead_needs_review"] = True
                 ctx["_lead_review_reason"] = "no_tour_found"
+                # PATCH 7 — notify team when hot/booking lead can't find tours
+                _no_tour_stage = ctx.get("lead_stage", "cold")
+                if _no_tour_stage in ("hot", "booking"):
+                    _case_id = get_or_create_case_id(sender_id, ctx)
+                    _display = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+                    _dest = ctx.get("destination") or ctx.get("country_name") or "ไม่ระบุ"
+                    notify_line(
+                        f"⚠️ ดึงทัวร์ไม่ได้ — Lead [{_no_tour_stage.upper()}]\n"
+                        f"🆔 Case: {_case_id}\n"
+                        f"👤 {_display}\n"
+                        f"🌍 ปลายทาง: {_dest}\n"
+                        f"❌ Error: {str(e)[:120]}\n"
+                        f"✅ กรุณาตอบลูกค้าด้วยตนเอง"
+                    )
+                    save_context(sender_id, ctx)
 
         # Fetch PDF info
         if action == "detail_pdf":
@@ -2871,8 +3060,13 @@ def process_message(sender_id: str, text: str):
                 ctx_summary += f"\nงบ: {ctx['budget_per_person']:,}" if isinstance(ctx['budget_per_person'], (int, float)) else f"\nงบ: {ctx['budget_per_person']}"
             # แสดงชื่อลูกค้าถ้ามี ไม่งั้นใช้ PSID ย่อ
             display_name = ctx.get("customer_name") or f"PSID ...{sender_id[-6:]}"
+            case_id = get_or_create_case_id(sender_id, ctx)
             notify_line(
-                f"{stage_emoji} Lead [{lead_stage.upper()}]\n👤 {display_name}\n💬 {text}{ctx_summary}"
+                f"{stage_emoji} Lead [{lead_stage.upper()}]\n"
+                f"🆔 Case: {case_id}\n"
+                f"👤 {display_name}\n"
+                f"💬 {text}"
+                f"{ctx_summary}"
             )
 
         # Save user message
@@ -3164,7 +3358,7 @@ def dashboard():
     )
 
 
-# ─── Webhook routes ───────────────────────────────────────────────────────────
+# ─── Webhook routes ──────────────────────────────────────────────────
 @app.route("/webhook", methods=["GET"])
 def verify():
     mode      = request.args.get("hub.mode")
@@ -3213,7 +3407,6 @@ def webhook():
             if image_list:
                 image_urls   = [a.get("payload", {}).get("url", "") for a in image_list]
                 _img_text    = (text or "").strip()
-                # Detect payment keyword in accompanying text
                 _is_payment  = any(kw in _img_text for kw in _PAYMENT_IMAGE_KEYWORDS)
                 if _is_payment:
                     logger.info(f"💳 Payment image from {sender_id}: keyword detected")
@@ -3240,38 +3433,37 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 
-
 @app.route("/test-line", methods=["GET"])
 def test_line():
-    """ทดสอบ LINE Messaging API — ส่งไป LINE_ADMIN_ID ถ้ามี ไม่งั้นใช้ LINE_GROUP_ID"""
+    """ทดสอบ LINE Messaging API — ส่งไป GROUP_ID ถ้ามี ไม่งั้นส่งไป ADMIN_ID"""
     if not LINE_CHANNEL_TOKEN:
         return jsonify({"error": "LINE_CHANNEL_TOKEN not set"}), 400
-
-    # เลือก target: admin ก่อน, fallback group
-    if LINE_ADMIN_ID:
-        target_id   = LINE_ADMIN_ID
-        target_type = "admin"
-    elif LINE_GROUP_ID:
-        target_id   = LINE_GROUP_ID
-        target_type = "group"
-    else:
-        return jsonify({"error": "LINE_ADMIN_ID and LINE_GROUP_ID both not set"}), 400
-
+    target_id = LINE_GROUP_ID or LINE_ADMIN_ID
+    if not target_id:
+        return jsonify({"error": "LINE_GROUP_ID and LINE_ADMIN_ID are both unset"}), 400
     try:
         resp = requests.post(
             "https://api.line.me/v2/bot/message/push",
-            headers={"Authorization": f"Bearer {LINE_CHANNEL_TOKEN}", "Content-Type": "application/json"},
-            json={"to": target_id, "messages": [{"type": "text", "text": "🔧 ทดสอบระบบแจ้งเตือน LINE — TourFireMai Bot ✅"}]},
+            headers={
+                "Authorization": f"Bearer {LINE_CHANNEL_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "to": target_id,
+                "messages": [{"type": "text", "text": "🔧 ทดสอบระบบแจ้งเตือน LINE — TourFireMai Bot ✅"}]
+            },
             timeout=10,
         )
         return jsonify({
-            "status":       resp.status_code,
-            "target":       target_type,
+            "status": resp.status_code,
             "line_response": resp.text[:300],
             "token_prefix": LINE_CHANNEL_TOKEN[:20] + "...",
+            "target_id": target_id,
+            "target_type": "group" if LINE_GROUP_ID else "admin",
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/line-webhook", methods=["GET", "POST"])
 def line_webhook():
@@ -3336,7 +3528,7 @@ def health():
     }), 200
 
 
-# ─── Entry point ─────────────────────────────────────────────────────────────
+# ─── Entry point ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
