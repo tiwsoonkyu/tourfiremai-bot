@@ -1546,7 +1546,8 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
 
 # ─── AI — Call 2: Generate Response ──────────────────────────────────────────
 def generate_response(user_message: str, history: list, tour_data: str = "",
-                      is_handoff: bool = False, ctx: dict = None) -> str:
+                      is_handoff: bool = False, ctx: dict = None,
+                      action: str = "reply") -> str:
     messages = []
     for msg in history[-10:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
@@ -1857,7 +1858,7 @@ def process_message(sender_id: str, text: str):
         save_to_history(sender_id, "user", text)
 
         # Generate response (with context injected into system prompt)
-        reply = generate_response(text, history, tour_data, is_handoff, ctx=ctx)
+        reply = generate_response(text, history, tour_data, is_handoff, ctx=ctx, action=action)
 
         # Save AI reply
         save_to_history(sender_id, "assistant", reply)
