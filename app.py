@@ -1053,17 +1053,38 @@ def _system_prompt(ctx: dict = None) -> str:
                 f"{ad_section}"
             )
 
-    return f"""คุณคือ "น้องแอดมิน AI" ของเพจ รวมทัวร์ไฟไหม้ — ผู้ช่วยขายทัวร์ผู้หญิง ฉลาด อบอุ่น และขายเป็น
+    return f"""คุณคือ AI Travel Sales Assistant ของเพจ รวมทัวร์ไฟไหม้ — ฉลาด อบอุ่น เชี่ยวชาญด้านทัวร์
 บริษัท อัพ-โอเปอเรชั่น จำกัด | เว็บ: www.tourfiremai.com | LINE: @tourfiremai
 วันนี้: {today}
 {ctx_section}
 ══════════════════════════════════
-บุคลิกและสไตล์การตอบ — น้องแอดมิน AI
+Conversation Brain — หัวใจสำคัญ
 ══════════════════════════════════
-ชื่อ: น้องแอดมิน AI | เพศ: หญิง | สไตล์: อบอุ่น เป็นกันเอง ขายเก่ง
+คุณคือ AI Travel Assistant ที่ฉลาด ไม่ใช่ Search Bot
+เป้าหมาย: คุยกับลูกค้าให้ลื่นเหมือน ChatGPT — เข้าใจ ตอบ ถาม ค้นหา ตามลำดับที่เหมาะสม
 
+กฎทอง:
+✅ ถ้าลูกค้าพูดกว้างๆ → ตอบด้วยความรู้ทั่วไป + ถามต่อ 1 คำถาม
+✅ ถ้าลูกค้าระบุประเทศ/เมืองชัดเจน → ระบบค้นหาทัวร์ให้อัตโนมัติ
+❌ ห้ามโยนโปรแกรม Top 3 ทันทีที่ลูกค้าพูดกว้างๆ ยังไม่รู้ปลายทาง
+❌ ห้ามใช้คำว่า "น้องแอดมิน" ในทุกกรณี
+❌ ห้ามใช้ข้อความ template ซ้ำๆ แข็งๆ
+
+ตัวอย่างการตอบแบบ QUALIFICATION MODE (ไม่มีข้อมูลทัวร์ส่งมาให้):
+"สนใจทัวร์ไฟไหม้ครับ"
+→ "ทัวร์ไฟไหม้เหมาะมากถ้าพร้อมเดินทางเร็วค่ะ 🔥 ตอนนี้ดีลดีๆ มักอยู่ในกลุ่มจีน เวียดนาม เกาหลี ไต้หวัน อยากได้งบต่อคนประมาณเท่าไหร่คะ?"
+"มีโปรอะไรบ้าง"
+→ "มีหลายกลุ่มเลยค่ะ ทั้งจีน เวียดนาม เกาหลี ญี่ปุ่น ไต้หวัน ฮ่องกง อยากได้งบต่อคนประมาณเท่าไหร่คะ?"
+"งบ 7990 มีประเทศไหนบ้าง"
+→ "งบ 7,990 บาท โอกาสดีในกลุ่มนี้ค่ะ: จีน (เฉิงตู/คุนหมิง/จางเจียเจี้ย) • เวียดนาม (ดานัง/ฮานอย) • ไต้หวัน สนใจประเทศไหนเป็นพิเศษคะ?"
+"สนใจญี่ปุ่นมีไหมครับ"
+→ "มีค่ะ ญี่ปุ่นมีหลายเส้นทาง เช่น โตเกียว โอซาก้า ฮอกไกโด ฟุกุโอกะค่ะ อยากได้งบต่อคนประมาณเท่าไหร่คะ? 😊"
+
+══════════════════════════════════
+บุคลิกและสไตล์การตอบ
+══════════════════════════════════
 - พูดภาษาไทยสวย เป็นกันเองแต่มืออาชีพ ลงท้ายด้วย ค่ะ / นะคะ / คะ เสมอ
-- ❌ ห้ามใช้คำลงท้าย "ครับ" เด็ดขาด — น้องแอดมิน AI เป็นผู้หญิง ใช้เฉพาะ ค่ะ / คะ / นะคะ / จ้ะ เท่านั้น
+- ❌ ห้ามใช้คำลงท้าย "ครับ" เด็ดขาด — ใช้เฉพาะ ค่ะ / คะ / นะคะ / จ้ะ เท่านั้น
 - ❌ ห้ามพูด "ยินดีต้อนรับครับ" หรือประโยคใดที่ลงท้ายด้วย ครับ ทุกกรณี
 - อบอุ่น ยิ้มแย้ม เหมือนเพื่อนที่รู้เรื่องทัวร์ดี — ไม่เป็นทางการเกินไป ไม่แข็งกระด้าง
 - ฉลาด ชัดเจน ขายเป็น ไม่แถ — ตอบตรงประเด็น ไม่เขียนเรียงความ
@@ -1109,7 +1130,7 @@ def _system_prompt(ctx: dict = None) -> str:
 ถ้าลูกค้าพิมพ์ "เช็กเลย" หลังเลือกโปรแกรม → ถือเป็น hot lead
 ให้สรุปข้อมูลโปรแกรมนั้นทันที แล้วถามเฉพาะ ชื่อผู้ติดต่อ + เบอร์/LINE เท่านั้น:
 
-"ได้เลยค่ะ น้องแอดมินสรุปให้ทีมงานเช็กตัวนี้นะคะ 🔍
+"ได้เลยค่ะ สรุปให้ทีมงานเช็กตัวนี้เลยนะคะ 🔍
 
 โปรแกรม: [ชื่อโปรแกรม]
 รหัส: [รหัส]
@@ -1312,7 +1333,7 @@ def _system_prompt(ctx: dict = None) -> str:
 เมื่อลูกค้าส่งสลิปการโอนเงิน
 ══════════════════════════════════
 ถ้าลูกค้าส่งรูป (สลิป) หรือพูดว่า "โอนแล้ว" / "จ่ายแล้ว" / "ชำระแล้ว" / "ส่งสลิปแล้ว":
-→ ตอบทันที: "ได้รับแล้วค่ะ ขอบคุณนะคะ 🙏 น้องแอดมินแจ้งทีมงานตรวจสอบและยืนยันการจองให้เลยค่ะ กรุณารอสักครู่นะคะ"
+→ ตอบทันที: "ได้รับแล้วค่ะ ขอบคุณนะคะ 🙏 แจ้งทีมงานตรวจสอบและยืนยันการจองให้เลยค่ะ กรุณารอสักครู่นะคะ"
 
 ══════════════════════════════════
 ใบนัดหมายการเดินทาง
@@ -1345,7 +1366,7 @@ AI: ขอค้นหาโอซาก้าให้นะคะ
 เมื่อค้นหาแล้วไม่เจอโปรแกรมตรงเงื่อนไข
 ══════════════════════════════════
 อย่าถามเริ่มใหม่ ให้เสนอทางเลือกทันที เช่น:
-"ตอนนี้ยังไม่เจอโอซาก้าที่ตรงงบ 40,000 พอดีค่ะ น้องแอดมินแนะนำได้ 2 ทาง:
+"ตอนนี้ยังไม่เจอโอซาก้าที่ตรงงบ 40,000 พอดีค่ะ แนะนำได้ 2 ทางค่ะ:
 1. ดูญี่ปุ่นเมืองใกล้เคียง เช่น โตเกียว/นาโกย่า ที่งบใกล้เคียงกัน
 2. ให้ทีมงานเช็กโปรโอซาก้าล่าสุดโดยตรง
 ให้แอดมินส่งทีมงานเช็กให้เลยไหมคะ?"
@@ -1437,6 +1458,8 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
         "ตอบเป็น JSON เท่านั้น (ห้ามมีข้อความอื่น):\n"
         "{\n"
         '  "action": "search" | "detail" | "detail_pdf" | "flash_sale" | "handoff" | "reply" | "continue",\n'
+        '  "should_search": true | false,\n'
+        '  "missing_field_to_ask": "country" | "city" | "budget_per_person" | "month" | "pax" | null,\n'
         '  "country_id": "เลขประเทศ หรือ null",\n'
         '  "country_name": "ชื่อประเทศภาษาไทย หรือ null",\n'
         '  "city": "ชื่อเมือง/จังหวัดที่ลูกค้าถามถึง เช่น โอซาก้า โตเกียว ฮอกไกโด เฉิงตู คุนหมิง หรือ null",\n'
@@ -1450,6 +1473,26 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
         '  "reason": "เหตุผลสั้นๆ ที่เลือก action นี้"\n'
         "}\n\n"
 
+        "=== กฎ should_search ===\n"
+        "should_search=false เมื่อลูกค้าพูดกว้างๆ ยังไม่รู้ปลายทาง:\n"
+        "  - ทักทาย / สนใจทัวร์ไฟไหม้ / มีโปรอะไรบ้าง / แนะนำหน่อย\n"
+        "  - มีประเทศไหนบ้าง / งบนี้ไปไหนได้บ้าง (ไม่ระบุประเทศ)\n"
+        "  - ทัวร์ไฟไหม้คืออะไร / ทัวร์ถูกคืออะไร\n"
+        "  - คำถามทั่วไปที่ AI ตอบได้โดยไม่ต้องดึงข้อมูลเว็บ\n"
+        "  ในกรณีนี้: action=reply, should_search=false\n"
+        "should_search=true เมื่อ:\n"
+        "  - ลูกค้าระบุประเทศ/เมืองชัดเจน (ญี่ปุ่น โอซาก้า เกาหลี เฉิงตู ฯลฯ)\n"
+        "  - ลูกค้าเลือกโปรแกรม (selected_option_index มีค่า)\n"
+        "  - action=flash_sale และมี intent ชัดว่าอยากเห็นรายการโปรแกรม\n"
+        "  - มี country_id ที่ระบุได้ชัดเจน\n\n"
+        "=== กฎ missing_field_to_ask ===\n"
+        "ระบุ field ที่ควรถามต่อ (เพียง 1 อย่าง) เมื่อ should_search=false:\n"
+        "  country → ยังไม่รู้ว่าอยากไปไหน\n"
+        "  city → รู้ประเทศแล้ว (ญี่ปุ่น/จีน/เกาหลี/ไต้หวัน) แต่ยังไม่รู้เมือง\n"
+        "  budget_per_person → รู้ประเทศแล้ว ยังไม่รู้งบ (ไม่บังคับ แต่ช่วยคัดให้)\n"
+        "  month → รู้ประเทศ+งบแล้ว ยังไม่รู้เดือน\n"
+        "  pax → รู้เกือบครบ ยังไม่รู้จำนวนคน\n"
+        "  null → ไม่มีอะไรต้องถามเพิ่ม (หรือ should_search=true)\n\n"
         "=== กฎ action (เรียงตามความสำคัญ) ===\n\n"
 
         "⚠️ กฎ SINGLE-OPTION — ตรวจสอบก่อนทุกกฎอื่น:\n"
@@ -1517,6 +1560,9 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
         if m:
             data = json.loads(m.group())
             data["action"] = data.get("action", "reply")
+            data["should_search"] = bool(data.get("should_search", True))
+            mfta = data.get("missing_field_to_ask", None)
+            data["missing_field_to_ask"] = mfta if mfta and mfta != "null" else None
             cid = data.get("country_id")
             data["country_id"] = str(cid) if cid and str(cid) != "null" else None
             city = data.get("city", "")
@@ -1538,7 +1584,8 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
     except Exception as e:
         logger.error(f"decide_action error: {e}")
 
-    return {"action": "reply", "country_id": None, "country_name": None, "city": None,
+    return {"action": "reply", "should_search": False, "missing_field_to_ask": "country",
+            "country_id": None, "country_name": None, "city": None,
             "month": None, "budget_per_person": None, "pax": None,
             "selected_option_index": None, "uses_previous_option": False,
             "clear_previous_options": False, "lead_stage": "cold", "reason": ""}
@@ -1547,7 +1594,8 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0)
 # ─── AI — Call 2: Generate Response ──────────────────────────────────────────
 def generate_response(user_message: str, history: list, tour_data: str = "",
                       is_handoff: bool = False, ctx: dict = None,
-                      action: str = "reply") -> str:
+                      action: str = "reply",
+                      missing_field_to_ask: str = None) -> str:
     messages = []
     for msg in history[-10:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
@@ -1588,12 +1636,25 @@ def generate_response(user_message: str, history: list, tour_data: str = "",
             "[คำแนะนำ: ลูกค้าต้องการข้อมูลที่ต้องให้ทีมงานเช็ก ให้บอกว่าจะส่งทีมงาน แต่ถ้ามีข้อมูลเบื้องต้นตอบได้ก็ตอบก่อน]"
         )
     else:
-        user_content = (
-            f"{user_message}\n\n"
-            "[หมายเหตุสำหรับ AI: ไม่มีข้อมูลทัวร์ใหม่สำหรับข้อความนี้ "
-            "ถ้าลูกค้าเปลี่ยนประเทศหรือเปลี่ยนความต้องการ อย่านำทัวร์จากการสนทนาก่อนหน้ามาแสดงซ้ำ "
-            "ให้ถามสิ่งที่ต้องการเพิ่มเติมหรืออธิบายว่ากำลังจะหาข้อมูลให้]"
+        # qualification mode — ไม่มีข้อมูลทัวร์ ให้ตอบแบบ conversational
+        _field_hints = {
+            "country": "ถามว่าอยากไปประเทศหรือภูมิภาคไหน",
+            "city": "ถามว่าสนใจเมือง/เส้นทางไหนในประเทศนั้น",
+            "budget_per_person": "ถามงบประมาณต่อคน (ตอบข้อมูลภาพรวมก่อน แล้วค่อยถาม)",
+            "month": "ถามช่วงเดือน/วันที่สะดวกเดินทาง",
+            "pax": "ถามจำนวนผู้เดินทาง",
+        }
+        _ask_hint = _field_hints.get(missing_field_to_ask, "") if missing_field_to_ask else ""
+        _ask_instruction = (
+            f"\n[QUALIFICATION MODE: ตอบแบบ AI Travel Assistant ที่ฉลาด"
+            f" ให้ข้อมูลทั่วไปที่เป็นประโยชน์ก่อน แล้ว{_ask_hint}"
+            " ห้ามเสนอโปรแกรมทัวร์ในข้อความนี้ ห้ามใช้คำว่าน้องแอดมิน"
+            " ตอบสั้นอ่านง่าย ถามทีละ 1 คำถาม]"
+        ) if _ask_hint else (
+            "\n[AI Travel Assistant: ตอบด้วยความรู้ทั่วไปเกี่ยวกับทัวร์/การเดินทาง"
+            " ถ้าลูกค้าเปลี่ยนประเทศอย่านำทัวร์เก่ามาแสดงซ้ำ ถามต่ออย่างเป็นธรรมชาติ]"
         )
+        user_content = f"{user_message}{_ask_instruction}"
 
     messages.append({"role": "user", "content": user_content})
 
@@ -1651,7 +1712,7 @@ def process_payment_slip(sender_id: str, image_urls: list = None):
 
     reply = (
         "ได้รับสลิปแล้วค่ะ ขอบคุณมากนะคะ 🙏 "
-        "น้องแอดมินแจ้งทีมงานตรวจสอบและยืนยันการจองให้เลยค่ะ "
+        "แจ้งทีมงานตรวจสอบและยืนยันการจองให้เลยค่ะ "
         "กรุณารอสักครู่ ทีมงานจะติดต่อยืนยันกลับหาคุณอีกครั้งนะคะ 😊"
     )
     send_message(sender_id, reply)
@@ -1683,6 +1744,8 @@ def process_message(sender_id: str, text: str):
         uses_previous        = action_data.get("uses_previous_option", False)
         clear_prev_options   = action_data.get("clear_previous_options", False)
         lead_stage           = action_data.get("lead_stage", "cold")
+        should_search        = action_data.get("should_search", True)
+        missing_field_to_ask = action_data.get("missing_field_to_ask", None)
         city_hint            = action_data.get("city") or action_data.get("city_hint")
         classifier_month     = action_data.get("month")
         classifier_budget    = action_data.get("budget_per_person")
@@ -1763,6 +1826,11 @@ def process_message(sender_id: str, text: str):
                 # ยังถามอยู่ใน topic เดิม → ดึง faimai ต่อ
                 action = "flash_sale"
                 logger.info("Flash sale context: maintaining flash_sale for reply")
+
+        # ── should_search gate — ถ้า false ไม่ดึงข้อมูลเว็บ ตอบแบบ conversational ──
+        if not should_search and action in ("search", "flash_sale"):
+            logger.info(f"should_search=False: downgrade {action}→reply (ask: {missing_field_to_ask})")
+            action = "reply"
 
         # Fetch tour data if needed
         if action in ("search", "detail") and country_id:
@@ -1858,7 +1926,7 @@ def process_message(sender_id: str, text: str):
         save_to_history(sender_id, "user", text)
 
         # Generate response (with context injected into system prompt)
-        reply = generate_response(text, history, tour_data, is_handoff, ctx=ctx, action=action)
+        reply = generate_response(text, history, tour_data, is_handoff, ctx=ctx, action=action, missing_field_to_ask=missing_field_to_ask)
 
         # Save AI reply
         save_to_history(sender_id, "assistant", reply)
