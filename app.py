@@ -883,6 +883,31 @@ _TH_MONTH_WORDS = {
     "เดือน 10": "ต.ค.", "เดือน 11": "พ.ย.", "เดือน 12": "ธ.ค.",
 }
 
+_SOONEST_KEYWORDS = {
+    "เร็วๆนี้", "เร็วที่สุด", "ใกล้ๆนี้", "ช่วงนี้", "เดือนนี้",
+    "ภายในเดือนนี้", "พร้อมเดินทาง", "เดินทางได้เร็ว",
+    "เอาที่ใกล้สุด", "โปรใกล้เดินทาง", "ไปได้เลย", "เร็วๆ",
+    "ใกล้เดินทาง", "วันใกล้ๆ", "ออกเดินทางได้เลย",
+}
+
+def is_soonest_request(text: str) -> bool:
+    """True ถ้า user ต้องการวันเดินทางใกล้ที่สุด"""
+    return any(k in text for k in _SOONEST_KEYWORDS)
+
+def _earliest_departure_sort_key(tour: dict) -> int:
+    """คืน sort key (เดือน*100+วัน) จาก departure_dates — น้อย=ใกล้สุด"""
+    dep_str = tour.get("departure_dates") or ""
+    try:
+        m = re.search(r"(\d+)\s*[-–]?\d*\s+(" + "|".join(re.escape(k) for k in _TH_MONTH_MAP) + r")", dep_str)
+        if m:
+            day = int(m.group(1))
+            month_abbr = _TH_MONTH_MAP.get(m.group(2), "")
+            month_num = _TH_MONTH_ORDER.index(month_abbr) + 1 if month_abbr in _TH_MONTH_ORDER else 13
+            return month_num * 100 + day
+    except Exception:
+        pass
+    return 9999  # ไม่รู้วัน → ไปท้ายสุด
+
 def _extract_month_from_date(date_str: str) -> str:
     """คืน abbreviated month เช่น 'ก.ค.' จาก '2-6 ก.ค. 69'"""
     for abbr in _TH_MONTH_MAP:
@@ -2157,6 +2182,7 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0,
         '  "pax": จำนวนคน (integer) หรือ null,\n'
         '  "selected_option_index": 1 | 2 | 3 | null,\n'
         '  "departure_month": "เดือนที่ลูกค้าระบุ เช่น ก.ค. หรือ null",\n'
+        '  "departure_urgency": "soonest" | null,\n'
         '  "uses_previous_option": true | false,\n'
         '  "clear_previous_options": true | false,\n'
         '  "lead_stage": "cold" | "warm" | "hot" | "booking",\n'
@@ -2211,6 +2237,13 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0,
         "AND ลูกค้าพิมพ์ชื่อเดือน (ก.ค., กรกฎา, สิงหา, เดือน 7, ก.ค.69, 10 ก.ค., 2-6) ฯลฯ\n"
         "→ action=departure_filter, departure_month=เดือนที่ตรวจพบ, uses_previous_option=true\n"
         "→ ห้าม reset country/program ห้ามถามประเทศซ้ำ ใช้ selected_tour จาก context\n\n"
+        "⚠️ กฎ SOONEST_DEPARTURE — ตรวจสอบก่อน missing_field_to_ask=month:\n"
+        "ถ้าข้อความมีคำว่า เร็วๆนี้ / เร็วที่สุด / ใกล้ๆนี้ / ช่วงนี้ / เดือนนี้ / พร้อมเดินทาง / เดินทางได้เร็ว / เอาที่ใกล้สุด / โปรใกล้เดินทาง / ใกล้เดินทาง\n"
+        "AND ใน history มี country_name หรือ country_id ระบุอยู่แล้ว:\n"
+        "→ action=search, should_search=true, missing_field_to_ask=null, departure_urgency=soonest\n"
+        "→ country_id/country_name ใช้ค่าจาก history ล่าสุด ห้ามถามประเทศซ้ำ ห้ามตั้ง missing_field_to_ask=country หรือ month\n"
+        "ถ้าไม่มี country ใน history เลย:\n"
+        "→ action=reply, missing_field_to_ask=country (ถามประเทศอย่างเดียว ไม่ถามอย่างอื่น)\n\n"
         "action=search: ลูกค้าต้องการดูโปรแกรมทัวร์ประเทศที่ระบุ รวมถึงการเปลี่ยนประเทศ\n"
         "action=detail: ลูกค้าขอดูรายละเอียดทัวร์ — ใช้เมื่อยังไม่มีโปรแกรมที่เลือกใน context\n"
         "action=detail_pdf: (1) ลูกค้าขอ 'รายละเอียด' ของโปรแกรมที่เลือกไว้ใน context แล้ว (2) ลูกค้าถามมัดจำ/วีซ่า/ทิป/พักเดี่ยว/เงื่อนไขยกเลิก/itinerary/โรงแรม/รวมอะไร — และมีโปรแกรมที่เลือกไว้ใน context (3) ลูกค้าถามราคาแต่ละรอบ/วันเดินทาง เช่น 'รอบไหนราคาเท่าไหร่' 'ราคาเดือน X' 'แต่ละวันราคาต่างกันไหม' — ต้องอ่าน PDF ก่อน ห้ามใช้ price_min กับทุกวัน\n"
@@ -2781,12 +2814,37 @@ def process_message(sender_id: str, text: str):
         logger.info(f"Action: {action}, country_id: {country_id}, city: {city_hint}, lead_stage: {lead_stage}, "
                     f"selected_idx: {selected_option_idx}, uses_prev: {uses_previous}, clear_prev: {clear_prev_options}")
 
+        # ── SOONEST OVERRIDE — rule-based safety net ─────────────────────────
+        # ถ้า user พิมพ์ "เร็วๆนี้" และรู้ประเทศจาก action_data หรือ context
+        # แต่ classifier ยังตั้ง missing_field_to_ask=month/country → บังคับ search
+        if is_soonest_request(text):
+            _soonest_cid = country_id or ctx.get("country_id")
+            if _soonest_cid:
+                if action not in ("search", "flash_sale", "detail"):
+                    action = "search"
+                should_search = True
+                missing_field_to_ask = None
+                if not country_id:
+                    country_id = str(_soonest_cid)
+                action_data["departure_urgency"] = "soonest"
+                logger.info(f"[SOONEST] override: action=search, country_id={_soonest_cid}, soonest=True")
+            else:
+                # ไม่รู้ประเทศ → ถามประเทศอย่างเดียว
+                action = "reply"
+                should_search = False
+                missing_field_to_ask = "country"
+                logger.info("[SOONEST] no country known — asking country")
+        departure_urgency = action_data.get("departure_urgency") or ctx.get("departure_urgency")
+
         # ── Apply classifier fast-fills to context ────────────────────────
         ctx["last_user_message"] = text[:500]
         if classifier_month and not ctx.get("month"):
             ctx["month"] = classifier_month
         if classifier_budget and not ctx.get("budget_per_person"):
             ctx["budget_per_person"] = classifier_budget
+        # Save departure_urgency to context
+        if departure_urgency == "soonest":
+            ctx["departure_urgency"] = "soonest"
         if classifier_pax and not ctx.get("pax"):
             ctx["pax"] = classifier_pax
         if classifier_country and not ctx.get("country"):
@@ -2898,6 +2956,10 @@ def process_message(sender_id: str, text: str):
                     tour_data, tour_meta = result
                 else:
                     tour_data, tour_meta = result, []
+                # ── Sort by soonest departure when user wants เร็วๆนี้ ────────
+                if departure_urgency == "soonest" and tour_meta:
+                    tour_meta = sorted(tour_meta, key=_earliest_departure_sort_key)
+                    logger.info(f"[SOONEST] sorted {len(tour_meta)} tours by nearest departure")
                 # อัพเดท last_options ใน Redis ทันที — ไม่รอ background thread
                 if tour_meta:
                     ctx["last_options"] = tour_meta
@@ -3721,4 +3783,5 @@ def health():
 
 # ─── Entry point ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    port = int(os.environ.g
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
