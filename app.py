@@ -1216,6 +1216,13 @@ def _system_prompt(ctx: dict = None) -> str:
             parts.append(f"ชำระเงินแล้ว: ✅")
         if ctx.get("pending_action"):
             parts.append(f"สิ่งที่ AI บอกว่าจะทำ: {ctx['pending_action']}")
+        if ctx.get("_fallback_reason") == "options_expired":
+            parts.append(
+                "⚠️ รายการโปรแกรมก่อนหน้าหมดอายุจาก Redis แล้ว — "
+                "บอกลูกค้าสั้นๆ ว่า 'ขออภัยค่ะ รายการก่อนหน้าหายจากระบบ ค้นใหม่ให้เลยนะคะ' "
+                "แล้วแสดงผลใหม่จากข้อมูลที่ดึงมาตอนนี้ — ห้ามถามเริ่มต้นใหม่"
+            )
+            ctx.pop("_fallback_reason", None)
 
         # Build explicit "known = don't ask" rules
         known_rules = []
@@ -1748,6 +1755,50 @@ def fetch_faimai_tours(country_filter: str = None) -> str:
     lines.append(f"\nดูทั้งหมด: https://www.tourfiremai.com/faimai")
     return "\n".join(lines)
 
+def parse_option_index_rule_based(text: str):
+    """Fast rule-based parser สำหรับ 'ตัวที่ 1', 'ตัวแรก', '1' ฯลฯ
+    Returns 1-indexed int or None — ไม่ต้องรอ Claude"""
+    import re as _re
+    t = text.strip()
+    # รูปแบบ: "ตัวที่ 1", "อันที่ 2", "ข้อที่ 3", "โปรแกรมที่ 1"
+    m = _re.search(
+        r'(?:ตัวที่|อันที่|ข้อที่|โปรแกรมที่|ตัวที[่]?|อันที[่]?|ข้อที[่]?)\s*([๑-๙\d]+)', t
+    )
+    if m:
+        n = m.group(1).translate(str.maketrans('๑๒๓๔๕๖๗๘๙๐', '1234567890'))
+        try:
+            return int(n)
+        except ValueError:
+            pass
+    # Thai ordinal words
+    if _re.search(r'(?:ตัวแรก|อันแรก|ข้อแรก|ตัวที่หนึ่ง|เอาตัวแรก|สนใจตัวแรก|เลือกตัวแรก|อันนี้ตัวแรก)', t):
+        return 1
+    if _re.search(r'(?:ตัวสอง|อันสอง|ข้อสอง|ตัวที่สอง|สนใจตัวที่สอง|เอาตัวสอง|อันที่สอง)', t):
+        return 2
+    if _re.search(r'(?:ตัวสาม|อันสาม|ข้อสาม|ตัวที่สาม|สนใจตัวที่สาม|เอาตัวสาม|อันที่สาม)', t):
+        return 3
+    # "รายละเอียดตัวที่ 1", "ขอรายละเอียดตัวที่ 1"
+    m2 = _re.search(r'รายละเอียด.*?(?:ตัวที่|อันที่|ข้อที่|ตัว|อัน|ข้อ)\s*([1-3๑-๓])', t)
+    if m2:
+        n = m2.group(1).translate(str.maketrans('๑๒๓', '123'))
+        try:
+            return int(n)
+        except ValueError:
+            pass
+    # "สนใจตัวที่ 1", "เอาอันที่ 2"
+    m3 = _re.search(r'(?:สนใจ|เอา|เลือก|ขอ|ต้องการ)\s*(?:ตัวที่|อันที่|ข้อที่|ตัว|อัน|ข้อ)\s*([1-3๑-๓])', t)
+    if m3:
+        n = m3.group(1).translate(str.maketrans('๑๒๓', '123'))
+        try:
+            return int(n)
+        except ValueError:
+            pass
+    # Lone digit "1" / "2" / "3" (very short message)
+    if len(t) <= 5 and _re.fullmatch(r'\s*([1-3])\s*', t):
+        return int(t.strip())
+    return None
+
+
 def decide_action(user_message: str, history: list, last_options_count: int = 0,
                  current_search_mode: str = "normal") -> dict:
     history_text = ""
@@ -2101,11 +2152,22 @@ def process_message(sender_id: str, text: str):
             return
 
         _last_opts_count = len(ctx.get("last_options", []))
+        if _last_opts_count > 0:
+            logger.info(f"[MEMORY_LOAD] psid=...{sender_id[-6:]} last_options_count={_last_opts_count}")
+        # ── Rule-based option selection (fast, before Claude call) ─────
+        _rule_option_idx = parse_option_index_rule_based(text) if _last_opts_count > 0 else None
+        if _rule_option_idx:
+            logger.info(f"[OPTION_SELECT] rule-based detected: index={_rule_option_idx} text={text[:40]!r}")
         action_data = decide_action(text, history, last_options_count=_last_opts_count)
         action               = action_data.get("action", "reply")
         country_id           = action_data.get("country_id")
         selected_option_idx  = action_data.get("selected_option_index")
         uses_previous        = action_data.get("uses_previous_option", False)
+        # Rule-based override: ถ้า Claude ไม่ detect แต่ rule-based ตรวจเจอ
+        if _rule_option_idx and not selected_option_idx:
+            selected_option_idx = _rule_option_idx
+            uses_previous = True
+            logger.info(f"[OPTION_SELECT] rule-based override applied: index={_rule_option_idx}")
         clear_prev_options   = action_data.get("clear_previous_options", False)
         lead_stage           = action_data.get("lead_stage", "cold")
         should_search        = action_data.get("should_search", True)
@@ -2148,6 +2210,11 @@ def process_message(sender_id: str, text: str):
                 ctx["selected_tour_web_code"]  = selected.get("web_code", "") or selected.get("tour_code", "") or ""
                 ctx["selected_tour_airline"]   = selected.get("airline", "") or ""
                 logger.info(f"✅ Resolved option #{selected_option_idx}: {ctx['selected_tour_name']} [{ctx['selected_tour_code']}]")
+                logger.info(f"[OPTION_SELECT] psid=...{sender_id[-6:]} selected_index={selected_option_idx} web_code={ctx.get('selected_tour_web_code','')} tour_code={ctx.get('selected_tour_code','')}")
+                # Elevate lead stage when option selected
+                if lead_stage not in ("hot", "booking", "paid"):
+                    lead_stage = "hot"
+                    ctx["_lead_stage"] = "hot"
 
         # ── clear_previous_options: ลูกค้าเปลี่ยนประเทศ ──────────────────
         if clear_prev_options:
@@ -2158,6 +2225,20 @@ def process_message(sender_id: str, text: str):
             ctx["city_hint"] = None
             logger.info(f"🔄 clear_previous_options triggered for {sender_id}")
         save_context(sender_id, ctx)
+
+        # ── Fallback: ลูกค้าเลือก option แต่ last_options หายจาก Redis ──
+        if uses_previous and selected_option_idx and not ctx.get("last_options"):
+            _retry_country = country_id or ctx.get("country_id")
+            _retry_city    = city_hint or ctx.get("city_hint")
+            if _retry_country:
+                logger.info(f"[MEMORY_FALLBACK] last_options empty, re-searching country_id={_retry_country} city={_retry_city}")
+                action = "search"
+                country_id = _retry_country
+                city_hint  = _retry_city
+                uses_previous = False
+                selected_option_idx = None
+                ctx["_fallback_reason"] = "options_expired"
+                save_context(sender_id, ctx)
 
         tour_data   = ""
         is_handoff  = False
@@ -2231,8 +2312,11 @@ def process_message(sender_id: str, text: str):
                         ctx["selected_tour_web_code"]  = t0.get("web_code", "") or t0.get("tour_code", "") or ""
                         ctx["selected_tour_airline"]   = t0.get("airline", "") or ""
                         logger.info(f"🎯 Auto-selected single tour: {ctx['selected_tour_name']}")
+                    ctx["pending_action"] = "wait_user"
+                    ctx["last_bot_message_type"] = "tour_options"
                     save_context(sender_id, ctx)
                     logger.info(f"last_options updated immediately: {len(tour_meta)} tours")
+                    logger.info(f"[MEMORY_SAVE] psid=...{sender_id[-6:]} last_options_count={len(tour_meta)} search_mode={ctx.get('search_mode','normal')}")
             except Exception as e:
                 logger.error(f"fetch_tours error: {e}")
                 tour_data, tour_meta = "", []
@@ -2264,14 +2348,47 @@ def process_message(sender_id: str, text: str):
 
         # Notify admin
         if action == "flash_sale":
-            # ดึงทัวร์ไฟไหม้จากหน้า /faimai
+            # ดึงทัวร์ไฟไหม้ — ถ้ามี country_id ใช้ DB (structured, มี tour_meta)
             faimai_country = (
                 action_data.get("country_name") or
                 COUNTRY_MAP.get(action_data.get("country_id") or "", "") or
                 ctx.get("country_name") or ""
             )
-            tour_data = fetch_faimai_tours(country_filter=faimai_country if faimai_country else None)
-            logger.info(f"flash_sale: country_filter={faimai_country!r}, fetched {len(tour_data)} chars")
+            _flash_country_id = country_id or ctx.get("country_id")
+            if _flash_country_id:
+                # DB path — ได้ structured tour_meta → save last_options
+                try:
+                    _budget_max = None
+                    if ctx.get("budget_per_person"):
+                        try:
+                            _budget_max = int(str(ctx["budget_per_person"]).replace(",","").replace(" ",""))
+                        except Exception:
+                            pass
+                    _flash_result = fetch_tours(
+                        _flash_country_id,
+                        city_hint=city_hint or ctx.get("city_hint"),
+                        budget_max=_budget_max,
+                        search_mode="faimai"
+                    )
+                    if isinstance(_flash_result, tuple):
+                        tour_data, _flash_meta = _flash_result
+                    else:
+                        tour_data, _flash_meta = _flash_result, []
+                    if _flash_meta:
+                        ctx["last_options"] = _flash_meta
+                        ctx["pending_action"] = "wait_user"
+                        ctx["last_bot_message_type"] = "tour_options"
+                        save_context(sender_id, ctx)
+                        logger.info(f"[MEMORY_SAVE] psid=...{sender_id[-6:]} last_options_count={len(_flash_meta)} search_mode=faimai")
+                    logger.info(f"flash_sale DB: country_id={_flash_country_id}, meta_count={len(_flash_meta)}, fetched {len(tour_data)} chars")
+                except Exception as _fe:
+                    logger.error(f"flash_sale fetch_tours error: {_fe}")
+                    tour_data = fetch_faimai_tours(country_filter=faimai_country if faimai_country else None)
+                    logger.info(f"flash_sale fallback to web: country_filter={faimai_country!r}")
+            else:
+                # ไม่มี country_id → ใช้หน้า /faimai (text only, ไม่ได้ tour_meta)
+                tour_data = fetch_faimai_tours(country_filter=faimai_country if faimai_country else None)
+                logger.info(f"flash_sale web: country_filter={faimai_country!r}, fetched {len(tour_data)} chars")
         elif action == "handoff":
             is_handoff = True
             stage_emoji = {"hot": "🔔", "booking": "📋", "warm": "💬", "paid": "💳"}.get(lead_stage, "📩")
