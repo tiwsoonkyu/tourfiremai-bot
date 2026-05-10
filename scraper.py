@@ -724,15 +724,112 @@ def scrape_all_normal_tours() -> dict:
     return {"found": total_found, "upserted": total_upserted, "failed": total_failed}
 
 
+
+# ─── Backfill: populate tour_code_real for existing tours ────────────────────
+
+def backfill_tour_codes(limit: int = 500, workers: int = 8) -> dict:
+    """
+    Fetch tour_code_real for all tours in DB that still have NULL.
+
+    Queries: SELECT url, web_code FROM tours WHERE tour_code_real IS NULL
+    For each URL: extract tcode= param from detail page booking link
+    Patches: UPDATE tours SET tour_code_real=? WHERE web_code=?
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        logger.error("Missing SUPABASE_URL / SUPABASE_KEY")
+        return {"found": 0, "updated": 0, "failed": 0}
+
+    logger.info(f"  Querying up to {limit} tours with tour_code_real IS NULL...")
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/tours",
+            params={
+                "select":          "url,web_code",
+                "tour_code_real":  "is.null",
+                "url":             "not.is.null",
+                "order":           "id.asc",
+                "limit":           str(limit),
+            },
+            headers=SUPABASE_HEADERS,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        tours = resp.json()
+    except Exception as e:
+        logger.error(f"  Failed to query tours: {e}")
+        return {"found": 0, "updated": 0, "failed": 0}
+
+    total = len(tours)
+    logger.info(f"  Found {total} tours needing tour_code_real")
+    if not total:
+        return {"found": 0, "updated": 0, "failed": 0}
+
+    updated = failed = 0
+
+    def _process(t):
+        nonlocal updated, failed
+        url      = t.get("url", "")
+        web_code = t.get("web_code", "") or ""
+        if not url:
+            return
+        try:
+            resp2 = requests.get(url, headers=WEB_HEADERS, timeout=15)
+            resp2.raise_for_status()
+            text = resp2.text
+
+            # Primary: tcode= param in booking URL
+            tcode_m = re.search(r"tcode=([A-Z0-9\-]+)", text)
+            real_code = tcode_m.group(1).strip() if tcode_m else None
+
+            # Fallback: label รหัสทัวร์ followed by txt-pd-l value
+            if not real_code:
+                m2 = re.search(
+                    r"รหัสทัวร์[^<]{0,60}<p[^>]*class=\"txt-pd-l\"[^>]*>([^<]+)</p>",
+                    text,
+                )
+                if m2:
+                    real_code = m2.group(1).strip()
+
+            if real_code:
+                ok = supabase_patch(
+                    "tours",
+                    {"web_code": f"eq.{web_code}"},
+                    {"tour_code_real": real_code},
+                )
+                if ok:
+                    updated += 1
+                    logger.debug(f"  ✅ {web_code} → {real_code}")
+                else:
+                    failed += 1
+                    logger.warning(f"  ⚠️  patch failed for {web_code}")
+            else:
+                logger.debug(f"  — no code found: {url}")
+                failed += 1
+        except Exception as e:
+            failed += 1
+            logger.debug(f"  error {url}: {e}")
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(_process, tours))
+
+    logger.info(f"  Backfill done — found={total} updated={updated} failed={failed}")
+    return {"found": total, "updated": updated, "failed": failed}
+
 # ─── CLI entry point ──────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="TourFiremai Scraper v4")
     parser.add_argument(
         "--mode",
-        choices=["normal", "faimai", "all"],
+        choices=["normal", "faimai", "all", "backfill-codes"],
         default="normal",
-        help="Scrape mode: normal (nightly), faimai (4x daily), all (both)",
+        help="Scrape mode: normal (nightly), faimai (4x daily), all (both), backfill-codes (fill tour_code_real)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Max tours to backfill (default 500)",
     )
     args = parser.parse_args()
 
@@ -762,6 +859,15 @@ def main():
             f"normal: {n_stats['upserted']} upserted"
         )
 
+    elif args.mode == "backfill-codes":
+        logger.info("\n📍 Backfilling tour_code_real for NULL entries...")
+        stats = backfill_tour_codes(limit=args.limit)
+        logger.info(
+            f"\n📊 Backfill done — found={stats['found']} "
+            f"updated={stats['updated']} failed={stats['failed']}"
+        )
+
 
 if __name__ == "__main__":
     main()
+
