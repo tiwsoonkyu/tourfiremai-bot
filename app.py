@@ -1212,7 +1212,7 @@ def fetch_tours_from_db(country_id: str, city_hint: str = None,
     try:
         params = {
             "country_id": f"eq.{country_id}",
-            "select":     "name,url,tour_code,web_code,tour_code_real,price_min,promo_price,original_price,discount_amount,discount_percent,discount_text,promo_badge,airline,departure_dates,is_faimai,tip_fee,visa_fee,visa_status,single_supplement",
+            "select":     "name,url,tour_code,web_code,tour_code_real,price_min,promo_price,original_price,discount_amount,discount_percent,discount_text,promo_badge,airline,departure_dates,is_faimai,tip_fee,visa_fee,visa_status,single_supplement,deposit,mandatory_fees_summary,fee_extraction_status,fee_confidence",
             "order":      "price_min.asc.nullslast",
             "limit":      "60",
         }
@@ -1244,6 +1244,53 @@ def fetch_tours_from_db(country_id: str, city_hint: str = None,
     except Exception as e:
         logger.error(f"fetch_tours_from_db error: {e}")
         return []
+
+
+_FEE_DB_CACHE: dict = {}   # web_code → fee dict (session cache)
+
+def fetch_fee_from_db(web_code: str) -> dict:
+    """
+    ดึงข้อมูลค่าธรรมเนียมจาก Supabase tours table สำหรับโปรแกรมที่ระบุ
+    คืน dict: tip_fee, visa_fee, visa_status, single_supplement, deposit,
+              infant_fee, child_no_bed_fee, mandatory_fees_summary,
+              fee_extraction_status, fee_confidence, fee_raw_snippet
+    คืน {} ถ้า error หรือไม่พบ
+    """
+    if not web_code or not SUPABASE_URL or not SUPABASE_KEY:
+        return {}
+    if web_code in _FEE_DB_CACHE:
+        return _FEE_DB_CACHE[web_code]
+    try:
+        params = {
+            "web_code": f"eq.{web_code}",
+            "select": (
+                "tip_fee,visa_fee,visa_status,single_supplement,deposit,"
+                "infant_fee,child_no_bed_fee,mandatory_fees_summary,"
+                "fee_extraction_status,fee_confidence,fee_raw_snippet"
+            ),
+            "limit": "1",
+        }
+        headers = {
+            "apikey":        SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+        }
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/tours",
+            params=params,
+            headers=headers,
+            timeout=8,
+        )
+        if resp.status_code == 200:
+            rows = resp.json()
+            fee_data = rows[0] if rows else {}
+            _FEE_DB_CACHE[web_code] = fee_data
+            return fee_data
+        logger.warning(f"fetch_fee_from_db: HTTP {resp.status_code}")
+        return {}
+    except Exception as e:
+        logger.error(f"fetch_fee_from_db error: {e}")
+        return {}
+
 
 def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                 search_mode: str = "normal") -> str:
@@ -3310,40 +3357,89 @@ def process_message(sender_id: str, text: str):
             else:
                 action = "reply"
 
-        # ── Fix 4 (Task #74 Fix 1): Fee-only question + ไม่มีข้อมูลค่าธรรมเนียม → handoff + pause ──
-        # ถ้าลูกค้าถามค่าทิป/มัดจำ/วีซ่า/พักเดี่ยว และมี selected_tour แต่ไม่มีข้อมูล → handoff ทันที
+        # ── P1: Fee question gate — ใช้ข้อมูล DB + fee_extraction_status ─────────
+        # ลูกค้าถามค่าทิป/มัดจำ/วีซ่า/พักเดี่ยว → ตรวจ DB ก่อน
+        # found/partial → ตอบสั้นจาก DB, not_found/error/null → handoff + pause
         _FEE_KEYWORDS = {"ค่าทิป", "ทิปไกด์", "ทิปคนขับ", "มัดจำ", "ค่ามัดจำ",
-                         "วีซ่า", "ค่าวีซ่า", "พักเดี่ยว", "ค่าพักเดี่ยว"}
+                         "วีซ่า", "ค่าวีซ่า", "พักเดี่ยว", "ค่าพักเดี่ยว",
+                         "จ่ายจริง", "ราคาจริง", "จ่ายทั้งหมด"}
         _is_fee_question = any(k in text for k in _FEE_KEYWORDS)
         if _is_fee_question and ctx.get("selected_tour") and not is_handoff:
-            # ตรวจว่ามี fee ใน last_options หรือ selected_tour หรือ tour_data ไหม
-            _sel = ctx.get("selected_tour") or {}
-            _has_fee = (
-                bool(_sel.get("tip_fee"))
-                or bool(_sel.get("visa_fee"))
-                or bool(_sel.get("single_supplement"))
-                or ("ทิป" in tour_data)
-                or ("มัดจำ" in tour_data)
-                or ("วีซ่า" in tour_data)
-            )
-            if not _has_fee and not tour_data:
-                # ไม่มีข้อมูล → ตอบสั้น + handoff + pause bot 2h
+            _sel          = ctx.get("selected_tour") or {}
+            _sel_web_code = _sel.get("web_code") or ctx.get("selected_tour_web_code") or ""
+            _fee_tour_name = _sel.get("name") or ctx.get("selected_tour_name") or "ไม่ระบุ"
+            _fee_case_id   = ctx.get("case_id") or sender_id[-6:]
+
+            # ── ดึง fee จาก DB (fresh) ─────────────────────────────────────────
+            _db_fee = fetch_fee_from_db(_sel_web_code) if _sel_web_code else {}
+            _fee_status = _db_fee.get("fee_extraction_status") or _sel.get("fee_extraction_status") or "unknown"
+            _fee_conf   = _db_fee.get("fee_confidence") or _sel.get("fee_confidence") or "low"
+
+            # รวม fee fields: DB ก่อน, fallback ไป selected_tour (เผื่อ DB ยังไม่อัพเดท)
+            def _fee_val(field):
+                return _db_fee.get(field) or _sel.get(field)
+
+            _tip    = _fee_val("tip_fee")
+            _dep    = _fee_val("deposit")
+            _single = _fee_val("single_supplement")
+            _visa_f = _fee_val("visa_fee")
+            _visa_s = _fee_val("visa_status")
+            _infant = _fee_val("infant_fee")
+            _summary = _db_fee.get("mandatory_fees_summary") or ""
+            _has_fee_in_tour_data = any(kw in tour_data for kw in ("ทิป", "มัดจำ", "วีซ่า", "พักเดี่ยว"))
+
+            # คำนวณว่ามีข้อมูลจริงหรือเปล่า
+            _has_db_fee = bool(_tip or _dep or _single or _visa_f or _visa_s or _summary)
+
+            # ── CASE 1: DB มีข้อมูล (found / partial) → ตอบจาก DB ─────────────
+            if _fee_status in ("found", "partial") and _has_db_fee:
+                parts = []
+                if _tip:
+                    parts.append(f"💰 ค่าทิปไกด์ **{_tip:,} บาท/ท่าน**")
+                if _dep:
+                    parts.append(f"📌 มัดจำ **{_dep:,} บาท**")
+                if _single:
+                    parts.append(f"🛏 พักเดี่ยวเพิ่ม **{_single:,} บาท**")
+                if _visa_f:
+                    parts.append(f"📋 ค่าวีซ่า **{_visa_f:,} บาท**")
+                elif _visa_s:
+                    parts.append(f"📋 วีซ่า{_visa_s}")
+                if _infant:
+                    parts.append(f"👶 ทารก **{_infant:,} บาท**")
+
+                _fee_reply = f"ค่าใช้จ่ายเพิ่มเติมของโปรแกรม {_fee_tour_name} ค่ะ\n"
+                _fee_reply += "\n".join(parts)
+                if _fee_status == "partial":
+                    _fee_reply += (
+                        "\n\n⚠️ บางรายการยังไม่ครบ — ทีมงานจะยืนยันยอดจ่ายจริงครั้งสุดท้ายก่อนคอนเฟิร์มนะคะ"
+                    )
+                send_message(sender_id, _fee_reply)
+                save_to_history(sender_id, "user", text)
+                save_to_history(sender_id, "assistant", _fee_reply)
+                log_chat_event(sender_id, "fee_answered_db", text, action, lead_stage, ctx)
+                return jsonify({"status": "ok"}), 200
+
+            # ── CASE 2: tour_data มีข้อมูล fee → ปล่อย generate_response() จัดการ ─
+            if _has_fee_in_tour_data:
+                pass  # ออกจาก gate, ให้ generate_response() ตอบจาก tour_data
+
+            # ── CASE 3: ไม่มีข้อมูลที่ไหนเลย → handoff + pause ──────────────────
+            elif not _has_db_fee and not _has_fee_in_tour_data:
                 _fee_short = (
-                    "ขออภัยค่ะ ข้อมูลค่าทิป/มัดจำ/วีซ่า ของโปรแกรมนี้ยังไม่มีในระบบ 🙏\n"
-                    "ทีมแอดมินจะติดต่อกลับเพื่อแจ้งรายละเอียดภายใน 15 นาทีนะคะ ☺️"
+                    "โปรนี้ยังไม่พบค่าทิป/มัดจำ/วีซ่าในเอกสารค่ะ 🙏\n"
+                    "เดี๋ยวส่งให้ทีมงานเช็กยอดจ่ายจริงและรายละเอียดครบๆ ให้นะคะ ☺️"
                 )
                 send_message(sender_id, _fee_short)
                 is_handoff = True
-                _fee_tour_name = _sel.get("name") or ctx.get("selected_tour_name") or "ไม่ระบุ"
-                _fee_case_id   = ctx.get("case_id") or sender_id[-6:]
                 notify_line(
-                    f"⚠️ [FEE MISSING] ลูกค้าถาม {text[:40]}\n"
-                    f"โปรแกรม: {_fee_tour_name}\n"
+                    f"⚠️ [FEE MISSING] ลูกค้าถาม: {text[:50]}\n"
+                    f"โปรแกรม: {_fee_tour_name} ({_sel_web_code})\n"
                     f"PSID: ...{sender_id[-6:]} | Case: {_fee_case_id}\n"
+                    f"fee_status: {_fee_status}\n"
                     "→ Bot หยุด 2 ชม. รอแอดมินตอบ"
                 )
-                ctx["needs_review"]   = True
-                ctx["review_reason"]  = "fee_detail_missing"
+                ctx["needs_review"]  = True
+                ctx["review_reason"] = "fee_detail_missing"
                 pause_bot(sender_id, ctx, "fee_missing_handoff", hours=2)
                 save_context(sender_id, ctx)
                 save_to_history(sender_id, "user", text)
@@ -4020,6 +4116,37 @@ def webhook():
 @app.route("/admin/pause", methods=["POST"])
 def admin_pause():
     """Admin: หยุด bot สำหรับ PSID ที่ระบุ (X-Admin-Pass header required)"""
+    auth = (request.headers.get("X-Admin-Pass") or
+            (request.get_json(silent=True) or {}).get("pass", ""))
+    if auth != DASHBOARD_PASS:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    psid = data.get("psid", "").strip()
+    hours = max(1, min(168, int(data.get("hours", 2))))
+    if not psid:
+        return jsonify({"error": "psid required"}), 400
+    ctx = get_context(psid)
+    pause_bot(psid, ctx, "manual_admin_pause", hours=hours)
+    save_context(psid, ctx)
+    # Best-effort: update leads table
+    try:
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/leads",
+            params={"psid": f"eq.{psid}"},
+            json={"human_takeover": True},
+            headers=_sb_headers(),
+            timeout=6,
+        )
+    except Exception:
+        pass
+    logger.info(f"⛔ Admin paused bot: ...{psid[-6:]}, {hours}h")
+    return jsonify({"status": "paused", "psid": psid,
+                    "until": ctx.get("bot_paused_until"), "hours": hours})
+
+
+@app.route("/admin/resume", methods=["POST"])
+def admin_resume():
+    """เปิด bot สำหรับ PSID ที่ระบุ (X-Admin-Pass header required)"""
     auth = (request.headers.get("X-Admin-Pass") or
             (request.get_json(silent=True) or {}).get("pass", ""))
     if auth != DASHBOARD_PASS:
