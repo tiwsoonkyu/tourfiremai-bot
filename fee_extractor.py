@@ -245,7 +245,11 @@ def process_tour(tour):
     tour_id  = str(tour.get("id", ""))
     web_code = tour.get("web_code") or ""
     label    = web_code or tour_id
-    pdf_url  = PDF_BASE_URL.format(tour_id)
+    # PDF filename uses numeric part of web_code (ap182432 → tour_182432.pdf)
+    # NOT the Supabase integer PK
+    _wc_match = re.match(r'^ap(\d+)$', web_code)
+    pdf_tour_id = _wc_match.group(1) if _wc_match else tour_id
+    pdf_url  = PDF_BASE_URL.format(pdf_tour_id)
     now_iso  = datetime.now(timezone.utc).isoformat()
     base     = {"pdf_url": pdf_url, "fee_checked_at": now_iso}
 
@@ -453,13 +457,4 @@ def main():
                 "total_processed": total,
                 "total_found":     counts["found"],
                 "total_partial":   counts["partial"],
-                "total_not_found": counts.get("not_found", 0),
-                "total_error":     counts.get("error", 0),
-                "status":          "done",
-            })
-        except Exception:
-            pass
-
-
-if __name__ == "__main__":
-    main()
+                "total_not_found"
