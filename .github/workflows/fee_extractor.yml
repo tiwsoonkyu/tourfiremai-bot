@@ -1,0 +1,60 @@
+name: Fee Extractor — PDF Fee Data
+
+on:
+  schedule:
+    # Daily at 02:00 UTC (09:00 Bangkok time)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force_recheck:
+        description: 'Force recheck all active tours (true/false)'
+        required: false
+        default: 'false'
+      batch_size:
+        description: 'Number of tours per run (default 50)'
+        required: false
+        default: '50'
+
+jobs:
+  extract-fees:
+    name: Extract PDF Fees
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-fee-extractor-${{ hashFiles('fee_extractor.py') }}
+          restore-keys: ${{ runner.os }}-fee-extractor-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pymupdf requests anthropic
+
+      - name: Run fee extractor
+        env:
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FORCE_RECHECK:     ${{ github.event.inputs.force_recheck || 'false' }}
+          FEE_BATCH_SIZE:    ${{ github.event.inputs.batch_size || '50' }}
+        run: python fee_extractor.py
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fee-extractor-logs
+          path: '*.log'
+          retention-days: 7
