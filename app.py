@@ -4153,37 +4153,6 @@ def admin_resume():
         return jsonify({"error": "unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     psid = data.get("psid", "").strip()
-    hours = max(1, min(168, int(data.get("hours", 2))))
-    if not psid:
-        return jsonify({"error": "psid required"}), 400
-    ctx = get_context(psid)
-    pause_bot(psid, ctx, "manual_admin_pause", hours=hours)
-    save_context(psid, ctx)
-    # Best-effort: update leads table
-    try:
-        requests.patch(
-            f"{SUPABASE_URL}/rest/v1/leads",
-            params={"psid": f"eq.{psid}"},
-            json={"human_takeover": True},
-            headers=_sb_headers(),
-            timeout=6,
-        )
-    except Exception:
-        pass
-    logger.info(f"⛔ Admin paused bot: ...{psid[-6:]}, {hours}h")
-    return jsonify({"status": "paused", "psid": psid,
-                    "until": ctx.get("bot_paused_until"), "hours": hours})
-
-
-@app.route("/admin/resume", methods=["POST"])
-def admin_resume():
-    """เปิด bot สำหรับ PSID ที่ระบุ (X-Admin-Pass header required)"""
-    auth = (request.headers.get("X-Admin-Pass") or
-            (request.get_json(silent=True) or {}).get("pass", ""))
-    if auth != DASHBOARD_PASS:
-        return jsonify({"error": "unauthorized"}), 401
-    data = request.get_json(silent=True) or {}
-    psid = data.get("psid", "").strip()
     if not psid:
         return jsonify({"error": "psid required"}), 400
     ctx = get_context(psid)
