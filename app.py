@@ -227,6 +227,7 @@ def get_context(psid: str) -> dict:
         try:
             raw = _redis.get(_ctx_key(psid))
             if raw:
+                _redis.expire(_ctx_key(psid), REDIS_TTL_SEC)  # refresh TTL on every read
                 return json.loads(raw)
         except Exception as e:
             logger.warning(f"Redis ctx get error: {e}")
@@ -1005,6 +1006,72 @@ def detect_budget_type(text: str) -> str:
     if any(k in text for k in _FLEX_KW):
         return "flexible"
     return "unknown"
+
+
+# ── Country alias / typo map ─────────────────────────────────────────────────
+# key: lowercase alias/typo → value: (canonical_thai_name, country_id_str)
+_COUNTRY_ALIAS: dict = {
+    # ญี่ปุ่น
+    "ญี่ปุ่น": ("ญี่ปุ่น", "2"), "ญี่ปุ่ร": ("ญี่ปุ่น", "2"),
+    "ญี่ป่น": ("ญี่ปุ่น", "2"), "ญีปุ่น": ("ญี่ปุ่น", "2"),
+    "ญีปุน": ("ญี่ปุ่น", "2"), "ญี่ปุน": ("ญี่ปุ่น", "2"),
+    "japan": ("ญี่ปุ่น", "2"), "jp": ("ญี่ปุ่น", "2"), "japon": ("ญี่ปุ่น", "2"),
+    # เกาหลี
+    "เกาหลี": ("เกาหลี", "1"), "เกาหรี": ("เกาหลี", "1"),
+    "เกาหลีใต้": ("เกาหลี", "1"), "เกาหลีเหนือ": ("เกาหลี", "1"),
+    "korea": ("เกาหลี", "1"), "south korea": ("เกาหลี", "1"), "kr": ("เกาหลี", "1"),
+    # จีน
+    "จีน": ("จีน", "5"), "ประเทศจีน": ("จีน", "5"),
+    "china": ("จีน", "5"), "cn": ("จีน", "5"),
+    # ไต้หวัน
+    "ไต้หวัน": ("ไต้หวัน", "19"), "ไต้หวน": ("ไต้หวัน", "19"),
+    "ไต้หวาน": ("ไต้หวัน", "19"), "ใต้หวัน": ("ไต้หวัน", "19"),
+    "taiwan": ("ไต้หวัน", "19"), "tw": ("ไต้หวัน", "19"),
+    # เวียดนาม
+    "เวียดนาม": ("เวียดนาม", "7"), "เวียตนาม": ("เวียดนาม", "7"),
+    "เวียดนาน": ("เวียดนาม", "7"),
+    "vietnam": ("เวียดนาม", "7"), "viet nam": ("เวียดนาม", "7"), "vn": ("เวียดนาม", "7"),
+    # ฮ่องกง
+    "ฮ่องกง": ("ฮ่องกง", "3"), "ฮองกง": ("ฮ่องกง", "3"),
+    "ฮ่องกงค่ะ": ("ฮ่องกง", "3"),
+    "hongkong": ("ฮ่องกง", "3"), "hong kong": ("ฮ่องกง", "3"), "hk": ("ฮ่องกง", "3"),
+    # สิงคโปร์
+    "สิงคโปร์": ("สิงคโปร์", "4"), "สิงค์โปร์": ("สิงคโปร์", "4"),
+    "สิงคโปร": ("สิงคโปร์", "4"),
+    "singapore": ("สิงคโปร์", "4"), "sg": ("สิงคโปร์", "4"),
+    # มาเลเซีย
+    "มาเลเซีย": ("มาเลเซีย", "6"), "มาเลย์": ("มาเลเซีย", "6"),
+    "มาเลเซีย": ("มาเลเซีย", "6"),
+    "malaysia": ("มาเลเซีย", "6"), "my": ("มาเลเซีย", "6"),
+}
+# polite particle suffixes to strip before lookup
+_TH_POLITE = ["ครับ", "ค่ะ", "คะ", "นะครับ", "นะคะ", "จ้า", "จ้าย", "นะ"]
+
+
+def normalize_country_typo(text: str):
+    """ตรวจว่าข้อความเป็นชื่อประเทศ (รองรับ typo + alias + อังกฤษ)
+    คืน (canonical_name: str, country_id: str) หรือ (None, None)
+    ใช้ก่อน decide_action() เพื่อ bypass LLM confirmation
+    """
+    t = text.strip().lower()
+    # Strip polite particles
+    for sfx in _TH_POLITE:
+        if t.endswith(sfx):
+            t = t[:-len(sfx)].strip()
+            break
+    # Exact match
+    if t in _COUNTRY_ALIAS:
+        return _COUNTRY_ALIAS[t]
+    # Without spaces (e.g. "hong kong" → "hongkong")
+    t_nospace = t.replace(" ", "")
+    if t_nospace in _COUNTRY_ALIAS:
+        return _COUNTRY_ALIAS[t_nospace]
+    # Substring match — only for short messages (pure country reply)
+    if len(t) <= 20:
+        for alias, val in _COUNTRY_ALIAS.items():
+            if len(alias) >= 2 and alias in t:
+                return val
+    return None, None
 
 
 def select_budget_tiers(tours: list, budget: int, budget_type: str) -> list:
@@ -3137,6 +3204,24 @@ def process_message(sender_id: str, text: str):
         _rule_option_idx = parse_option_index_rule_based(text, _last_opts_count) if _last_opts_count > 0 else None
         if _rule_option_idx:
             logger.info(f"[OPTION_SELECT] rule-based detected: index={_rule_option_idx} text={text[:40]!r}")
+
+        # ── Country typo pre-fill (before LLM, no confirmation needed) ──
+        # ถ้า user ตอบชื่อประเทศ (อาจ typo) และ ctx ยังไม่รู้ประเทศ → fill ทันที
+        _norm_cname, _norm_cid = normalize_country_typo(text)
+        _ctx_has_country = bool(ctx.get("country_id") or ctx.get("country"))
+        _ctx_has_prior   = bool(ctx.get("budget_per_person") or ctx.get("last_options")
+                                 or ctx.get("selected_tour") or ctx.get("city_hint")
+                                 or ctx.get("month") or ctx.get("pax"))
+        _direct_country_fill = False
+        if _norm_cname and not _ctx_has_country:
+            # Fill when: have prior context OR short message (pure country reply)
+            if _ctx_has_prior or len(text.strip()) <= 20:
+                ctx["country_id"]   = _norm_cid
+                ctx["country"]      = _norm_cname
+                ctx["country_name"] = _norm_cname
+                _direct_country_fill = True
+                logger.info(f"[COUNTRY_NORM] '{text[:20]}' → '{_norm_cname}' (id={_norm_cid}) budget={ctx.get('budget_per_person')}")
+
         action_data = decide_action(text, history, last_options_count=_last_opts_count)
         action               = action_data.get("action", "reply")
         country_id           = action_data.get("country_id")
@@ -3158,6 +3243,18 @@ def process_message(sender_id: str, text: str):
         classifier_country   = action_data.get("country_name")
         logger.info(f"Action: {action}, country_id: {country_id}, city: {city_hint}, lead_stage: {lead_stage}, "
                     f"selected_idx: {selected_option_idx}, uses_prev: {uses_previous}, clear_prev: {clear_prev_options}")
+
+        # ── Country typo override: bypass LLM action if we filled country ─
+        if _direct_country_fill:
+            # Force search — do NOT ask for confirmation
+            if not country_id:
+                country_id = _norm_cid
+            action = "search"
+            should_search = True
+            missing_field_to_ask = None
+            # IMPORTANT: never wipe budget when filling country
+            clear_prev_options = False
+            logger.info(f"[COUNTRY_NORM] Override → action=search country_id={country_id} budget={ctx.get('budget_per_person')} clear_prev=False")
 
         # ── SOONEST OVERRIDE — rule-based safety net ─────────────────────────
         # ถ้า user พิมพ์ "เร็วๆนี้" และรู้ประเทศจาก action_data หรือ context
