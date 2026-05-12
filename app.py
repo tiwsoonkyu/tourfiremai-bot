@@ -961,17 +961,24 @@ def resolve_selected_tour_from_text(text: str, last_options: list) -> dict:
             if len(matches) > 1:
                 return {"ambiguous": True, "matches": matches, "price": price_val}
 
-    # Priority 4: name / city keyword — tokenize tour name and match
-    # Use 3-char minimum to avoid false positives
+    # Priority 4: BEST name / city keyword match — score all, pick highest
+    # Scoring avoids false-positive when common words (ไทเป) appear in multiple tours:
+    # tour with most keyword hits wins (e.g. "ไทเป กวนอิม" scores 2 on ap242807 vs 1 on others)
     _TH_STOPWORDS = {"ทัวร์", "โปร", "ราคา", "บาท", "วัน", "คืน", "เที่ยว",
                      "ครั้ง", "ท่าน", "คน", "พัก", "บิน", "สาย", "การ"}
+    _best_tour  = None
+    _best_score = 0
+    _best_kw    = ""
     for t in last_options:
         name = t.get("name") or ""
-        # extract meaningful words (Thai 3+ chars or English 4+ chars)
         th_words = [w for w in name.split() if len(w) >= 3 and w not in _TH_STOPWORDS]
-        for w in th_words:
-            if w.upper() in text_up or w in text:
-                return {"tour": t, "method": "name_keyword", "keyword": w}
+        _score = sum(1 for w in th_words if w.upper() in text_up or w in text)
+        if _score > _best_score:
+            _best_score = _score
+            _best_tour  = t
+            _best_kw    = " ".join(w for w in th_words if w.upper() in text_up or w in text)
+    if _best_tour and _best_score > 0:
+        return {"tour": _best_tour, "method": "name_keyword", "keyword": _best_kw}
 
     return {}
 
