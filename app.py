@@ -176,6 +176,7 @@ _EMPTY_CTX = {
     "duration_days": None,        # จำนวนวัน เช่น 5
     "month": None,
     "budget_per_person": None,
+    "budget_type": None,           # 'strict'|'flexible'|'unknown'
     "pax": None,
     # ── Options & Selection ───────────────────────────────────────────────
     "last_options": [],           # list of tour dicts ที่เสนอล่าสุด
@@ -982,6 +983,88 @@ def resolve_selected_tour_from_text(text: str, last_options: list) -> dict:
 
     return {}
 
+
+def detect_budget_type(text: str) -> str:
+    """ตรวจจับว่าลูกค้ากำหนดงบแน่น (strict) หรือยืดหยุ่น (flexible)
+    คืน 'strict'|'flexible'|'unknown'
+    ใช้ก่อน fetch_tours เพื่อตัดสินใจว่าจะขยาย pool หรือไม่
+    """
+    _STRICT_KW = {
+        "ไม่เกิน", "จำกัด", "งบแค่นี้", "แค่นี้พอ", "ไม่มีเพิ่ม",
+        "ไม่อยากเกิน", "ขอไม่เกิน", "ขอแค่", "ได้แค่",
+        "งบเท่านี้", "เกินไม่ได้",
+    }
+    _FLEX_KW = {
+        "ประมาณ", "สบายๆ", "ไม่ติด", "เปิดกว้าง", "ยืดหยุ่น",
+        "ไม่ยึด", "ไม่ค่อยยึด", "ประมาณนี้ก็ได้",
+        "ได้เพิ่มนิดหน่อย", "เพิ่มได้นิดหน่อย",
+        "คุ้มค่าก็โอเค", "คุ้มก็โอเค",
+    }
+    if any(k in text for k in _STRICT_KW):
+        return "strict"
+    if any(k in text for k in _FLEX_KW):
+        return "flexible"
+    return "unknown"
+
+
+def select_budget_tiers(tours: list, budget: int, budget_type: str) -> list:
+    """จัดเรียงทัวร์ตาม budget tier — value / recommended / upgrade
+    คืน list เรียงลำดับตามความเหมาะสมกับงบ (ไม่ตัดทิ้ง)
+
+    Tiers (เทียบงบ):
+      value       : 40–65% ของงบ — ถูก ดูคุ้ม
+      recommended : 65–85% ของงบ — ราคาเหมาะ คุ้มสุด
+      upgrade     : 85–105% (flexible) หรือ 85–100% (strict)
+      outlier     : ที่เหลือ (เรียงต่อท้าย)
+
+    Premium route bonus: ฮอกไกโด|ยุโรป|สแกน|นอร์เวย์|สวีเดน|ฟินแลนด์|ไอซ์แลนด์|อเมริกา
+    Full-service airline bonus: TG|JL|NH|SQ|CX|MH|QR|EK|EY|BA|LH
+    """
+    if not tours or not budget:
+        return tours
+
+    _PREMIUM_ROUTES = {
+        "ฮอกไกโด", "ยุโรป", "สแกนดิเนเวีย", "นอร์เวย์", "สวีเดน",
+        "ฟินแลนด์", "ไอซ์แลนด์", "อเมริกา", "สวิส", "ออสเตรีย",
+    }
+    _FSC_AIRLINES = {"TG", "JL", "NH", "SQ", "CX", "MH", "QR", "EK", "EY", "BA", "LH"}
+
+    # Determine ceiling for upgrade tier
+    upgrade_ceil = budget * 1.05 if budget_type != "strict" else budget
+
+    def _score(t):
+        """คืน (tier_rank, bonus) — tier_rank ต่ำ = แสดงก่อน"""
+        pm = t.get("price_min") or t.get("price")
+        try:
+            price = int(str(pm).replace(",", "").replace(" ", ""))
+        except (TypeError, ValueError):
+            return (99, 0)  # ไม่รู้ราคา → ท้ายสุด
+
+        ratio = price / budget
+        if ratio < 0.40:
+            tier = 3  # ถูกเกินไป — แสดงหลัง recommended
+        elif ratio <= 0.65:
+            tier = 1  # value
+        elif ratio <= 0.85:
+            tier = 0  # recommended — แสดงก่อนเพื่อน
+        elif price <= upgrade_ceil:
+            tier = 2  # upgrade
+        else:
+            tier = 4  # outlier — เกินงบ
+
+        bonus = 0
+        name = (t.get("name") or "").upper()
+        if any(k.upper() in name for k in _PREMIUM_ROUTES):
+            bonus -= 1  # premium route → แสดงขึ้นมาอีกนิด
+        airline = (t.get("airline") or "").upper().strip()
+        if any(a in airline for a in _FSC_AIRLINES):
+            bonus -= 1  # full-service carrier → priority
+
+        return (tier, bonus, price)
+
+    return sorted(tours, key=_score)
+
+
 def extract_booking_fields_from_text(text: str, existing: dict) -> dict:
     """ดึงข้อมูล booking fields จากข้อความของ user
     คืน dict ที่มีเฉพาะ field ที่เจอในข้อความนี้"""
@@ -1698,7 +1781,8 @@ def _system_prompt(ctx: dict = None) -> str:
         if ctx.get("month"):
             parts.append(f"เดือนที่จะไป: {ctx['month']}")
         if ctx.get("budget_per_person"):
-            parts.append(f"งบ/คน: {ctx['budget_per_person']:,} บาท" if isinstance(ctx['budget_per_person'], (int, float)) else f"งบ/คน: {ctx['budget_per_person']}")
+            _btype_label = {"strict": " (งบแน่น ห้ามเสนอเกิน)", "flexible": " (ยืดหยุ่นได้ เสนอตัวคุ้มค่าได้)", "unknown": ""}.get(ctx.get("budget_type") or "unknown", "")
+            parts.append(f"งบ/คน: {ctx['budget_per_person']:,} บาท{_btype_label}" if isinstance(ctx['budget_per_person'], (int, float)) else f"งบ/คน: {ctx['budget_per_person']}{_btype_label}")
         if ctx.get("pax"):
             parts.append(f"จำนวนคน: {ctx['pax']} คน")
         if ctx.get("travel_date"):
@@ -2546,6 +2630,53 @@ def decide_action(user_message: str, history: list, last_options_count: int = 0,
 
 
 # ─── AI — Call 2: Generate Response ──────────────────────────────────────────
+def _build_budget_hint(ctx: dict) -> str:
+    """สร้าง budget instruction สำหรับ Claude ตาม budget_type + amount
+    คืน string ที่ append เข้า user_content ใน generate_response()
+    """
+    budget = ctx.get("budget_per_person")
+    btype  = ctx.get("budget_type") or "unknown"
+    country = ctx.get("country") or ctx.get("country_name") or ""
+    if not budget:
+        return ""
+    try:
+        bval = int(str(budget).replace(",", "").replace(" ", ""))
+    except (TypeError, ValueError):
+        bval = 0
+
+    if btype == "strict":
+        return (
+            f"\n[งบลูกค้า {budget} บาท/คน (งบแน่น): เสนอเฉพาะที่ไม่เกินงบ "
+            "ถ้าไม่มีให้บอกตรงๆ และแนะนำใกล้เคียงที่สุด]"
+        )
+
+    if btype == "flexible" and bval >= 25000:
+        country_str = f"ไป{country}" if country else ""
+        return (
+            f"\n[งบลูกค้า {budget} บาท/คน (ยืดหยุ่นได้): "
+            f"เปิดด้วย 'งบ {budget}/คน {country_str}ได้สบายเลยค่ะ "
+            "ขอคัดแบบคุ้มกับงบ ไม่ได้เลือกถูกที่สุดอย่างเดียวนะคะ' "
+            "แล้วเสนอ: (1) Value ราคาดี คุ้มสุด (2) Recommended ราคาเหมาะ (3) Upgrade ไม่เกินงบมาก "
+            "เน้นประสบการณ์และสายการบิน ไม่ใช่แค่ราคาถูก]"
+        )
+
+    if bval >= 25000:
+        country_str = f"ไป{country}" if country else ""
+        return (
+            f"\n[งบลูกค้า {budget} บาท/คน: "
+            f"เปิดด้วย 'งบ {budget}/คน {country_str}ได้สบายเลยค่ะ "
+            "ขอคัดแบบคุ้มกับงบ ไม่ได้เลือกถูกที่สุดอย่างเดียวนะคะ' "
+            "เสนอ 3 ระดับ: ราคาดี + คุ้มค่าที่สุด + อัพเกรดหน่อย "
+            "เน้นประสบการณ์และสายการบิน]"
+        )
+
+    # default (low budget or unknown)
+    return (
+        f"\n[งบลูกค้า {budget} บาท/คน: คัดเฉพาะที่ราคาไม่เกินงบก่อน "
+        "ถ้าไม่มีให้โชว์ถูกสุดและบอกว่าเกินเท่าไหร่]"
+    )
+
+
 def generate_response(user_message: str, history: list, tour_data: str = "",
                       is_handoff: bool = False, ctx: dict = None,
                       action: str = "reply",
@@ -2592,7 +2723,7 @@ def generate_response(user_message: str, history: list, tour_data: str = "",
                 "เน้นส่วนลด/ความคุ้มค่า ห้ามเปรียบเทียบกับราคาปกติหรือแนะนำให้เพิ่มงบ "
                 "ห้ามใช้คำว่าน้องแอดมิน"
                 + no_result_hint
-                + (f"\n[งบลูกค้า {ctx['budget_per_person']} บาท: คัดเฉพาะที่ราคาไม่เกินงบก่อน ถ้าไม่มีให้บอกตรงๆ]" if ctx.get("budget_per_person") else "")
+                + (_build_budget_hint(ctx) if ctx and ctx.get("budget_per_person") else "")
             )
         else:
             user_content = (
@@ -2602,7 +2733,7 @@ def generate_response(user_message: str, history: list, tour_data: str = "",
                 "---\n"
                 "ใช้ข้อมูลทัวร์ด้านบนในการตอบ คัดเลือก 1-3 โปรแกรมที่เหมาะที่สุดกับความต้องการลูกค้า "
                 "พร้อมเหตุผล 1 ประโยคต่อตัวเลือก"
-                + (f"\n[งบลูกค้า {ctx['budget_per_person']} บาท: คัดเฉพาะที่ราคาไม่เกินงบก่อน ถ้าไม่มีให้โชว์ถูกสุดและบอกว่าเกินเท่าไหร่]" if ctx and ctx.get("budget_per_person") else "")
+                + (_build_budget_hint(ctx) if ctx and ctx.get("budget_per_person") else "")
             )
     elif is_handoff:
         user_content = (
@@ -3513,11 +3644,24 @@ def process_message(sender_id: str, text: str):
                         budget_max = int(b)
                     except Exception:
                         pass
-                result = fetch_tours(country_id, city_hint=city_hint, budget_max=budget_max)
+                # ── Detect budget_type from current message ──────────────
+                if budget_max and not ctx.get("budget_type"):
+                    ctx["budget_type"] = detect_budget_type(text)
+                    logger.info(f"[BUDGET_TYPE] detected={ctx['budget_type']} budget={budget_max}")
+                # ── Widen fetch pool for flexible/unknown budgets ─────────
+                _fetch_budget = budget_max
+                if _fetch_budget and ctx.get("budget_type") != "strict":
+                    _fetch_budget = int(_fetch_budget * 1.20)  # fetch up to 120%
+                result = fetch_tours(country_id, city_hint=city_hint, budget_max=_fetch_budget)
                 if isinstance(result, tuple):
                     tour_data, tour_meta = result
                 else:
                     tour_data, tour_meta = result, []
+                # ── Budget-aware tier ranking ─────────────────────────────
+                if tour_meta and budget_max:
+                    _btype = ctx.get("budget_type") or "unknown"
+                    tour_meta = select_budget_tiers(tour_meta, budget_max, _btype)
+                    logger.info(f"[BUDGET_TIERS] ranked {len(tour_meta)} tours budget={budget_max} type={_btype}")
                 # ── Sort by soonest departure when user wants เร็วๆนี้ ────────
                 if departure_urgency == "soonest" and tour_meta:
                     tour_meta = sorted(tour_meta, key=_earliest_departure_sort_key)
