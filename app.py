@@ -913,6 +913,68 @@ def is_change_tour_request(text: str) -> bool:
     """True ถ้า user ต้องการดูโปรแกรมอื่น (unlock booking lock + search new)"""
     return any(k in text for k in _CHANGE_TOUR_KEYWORDS)
 
+
+def resolve_selected_tour_from_text(text: str, last_options: list) -> dict:
+    """ค้นหา selected_tour จาก text โดยไม่ต้องใช้ option index
+    Priority: web_code > tour_code_real > exact price (1 match) > name/city keyword
+    คืน {"tour": <tour_dict>, "method": str, "ambiguous": False}
+       หรือ {"ambiguous": True, "matches": [tour,...], "price": int} สำหรับ price ที่มีหลายตัว
+       หรือ {} ถ้าไม่เจอ
+    """
+    import re as _re
+    if not last_options or not isinstance(last_options, list):
+        return {}
+    text_up = text.upper().strip()
+
+    # Priority 1: exact web_code match e.g. "ap242807"
+    for t in last_options:
+        wc = (t.get("web_code") or t.get("tour_code") or "").strip().upper()
+        if wc and wc in text_up:
+            return {"tour": t, "method": "web_code"}
+
+    # Priority 2: exact tour_code_real match e.g. "VZ-TPE07-2"
+    for t in last_options:
+        rc = (t.get("tour_code_real") or "").strip().upper()
+        if rc and len(rc) >= 4 and rc in text_up:
+            return {"tour": t, "method": "tour_code_real"}
+
+    # Priority 3: price match — extract all numeric sequences from text
+    # support "8999", "8,999", "8.999"
+    raw_nums = _re.findall(r"\d[\d,\.]*\d|\d", text)
+    prices_in_text = set()
+    for n in raw_nums:
+        cleaned = n.replace(",", "").replace(".", "")
+        if cleaned.isdigit() and 2000 <= int(cleaned) <= 500000:
+            prices_in_text.add(int(cleaned))
+    if prices_in_text:
+        for price_val in prices_in_text:
+            matches = []
+            for t in last_options:
+                pm = t.get("price_min") or t.get("price")
+                try:
+                    if pm and int(str(pm).replace(",", "").replace(" ", "")) == price_val:
+                        matches.append(t)
+                except (ValueError, TypeError):
+                    pass
+            if len(matches) == 1:
+                return {"tour": matches[0], "method": "price", "price": price_val}
+            if len(matches) > 1:
+                return {"ambiguous": True, "matches": matches, "price": price_val}
+
+    # Priority 4: name / city keyword — tokenize tour name and match
+    # Use 3-char minimum to avoid false positives
+    _TH_STOPWORDS = {"ทัวร์", "โปร", "ราคา", "บาท", "วัน", "คืน", "เที่ยว",
+                     "ครั้ง", "ท่าน", "คน", "พัก", "บิน", "สาย", "การ"}
+    for t in last_options:
+        name = t.get("name") or ""
+        # extract meaningful words (Thai 3+ chars or English 4+ chars)
+        th_words = [w for w in name.split() if len(w) >= 3 and w not in _TH_STOPWORDS]
+        for w in th_words:
+            if w.upper() in text_up or w in text:
+                return {"tour": t, "method": "name_keyword", "keyword": w}
+
+    return {}
+
 def extract_booking_fields_from_text(text: str, existing: dict) -> dict:
     """ดึงข้อมูล booking fields จากข้อความของ user
     คืน dict ที่มีเฉพาะ field ที่เจอในข้อความนี้"""
@@ -3044,6 +3106,89 @@ def process_message(sender_id: str, text: str):
             ctx["country"] = classifier_country
         if country_id and not ctx.get("country_id"):
             ctx["country_id"] = country_id
+
+        # ── Resolve by price/code/name (before index resolver) ─────────
+        # ลูกค้าพิมพ์ "สนใจตัว 8999" / "ap242807" / "VZ-TPE07-2" / ชื่อเมือง
+        if not ctx.get("selected_tour") and ctx.get("last_options"):
+            _lopt2 = ctx.get("last_options")
+            if isinstance(_lopt2, str):
+                try:
+                    import json as _json2; _lopt2 = _json2.loads(_lopt2)
+                except Exception:
+                    _lopt2 = []
+            if isinstance(_lopt2, list) and len(_lopt2) > 0:
+                _resolve = resolve_selected_tour_from_text(text, _lopt2)
+                if _resolve.get("ambiguous"):
+                    # หลายตัวราคาเดียวกัน → ถามยืนยัน
+                    _amb_matches = _resolve.get("matches", [])
+                    _amb_price   = _resolve.get("price", 0)
+                    _amb_count   = len(_amb_matches)
+                    _amb_nums    = " หรือ ".join(
+                        f"ตัวที่ {_lopt2.index(m)+1}" for m in _amb_matches if m in _lopt2
+                    ) or " หรือ ".join(
+                        f"ตัวที่ {i+1}" for i, m in enumerate(_lopt2) if m in _amb_matches
+                    )
+                    _amb_msg = (
+                        f"ราคา {_amb_price:,} บาท มี {_amb_count} โปรแกรมค่ะ "
+                        f"หมายถึง{_amb_nums}คะ? 😊"
+                    )
+                    send_message(sender_id, _amb_msg)
+                    save_to_history(sender_id, "user", text)
+                    save_to_history(sender_id, "assistant", _amb_msg)
+                    log_chat_event(sender_id, "price_ambiguous", text, action, lead_stage, ctx)
+                    return jsonify({"status": "ok"}), 200
+                elif _resolve.get("tour"):
+                    _rt = _resolve["tour"]
+                    _method = _resolve.get("method", "?")
+                    ctx["selected_tour"]           = _rt
+                    ctx["selected_tour_name"]      = _rt.get("name", "")
+                    ctx["selected_tour_url"]       = _rt.get("url", _rt.get("link", ""))
+                    ctx["selected_tour_code"]      = _rt.get("tour_code_real", "") or _rt.get("tour_code", "") or ""
+                    ctx["selected_tour_web_code"]  = _rt.get("web_code", "") or _rt.get("tour_code", "") or ""
+                    ctx["selected_tour_airline"]   = _rt.get("airline", "") or ""
+                    ctx["booking_context_locked"]  = True
+                    ctx["pre_booking_detail_sent"] = False
+                    if not ctx.get("booking_fields"):
+                        ctx["booking_fields"] = {}
+                    ctx["pending_action"] = "collect_booking_info"
+                    if lead_stage not in ("hot", "booking", "paid"):
+                        lead_stage = "hot"
+                        ctx["_lead_stage"] = "hot"
+                    logger.info(f"[SMART_SELECT] method={_method} → {ctx['selected_tour_name']} [{ctx['selected_tour_web_code']}]")
+                    # Build confirmation reply
+                    _st_name  = ctx["selected_tour_name"]
+                    _st_code  = ctx["selected_tour_code"]
+                    _st_wc    = ctx["selected_tour_web_code"]
+                    _st_price = _rt.get("price_min") or _rt.get("price", "")
+                    _st_dep   = _rt.get("departure_dates", "")
+                    _cname    = ctx.get("customer_name") or ""
+                    _name_str = f"คุณ {_cname} " if _cname else ""
+                    def _fmt_p(v):
+                        try: return f"{int(v):,}" if v else ""
+                        except: return str(v) if v else ""
+                    _confirm_lines = [
+                        f"ได้เลยค่ะ {_name_str}😊",
+                    ]
+                    if _method == "price":
+                        _pv = _resolve.get("price", 0)
+                        _confirm_lines.append(f"สนใจตัวราคา {_pv:,} บาทนี้ใช่ไหมคะ")
+                    _confirm_lines += [
+                        "",
+                        f"✈️ {_st_name}",
+                        f"🏷 รหัสทัวร์: {_st_code}" if _st_code else "",
+                        f"🔑 รหัสเว็บ: {_st_wc}" if _st_wc else "",
+                        f"💰 ราคาเริ่ม: {_fmt_p(_st_price)} บาท" if _st_price else "",
+                        f"📅 วันเดินทาง: {_st_dep}" if _st_dep else "",
+                        "",
+                        "สนใจเดินทางวันไหนคะ? 😊",
+                    ]
+                    _confirm_msg = "\n".join(l for l in _confirm_lines if l is not None)
+                    save_context(sender_id, ctx)
+                    send_message(sender_id, _confirm_msg)
+                    save_to_history(sender_id, "user", text)
+                    save_to_history(sender_id, "assistant", _confirm_msg)
+                    log_chat_event(sender_id, "smart_select", text, action, lead_stage, ctx)
+                    return jsonify({"status": "ok"}), 200
 
         # ── Resolve selected_option_index → set selected_tour ────────────
         if uses_previous and selected_option_idx and ctx.get("last_options"):
