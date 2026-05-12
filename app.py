@@ -2297,11 +2297,32 @@ def fetch_faimai_tours(country_filter: str = None) -> str:
     lines.append(f"\nดูทั้งหมด: https://www.tourfiremai.com/faimai")
     return "\n".join(lines)
 
-def parse_option_index_rule_based(text: str):
+def parse_option_index_rule_based(text: str, last_opts_count: int = 0):
     """Fast rule-based parser สำหรับ 'ตัวที่ 1', 'ตัวแรก', '1' ฯลฯ
-    Returns 1-indexed int or None — ไม่ต้องรอ Claude"""
+    Returns 1-indexed int or None — ไม่ต้องรอ Claude
+    last_opts_count: ใช้ deictic+single-option detection"""
     import re as _re
     t = text.strip()
+    # ── Deictic reference — "ตัวนี้"/"สนใจครับ" + 1 option → index 1 ──────
+    _DEICTIC_KW = {
+        "ตัวนี้", "โปรนี้", "อันนี้", "ตัวล่าสุด", "ตัวเมื่อกี้",
+        "ตัวดังกล่าว", "ตัวที่บอก", "ที่บอกมา", "ที่แนะนำ",
+        "ขอรายละเอียด", "รายละเอียดครับ", "รายละเอียดค่ะ",
+        "เอาตัวนี้", "เอาอันนี้", "โอเคตัวนี้",
+        "ตกลงตัวนี้", "เลือกตัวนี้", "จองตัวนี้",
+    }
+    _SHORT_AFFIRM = {
+        "สนใจครับ", "สนใจค่ะ", "สนใจนะคะ", "สนใจนะครับ",
+        "โอเค", "โอเคครับ", "โอเคค่ะ",
+        "ได้เลย", "ได้เลยครับ", "ได้เลยค่ะ",
+        "ตกลงครับ", "ตกลงค่ะ",
+        "เอาเลย", "เอาเลยครับ", "เอาเลยค่ะ",
+    }
+    if last_opts_count == 1:
+        if any(k in t for k in _DEICTIC_KW):
+            return 1
+        if t in _SHORT_AFFIRM or (len(t) <= 15 and any(k in t for k in _SHORT_AFFIRM)):
+            return 1
     # รูปแบบ: "ตัวที่ 1", "อันที่ 2", "ข้อที่ 3", "โปรแกรมที่ 1"
     m = _re.search(
         r'(?:ตัวที่|อันที่|ข้อที่|โปรแกรมที่|ตัวที[่]?|อันที[่]?|ข้อที[่]?)\s*([๑-๙\d]+)', t
@@ -2982,7 +3003,7 @@ def process_message(sender_id: str, text: str):
         if _last_opts_count > 0:
             logger.info(f"[MEMORY_LOAD] psid=...{sender_id[-6:]} last_options_count={_last_opts_count}")
         # ── Rule-based option selection (fast, before Claude call) ─────
-        _rule_option_idx = parse_option_index_rule_based(text) if _last_opts_count > 0 else None
+        _rule_option_idx = parse_option_index_rule_based(text, _last_opts_count) if _last_opts_count > 0 else None
         if _rule_option_idx:
             logger.info(f"[OPTION_SELECT] rule-based detected: index={_rule_option_idx} text={text[:40]!r}")
         action_data = decide_action(text, history, last_options_count=_last_opts_count)
@@ -3341,6 +3362,17 @@ def process_message(sender_id: str, text: str):
             should_search = False
             missing_field_to_ask = None
             logger.info(f"[FEE_REDIRECT] fee question + selected_tour → detail_pdf")
+
+        # ── Fix 5b: "ขอรายละเอียด"/"สนใจตัวนี้" + selected_tour → detail ───
+        _DETAIL_KW = {"ขอรายละเอียด", "รายละเอียดครับ", "รายละเอียดค่ะ",
+                      "รายละเอียดเพิ่ม", "ดูรายละเอียด", "อยากรู้รายละเอียด",
+                      "สนใจตัวนี้", "เอาตัวนี้", "สนใจโปรนี้", "ดูโปรนี้"}
+        _is_detail_req = any(k in text for k in _DETAIL_KW)
+        if _is_detail_req and ctx.get("selected_tour") and action not in ("detail_pdf", "handoff"):
+            action        = "detail_pdf"
+            should_search = False
+            missing_field_to_ask = None
+            logger.info(f"[DETAIL_REDIRECT] detail request + selected_tour → detail_pdf")
 
         # ── Booking State Machine — ถ้าล็อคโปรแกรมแล้ว ─────────────────────
         _booking_locked = ctx.get("booking_context_locked") and ctx.get("selected_tour")
