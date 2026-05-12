@@ -3023,6 +3023,7 @@ def process_message(sender_id: str, text: str):
                 ctx["booking_context_locked"] = True
                 if not ctx.get("booking_fields"):
                     ctx["booking_fields"] = {}
+                ctx["pre_booking_detail_sent"] = False  # reset on new selection
                 action = "detail_pdf"
                 should_search = False
                 missing_field_to_ask = None
@@ -3071,9 +3072,18 @@ def process_message(sender_id: str, text: str):
                 if not ctx.get("booking_fields"):
                     ctx["booking_fields"] = {}
                 ctx["pending_action"] = "collect_booking_info"
+                ctx["pre_booking_detail_sent"] = False  # reset on new selection
+
+        # ── Pre-check: fee keywords early (used by clear guard below) ──────
+        _FEE_KW_EARLY = {"ค่าทิป", "ทิปไกด์", "ทิปคนขับ", "มัดจำ", "ค่ามัดจำ",
+                         "วีซ่า", "ค่าวีซ่า", "พักเดี่ยว", "ค่าพักเดี่ยว",
+                         "จ่ายจริง", "ค่าใช้จ่าย", "ราคาจริง",
+                         "ราคารวมทิป", "รวมทิป", "ยอดจ่ายจริง", "ทิปรวม"}
+        _is_fee_q_early = any(k in text for k in _FEE_KW_EARLY)
 
         # ── clear_previous_options: ลูกค้าเปลี่ยนประเทศ ──────────────────
-        if clear_prev_options:
+        # ⚠️ ถ้าเป็น fee question ห้าม clear selected_tour — ลูกค้าถามต่อเนื่อง
+        if clear_prev_options and not (_is_fee_q_early and ctx.get("selected_tour")):
             ctx["last_options"] = []
             ctx["selected_tour"] = None
             ctx["selected_tour_name"] = None
@@ -3173,11 +3183,7 @@ def process_message(sender_id: str, text: str):
                 logger.info(f"[DEST_REPEAT] '{_text_clean[:30]}' matches ctx → force search")
 
         # ── Fix 5: Fee question + selected_tour → redirect to detail_pdf ────
-        # ป้องกัน booking SM ตัดสาย → fee question ต้อง detail_pdf เสมอ
-        _FEE_KW_EARLY = {"ค่าทิป", "ทิปไกด์", "ทิปคนขับ", "มัดจำ", "ค่ามัดจำ",
-                         "วีซ่า", "ค่าวีซ่า", "พักเดี่ยว", "ค่าพักเดี่ยว",
-                         "จ่ายจริง", "ค่าใช้จ่าย", "ราคาจริง"}
-        _is_fee_q_early = any(k in text for k in _FEE_KW_EARLY)
+        # _FEE_KW_EARLY + _is_fee_q_early defined above (before clear guard)
         if _is_fee_q_early and ctx.get("selected_tour"):
             action        = "detail_pdf"
             should_search = False
@@ -3221,7 +3227,67 @@ def process_message(sender_id: str, text: str):
                     action = "reply"
                     should_search = False
                     missing_field_to_ask = None
-                    # ตอบสั้นทันทีโดยไม่ผ่าน LLM
+                    # ── P1 Patch B: Pre-booking detail template ────────────
+                    # เมื่อรู้วันเดินทาง+จำนวนคนแล้ว แต่ยังไม่มีชื่อ/เบอร์
+                    # ส่ง summary template ก่อน แล้วค่อยถาม contact info
+                    _has_date = bool(_bf.get("departure_date"))
+                    _has_pax  = bool(_bf.get("pax"))
+                    _has_contact = bool(_bf.get("contact_name") or _bf.get("phone") or _bf.get("line_id"))
+                    _detail_sent = bool(ctx.get("pre_booking_detail_sent"))
+                    if _has_date and _has_pax and not _has_contact and not _detail_sent:
+                        _sel_t    = ctx.get("selected_tour") or {}
+                        _t_name   = ctx.get("selected_tour_name") or _sel_t.get("name", "")
+                        _t_code   = ctx.get("selected_tour_code") or _sel_t.get("tour_code_real", "") or ""
+                        _t_wc     = ctx.get("selected_tour_web_code") or _sel_t.get("web_code", "") or ""
+                        _t_price  = _sel_t.get("price_min") or _sel_t.get("price", "")
+                        _t_dep    = _bf.get("departure_date", "")
+                        _t_pax    = _bf.get("pax", "")
+                        _cust_name= ctx.get("customer_name") or ""
+                        _sel_wc2  = _t_wc or _sel_t.get("web_code", "")
+                        _db_fee2  = fetch_fee_from_db(_sel_wc2) if _sel_wc2 else {}
+                        def _fv2(f): return _db_fee2.get(f) or _sel_t.get(f)
+                        _tip2     = _fv2("tip_fee")
+                        _dep2     = _fv2("deposit")
+                        _single2  = _fv2("single_supplement")
+                        _visa_s2  = _fv2("visa_status") or _fv2("visa_fee")
+                        _name_str = f"คุณ {_cust_name} " if _cust_name else ""
+                        def _fmt_fee(v, unit=""):
+                            if isinstance(v, (int, float)) and v: return f"{v:,}{unit}"
+                            return str(v) if v else "กำลังเช็ก ⏳"
+                        _price_str = _fmt_fee(_t_price, " บาท/ท่าน") if _t_price else "กรุณาเช็กกับทีมงาน"
+                        _tip_str   = _fmt_fee(_tip2, " บาท/ท่าน")
+                        _dep_str   = _fmt_fee(_dep2, " บาท")
+                        _single_str= _fmt_fee(_single2, " บาท")
+                        _visa_str  = str(_visa_s2) if _visa_s2 else "กำลังเช็ก ⏳"
+                        _lines = [
+                            f"ได้เลยค่ะ {_name_str}😊",
+                            "สรุปรายละเอียดโปรแกรมที่เลือกนะคะ",
+                            "",
+                            f"✈️ {_t_name}",
+                            f"🏷 รหัสทัวร์: {_t_code}",
+                            f"🔑 รหัสเว็บ: {_t_wc}",
+                            f"📅 วันเดินทาง: {_t_dep}",
+                            f"👥 จำนวน: {_t_pax} ท่าน",
+                            f"💰 ราคาเริ่ม: {_price_str}",
+                            "",
+                            "รายละเอียดที่ต้องเช็กก่อนยืนยันจอง:",
+                            f"🤝 ค่าทิปไกด์: {_tip_str}",
+                            f"💳 มัดจำ: {_dep_str}",
+                            f"🛏️ พักเดี่ยว: {_single_str}",
+                            f"🛂 วีซ่า: {_visa_str}",
+                            "",
+                            f"เดี๋ยวส่งให้ทีมงานเช็กยอดจ่ายจริง + ที่นั่งรอบ {_t_dep} ให้นะคะ",
+                            "ขอชื่อผู้ติดต่อและเบอร์โทรไว้ให้ทีมงานยืนยันได้เลยค่ะ 😊",
+                        ]
+                        _detail_msg = "\n".join(_lines)
+                        ctx["pre_booking_detail_sent"] = True
+                        save_context(sender_id, ctx)
+                        send_message(sender_id, _detail_msg)
+                        save_to_history(sender_id, "user", text)
+                        save_to_history(sender_id, "assistant", _detail_msg)
+                        log_chat_event(sender_id, "pre_booking_detail", text, "booking_sm", lead_stage, ctx)
+                        return jsonify({"status": "ok"}), 200
+                    # ── ตอบสั้นทันทีโดยไม่ผ่าน LLM ────────────────────────
                     if _next_ask:
                         _ask_msg = _BOOKING_ASK.get(_next_ask, "รบกวนขอข้อมูลเพิ่มเติมด้วยนะคะ 🙏")
                         send_message(sender_id, _ask_msg)
@@ -3362,7 +3428,9 @@ def process_message(sender_id: str, text: str):
         # found/partial → ตอบสั้นจาก DB, not_found/error/null → handoff + pause
         _FEE_KEYWORDS = {"ค่าทิป", "ทิปไกด์", "ทิปคนขับ", "มัดจำ", "ค่ามัดจำ",
                          "วีซ่า", "ค่าวีซ่า", "พักเดี่ยว", "ค่าพักเดี่ยว",
-                         "จ่ายจริง", "ราคาจริง", "จ่ายทั้งหมด"}
+                         "จ่ายจริง", "ราคาจริง", "จ่ายทั้งหมด",
+                         "ราคารวมทิป", "รวมทิป", "ยอดจ่ายจริง", "ทิปรวม",
+                         "ค่าใช้จ่ายทั้งหมด", "ราคารวมทั้งหมด"}
         _is_fee_question = any(k in text for k in _FEE_KEYWORDS)
         if _is_fee_question and ctx.get("selected_tour") and not is_handoff:
             _sel          = ctx.get("selected_tour") or {}
