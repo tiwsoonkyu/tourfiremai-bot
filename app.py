@@ -3365,7 +3365,7 @@ def process_message(sender_id: str, text: str):
 
         # ── Resolve by price/code/name (before index resolver) ─────────
         # ลูกค้าพิมพ์ "สนใจตัว 8999" / "ap242807" / "VZ-TPE07-2" / ชื่อเมือง
-        if not ctx.get("selected_tour") and ctx.get("last_options"):
+        if not ctx.get("selected_tour") and ctx.get("last_options") and not _direct_country_fill:
             _lopt2 = ctx.get("last_options")
             if isinstance(_lopt2, str):
                 try:
@@ -3392,7 +3392,7 @@ def process_message(sender_id: str, text: str):
                     save_to_history(sender_id, "user", text)
                     save_to_history(sender_id, "assistant", _amb_msg)
                     log_chat_event(sender_id, "price_ambiguous", text, action, lead_stage, ctx)
-                    return jsonify({"status": "ok"}), 200
+                    return
                 elif _resolve.get("tour"):
                     _rt = _resolve["tour"]
                     _method = _resolve.get("method", "?")
@@ -3444,7 +3444,7 @@ def process_message(sender_id: str, text: str):
                     save_to_history(sender_id, "user", text)
                     save_to_history(sender_id, "assistant", _confirm_msg)
                     log_chat_event(sender_id, "smart_select", text, action, lead_stage, ctx)
-                    return jsonify({"status": "ok"}), 200
+                    return
 
         # ── Resolve selected_option_index → set selected_tour ────────────
         if uses_previous and selected_option_idx and ctx.get("last_options"):
@@ -3698,7 +3698,7 @@ def process_message(sender_id: str, text: str):
                         save_to_history(sender_id, "user", text)
                         save_to_history(sender_id, "assistant", _detail_msg)
                         log_chat_event(sender_id, "pre_booking_detail", text, "booking_sm", lead_stage, ctx)
-                        return jsonify({"status": "ok"}), 200
+                        return
                     # ── ตอบสั้นทันทีโดยไม่ผ่าน LLM ────────────────────────
                     if _next_ask:
                         _ask_msg = _BOOKING_ASK.get(_next_ask, "รบกวนขอข้อมูลเพิ่มเติมด้วยนะคะ 🙏")
@@ -3706,7 +3706,7 @@ def process_message(sender_id: str, text: str):
                         save_to_history(sender_id, "user", text)
                         save_to_history(sender_id, "assistant", _ask_msg)
                         log_chat_event(sender_id, "booking_field_ask", text, "booking_sm", lead_stage, ctx)
-                        return jsonify({"status": "ok"}), 200
+                        return
                 elif action in ("search", "flash_sale"):
                     # มีข้อมูลใหม่ → อย่า re-search แต่ให้ LLM ตอบ
                     action = "reply"
@@ -3910,7 +3910,7 @@ def process_message(sender_id: str, text: str):
                 save_to_history(sender_id, "user", text)
                 save_to_history(sender_id, "assistant", _fee_reply)
                 log_chat_event(sender_id, "fee_answered_db", text, action, lead_stage, ctx)
-                return jsonify({"status": "ok"}), 200
+                return
 
             # ── CASE 2: tour_data มีข้อมูล fee → ปล่อย generate_response() จัดการ ─
             if _has_fee_in_tour_data:
@@ -3938,7 +3938,7 @@ def process_message(sender_id: str, text: str):
                 save_to_history(sender_id, "user", text)
                 save_to_history(sender_id, "assistant", _fee_short)
                 log_chat_event(sender_id, "fee_handoff", text, action, lead_stage, ctx)
-                return jsonify({"status": "ok"}), 200
+                return
 
         # ── Departure month filter ────────────────────────────────────────────
         if action == "departure_filter":
@@ -4138,7 +4138,7 @@ def process_message(sender_id: str, text: str):
                            needs_review=True, review_reason="fee_detail_missing")
             save_context(sender_id, ctx)
             send_message(sender_id, _fee_review_reply)
-            return jsonify({"status": "ok"}), 200
+            return
 
         # Generate response (with context injected into system prompt)
         reply = generate_response(text, history, tour_data, is_handoff, ctx=ctx, action=action, missing_field_to_ask=missing_field_to_ask)
