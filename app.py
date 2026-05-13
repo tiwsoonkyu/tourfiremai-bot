@@ -220,6 +220,15 @@ _EMPTY_CTX = {
     # ── Booking State Machine ─────────────────────────────────────────────
     "booking_context_locked": False,   # True = ล็อคโปรแกรมแล้ว ห้ามเปลี่ยนจน user พูดชัด
     "booking_fields": {},              # {departure_date, pax, contact_name, phone, line_id}
+    # ── Structured Intent Memory (P1) ─────────────────────────────────────
+    "route_preference": None,          # e.g. "บินตรง", "แวะ"
+    "airline_preference": None,        # e.g. "TG", "FD", "VZ" — IATA code
+    "airline_type_preference": None,   # "full_service" | "low_cost" | "any"
+    "hotel_preference": None,          # "5_star", "4_star", "budget"
+    "trip_style": None,                # "luxury", "backpacker", "family", "honeymoon"
+    "request_type": None,              # "upgrade_options" | "downgrade_options" | "airline_filter" | "normal_search"
+    "last_search_price_min": None,     # lowest price in last offered options
+    "last_search_price_max": None,     # highest price in last offered options
 }
 
 def get_context(psid: str) -> dict:
@@ -1422,7 +1431,9 @@ def _update_tour_code_real_bg(url: str, web_code: str, tour_code_real: str):
 
 def fetch_tours_from_db(country_id: str, city_hint: str = None,
                         budget_max: int = None,
-                        search_mode: str = "normal") -> list:
+                        search_mode: str = "normal",
+                        airline_filter: str = None,
+                        price_min_floor: int = None) -> list:
     """Query Supabase `tours` table.
     Returns list of dicts: name, url, tour_code, price_min, airline, departure_dates
     Filters by city, budget, and/or search_mode (normal|faimai|any).
@@ -1447,6 +1458,15 @@ def fetch_tours_from_db(country_id: str, city_hint: str = None,
             params["name"] = f"ilike.*{city_hint}*"
         if budget_max:
             params["price_min"] = f"lte.{budget_max}"
+        # Airline filter (exact match on airline column)
+        if airline_filter:
+            params["airline"] = f"ilike.*{airline_filter}*"
+        # Price floor for upgrade requests: only show tours >= floor price
+        # Supabase doesn't support two conditions on same column in query params dict,
+        # so we use price_min_floor as a separate param key "price_min" only when
+        # no budget_max is set (otherwise post-filter handles it)
+        if price_min_floor and price_min_floor > 0 and not budget_max:
+            params["price_min"] = f"gte.{int(price_min_floor)}"
         headers = {
             "apikey":        SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -3523,6 +3543,131 @@ def _build_ambiguous_msg(matches: list) -> str:
     return "\n".join(_lines)
 
 
+
+def _detect_intent_modifiers(text: str) -> dict:
+    """
+    Detect upgrade/downgrade intent, airline preference, and trip style
+    from user message. Returns a dict of fields to update in ctx.
+    All patterns are Thai + English mixed.
+    """
+    result = {}
+    t = text.strip().lower()
+
+    # ── Upgrade intent ────────────────────────────────────────────────────
+    _upgrade_patterns = [
+        "แพงกว่า", "แพงขึ้น", "ดีกว่า", "อัปเกรด", "upgrade",
+        "premium", "luxury", "ดีๆ", "full service", "fullservice",
+        "โรงแรมดี", "โรงแรมหรู", "5 ดาว", "5ดาว", "ห้าดาว",
+        "บินตรง", "nonstop", "non stop", "ไม่แวะ",
+        "ระดับสูงกว่า", "ระดับบน", "ขอดีขึ้น", "ขอแพงขึ้น",
+        "เพิ่มงบ", "งบเพิ่ม", "งบขึ้น",
+    ]
+    if any(p in t for p in _upgrade_patterns):
+        result["request_type"] = "upgrade_options"
+
+    # ── Downgrade intent ──────────────────────────────────────────────────
+    _downgrade_patterns = [
+        "ถูกกว่า", "ถูกกว่านี้", "ราคาถูก", "ประหยัด", "economy",
+        "ราคาต่ำกว่า", "ราคาน้อยกว่า", "ราคาลดลง", "ลดราคา",
+        "budget", "low cost", "lowcost", "ราคาประหยัด",
+        "ขอถูกหน่อย", "ขอถูกกว่า", "ขอลดลง", "ลดงบ", "งบน้อย",
+    ]
+    if any(p in t for p in _downgrade_patterns):
+        result["request_type"] = "downgrade_options"
+
+    # ── Airline preference ────────────────────────────────────────────────
+    _airline_map = [
+        (["การบินไทย", "thai airways", "thai air", " tg ", "สายการบินไทย", "tg "], "TG", "full_service"),
+        (["บางกอกแอร์เวย์", "bangkok airways", " pg ", "บางกอกแอร์"], "PG", "full_service"),
+        (["thai smile", "ไทยสมายล์", " we ", "thai smile airways"], "WE", "full_service"),
+        (["air asia", "แอร์เอเชีย", "airasia", " fd ", " ak "], "FD", "low_cost"),
+        (["nok air", "นกแอร์", " dd "], "DD", "low_cost"),
+        (["vietjet", "เวียตเจ็ท", "เวียดเจ็ต", " vz "], "VZ", "low_cost"),
+        (["thai lion", "ไทยไลออน", "lion air thai", " sl "], "SL", "low_cost"),
+        (["scoot", "สกู๊ต", " tr "], "TR", "low_cost"),
+        (["starlux", "สตาร์ลักซ์", " jx "], "JX", "full_service"),
+        (["jin air", "จินแอร์", " lj "], "LJ", "low_cost"),
+        (["asiana", "อาซีอาน่า", " oz "], "OZ", "full_service"),
+        (["korean air", "โคเรียนแอร์", " ke "], "KE", "full_service"),
+        (["eva air", "อีวาแอร์", " br "], "BR", "full_service"),
+        (["cathay", "คาเธย์", " cx "], "CX", "full_service"),
+        (["china airlines", " ci "], "CI", "full_service"),
+        (["china eastern", " mu "], "MU", "full_service"),
+        (["china southern", " cz "], "CZ", "full_service"),
+    ]
+    _t_padded = f" {t} "  # pad for word boundary matching
+    for _patterns, _code, _atype in _airline_map:
+        if any(p in _t_padded for p in _patterns):
+            result["airline_preference"] = _code
+            result["airline_type_preference"] = _atype
+            # Airline mention without explicit upgrade = still airline_filter intent
+            if "request_type" not in result:
+                result["request_type"] = "airline_filter"
+            break
+
+    # ── Full service generic (without specific airline) ───────────────────
+    _full_service_patterns = ["full service", "fullservice", "ฟูลเซอร์วิส", "บริการเต็มรูปแบบ"]
+    if any(p in t for p in _full_service_patterns) and "airline_preference" not in result:
+        result["airline_type_preference"] = "full_service"
+        if "request_type" not in result:
+            result["request_type"] = "upgrade_options"
+
+    # ── Hotel preference ──────────────────────────────────────────────────
+    if any(p in t for p in ["5 ดาว", "5ดาว", "ห้าดาว", "โรงแรมหรู", "luxury hotel"]):
+        result["hotel_preference"] = "5_star"
+    elif any(p in t for p in ["4 ดาว", "4ดาว", "สี่ดาว", "โรงแรมดี"]):
+        result["hotel_preference"] = "4_star"
+
+    # ── Trip style ────────────────────────────────────────────────────────
+    if any(p in t for p in ["ฮันนีมูน", "honeymoon", "คู่รัก", "โรแมนติก"]):
+        result["trip_style"] = "honeymoon"
+    elif any(p in t for p in ["ครอบครัว", "family", "เด็ก", "พ่อแม่ลูก"]):
+        result["trip_style"] = "family"
+    elif any(p in t for p in ["backpack", "แบกเป้", "สายเที่ยว", "งบน้อย"]):
+        result["trip_style"] = "backpacker"
+
+    return result
+
+
+def _build_airline_hint(ctx: dict, airline_found: bool) -> str:
+    """Build airline preference instruction for Claude system prompt."""
+    _pref = ctx.get("airline_preference")
+    _type_pref = ctx.get("airline_type_preference")
+
+    if not _pref and not _type_pref:
+        return ""
+
+    _airline_names = {
+        "TG": "การบินไทย", "PG": "บางกอกแอร์เวย์", "WE": "ไทยสมายล์",
+        "FD": "แอร์เอเชีย", "DD": "นกแอร์", "VZ": "เวียตเจ็ท",
+        "SL": "ไทยไลออนแอร์", "TR": "สกู๊ต", "JX": "Starlux",
+        "OZ": "Asiana", "KE": "Korean Air", "BR": "EVA Air",
+        "CX": "Cathay Pacific", "CI": "China Airlines",
+        "MU": "China Eastern", "CZ": "China Southern",
+    }
+
+    if _pref and not airline_found:
+        _name = _airline_names.get(_pref, _pref)
+        if _type_pref == "full_service":
+            return (
+                f"\n[หมายเหตุ: ลูกค้าต้องการ {_name} ({_pref}) แต่ไม่พบในผลลัพธ์ปัจจุบัน "
+                f"กรุณาแจ้งอย่างสุภาพว่าไม่พบโปรแกรม{_name}ในระบบตอนนี้ "
+                f"แล้วเสนอสายการบิน full service อื่นที่มีแทน ดูจาก airline ที่มีในรายการ "
+                f"ห้ามบอกว่าไม่มีทัวร์เลย — ต้องเสนอทางเลือกที่ใกล้เคียงเสมอ]"
+            )
+        else:
+            return (
+                f"\n[หมายเหตุ: ลูกค้าต้องการ {_name} ({_pref}) แต่ไม่พบในผลลัพธ์ "
+                f"กรุณาแจ้งสุภาพแล้วเสนอ alternative airlines ที่มีในรายการ]"
+            )
+    elif _type_pref == "full_service" and airline_found:
+        return "\n[ลูกค้าต้องการสายการบิน full service — เน้นความสะดวกสบายและบริการบนเครื่อง]"
+    elif _pref and airline_found:
+        _name = _airline_names.get(_pref, _pref)
+        return f"\n[ลูกค้าต้องการ {_name} — แสดงผลที่กรองแล้ว]"
+    return ""
+
+
 def process_message(sender_id: str, text: str):
     """Main logic — รันใน background thread"""
     # Fix 5: strip [REPLY_TO_BOT] hint injected by webhook but keep it for LLM context
@@ -3642,7 +3787,44 @@ def process_message(sender_id: str, text: str):
                 _direct_country_fill = True
                 logger.info(f"[COUNTRY_NORM] '{text[:20]}' → '{_norm_cname}' (id={_norm_cid}) budget={ctx.get('budget_per_person')}")
 
-        action_data = decide_action(text, history, last_options_count=_last_opts_count)
+        # ── Structured Intent Memory: detect modifiers ─────────────────
+        _intent_mods = _detect_intent_modifiers(text)
+        if _intent_mods.get("request_type"):
+            ctx["request_type"] = _intent_mods["request_type"]
+        if _intent_mods.get("airline_preference"):
+            ctx["airline_preference"] = _intent_mods["airline_preference"]
+            ctx["airline_type_preference"] = _intent_mods.get("airline_type_preference", "any")
+        if _intent_mods.get("hotel_preference"):
+            ctx["hotel_preference"] = _intent_mods["hotel_preference"]
+        if _intent_mods.get("trip_style"):
+            ctx["trip_style"] = _intent_mods["trip_style"]
+        logger.info(f"[INTENT_MODS] {_intent_mods}")
+        # ──────────────────────────────────────────────────────────────
+
+        _airline_hint = ""  # may be populated in search path below
+        # ── Smart action override: upgrade/downgrade with known country ────
+        _skip_llm_classify = False
+        if ctx.get("request_type") in ("upgrade_options", "downgrade_options", "airline_filter")                 and ctx.get("country_id"):
+            action = "search"
+            _skip_llm_classify = True
+            logger.info("INTENT_OVERRIDE action=search request_type=%s country_id=%s",
+                        ctx.get("request_type"), ctx.get("country_id"))
+        # ─────────────────────────────────────────────────────────────────────
+
+        if _skip_llm_classify:
+            action_data = {
+                "action": "search",
+                "should_search": True,
+                "missing_field_to_ask": None,
+                "country_id": ctx.get("country_id"),
+                "country_name": ctx.get("country_name") or ctx.get("country"),
+                "city": ctx.get("city_hint"),
+                "lead_stage": ctx.get("lead_stage", "cold"),
+                "uses_previous_option": False,
+                "clear_previous_options": False,
+            }
+        else:
+            action_data = decide_action(text, history, last_options_count=_last_opts_count)
         action               = action_data.get("action", "reply")
         country_id           = action_data.get("country_id")
         selected_option_idx  = action_data.get("selected_option_index")
@@ -3675,6 +3857,16 @@ def process_message(sender_id: str, text: str):
             # IMPORTANT: never wipe budget when filling country
             clear_prev_options = False
             logger.info(f"[COUNTRY_NORM] Override → action=search country_id={country_id} budget={ctx.get('budget_per_person')} clear_prev=False")
+
+        # ── Country retention guard: never ask country if we already know it ──
+        if action in ("ask_country", "ASK_COUNTRY", "ask_destination", "reply")                 and missing_field_to_ask == "country"                 and ctx.get("country_id"):
+            logger.info("COUNTRY_RETENTION: already know country_id=%s, overriding action to search", ctx.get("country_id"))
+            action = "search"
+            should_search = True
+            missing_field_to_ask = None
+            if not country_id:
+                country_id = str(ctx.get("country_id", ""))
+        # ─────────────────────────────────────────────────────────────────────
 
         # ── SOONEST OVERRIDE — rule-based safety net ─────────────────────────
         # ถ้า user พิมพ์ "เร็วๆนี้" และรู้ประเทศจาก action_data หรือ context
@@ -4224,6 +4416,64 @@ def process_message(sender_id: str, text: str):
                     tour_meta = sorted(tour_meta, key=_earliest_departure_sort_key)
                     logger.info(f"[SOONEST] sorted {len(tour_meta)} tours by nearest departure")
                 # อัพเดท last_options ใน Redis ทันที — ไม่รอ background thread
+                # ── Apply upgrade/downgrade/airline filter ──────────────────
+                _req_type = ctx.get("request_type")
+                _airline_pref = ctx.get("airline_preference")
+                _airline_found = False
+
+                if _req_type in ("upgrade_options", "airline_filter") and tour_meta:
+                    _airline_filtered = []
+                    if _airline_pref:
+                        _airline_filtered = [t for t in tour_meta
+                                             if _airline_pref.upper() in (t.get("airline") or "").upper()]
+                    if _airline_filtered:
+                        tour_meta = _airline_filtered
+                        _airline_found = True
+                        logger.info("AIRLINE_FILTER applied airline=%s found=%d", _airline_pref, len(tour_meta))
+                    elif _airline_pref:
+                        # Fallback: full service alternatives
+                        _type_pref = ctx.get("airline_type_preference", "any")
+                        if _type_pref == "full_service":
+                            _fs_codes = {"TG", "PG", "WE", "BR", "CX", "KE", "OZ", "CI", "JX", "MU", "CZ"}
+                            _fs_tours = [t for t in tour_meta
+                                         if (t.get("airline") or "").upper().split("/")[0].strip() in _fs_codes]
+                            if _fs_tours:
+                                tour_meta = _fs_tours
+                                logger.info("AIRLINE_FILTER fallback full_service found=%d", len(tour_meta))
+                        logger.info("AIRLINE_FILTER pref=%s not found — showing alternatives", _airline_pref)
+                    else:
+                        _airline_found = True  # no specific airline requested
+
+                if _req_type == "downgrade_options" and tour_meta:
+                    tour_meta = sorted(tour_meta, key=lambda t: (t.get("price_min") or 999999))
+                    logger.info("DOWNGRADE_SORT applied — cheapest first, count=%d", len(tour_meta))
+
+                # Price floor post-filter for upgrade (remove tours below last max)
+                if _req_type == "upgrade_options" and tour_meta:
+                    _last_max = ctx.get("last_search_price_max")
+                    if _last_max:
+                        _price_floor = int(_last_max * 1.05)
+                        _above_floor = [t for t in tour_meta
+                                        if (t.get("price_min") or t.get("promo_price") or 0) >= _price_floor]
+                        if _above_floor:
+                            tour_meta = _above_floor
+                            logger.info("UPGRADE_FLOOR applied floor=%d kept=%d", _price_floor, len(tour_meta))
+
+                # Build airline hint for Claude (stored in outer scope _airline_hint)
+                _airline_hint = _build_airline_hint(ctx, _airline_found)
+
+                # Reset request_type after applied (keep airline_preference persistent)
+                ctx["request_type"] = None
+                # ─────────────────────────────────────────────────────────────
+
+                if tour_meta:
+                    # Save price range for future upgrade/downgrade reference
+                    _prices = [t.get("price_min") or t.get("promo_price") or 0
+                               for t in tour_meta if t.get("price_min") or t.get("promo_price")]
+                    if _prices:
+                        ctx["last_search_price_min"] = min(_prices)
+                        ctx["last_search_price_max"] = max(_prices)
+
                 if tour_meta:
                     ctx["last_options"] = tour_meta
                     # TOUR STATE ENGINE: save offer snapshot for deterministic future selection
@@ -4648,6 +4898,9 @@ def process_message(sender_id: str, text: str):
             return
 
         # Generate response (with context injected into system prompt)
+        # Append airline hint to tour_data so Claude knows about preference
+        if _airline_hint:
+            tour_data = (tour_data or "") + _airline_hint
         reply = generate_response(text, history, tour_data, is_handoff, ctx=ctx, action=action, missing_field_to_ask=missing_field_to_ask)
 
         # Save AI reply
