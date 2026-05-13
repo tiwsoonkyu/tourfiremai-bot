@@ -3113,14 +3113,151 @@ def _offer_snapshot_redis_key(psid: str) -> str:
     return f"tourfiremai:offer_snapshot:{psid}:latest"
 
 
-def save_offer_snapshot(psid: str, options_list: list, search_context: dict) -> str:
-    """Save offer snapshot to Redis + Supabase. Returns offer_set_id."""
+def _rebuild_snapshot_from_history(psid: str) -> dict:
+    """
+    Emergency fallback: rebuild offer_snapshot by parsing the last assistant
+    message that contained a Top-3 tour listing from conversation history.
+    Parses: web_code (ap...), tour index markers, prices, URLs from raw text.
+    """
+    try:
+        history = get_history(psid)
+        if not history:
+            logger.warning("OFFER_SNAPSHOT_REBUILD_FAIL psid=%s reason=no_history", psid)
+            return None
+
+        # Iterate newest-first, look for assistant messages with Top-3 tour listing
+        for msg in reversed(history):
+            if msg.get("role") != "assistant":
+                continue
+            content = msg.get("content", "")
+            # Check for tour listing markers
+            has_tour_list = any(m in content for m in [
+                "ตัวที่ 1", "ตัวที่ 2", "ตัวที่ 3",
+                "รหัสเว็บ: ap", "/tour/ap",
+            ]) or bool(re.search(r'\bap\d{5,8}\b', content))
+
+            if not has_tour_list:
+                continue
+
+            # Parse each "ตัวที่ N" block
+            options_with_idx = []
+            # Split by "ตัวที่ N" markers
+            blocks = re.split(r'(?=ตัวที่\s*[123๑๒๓])', content)
+            for block in blocks:
+                m_idx = re.search(r'ตัวที่\s*([123๑๒๓])', block)
+                if not m_idx:
+                    continue
+                idx_char = m_idx.group(1)
+                idx_map = {'1': 1, '2': 2, '3': 3, '๑': 1, '๒': 2, '๓': 3}
+                offer_idx = idx_map.get(idx_char, 0)
+                if offer_idx == 0:
+                    continue
+
+                # Extract web_code
+                web_code = ""
+                m_wc = re.search(r'(?:รหัสเว็บ:\s*|/tour/)(ap\d{5,8})', block)
+                if m_wc:
+                    web_code = m_wc.group(1)
+                else:
+                    m_wc2 = re.search(r'\b(ap\d{5,8})\b', block)
+                    if m_wc2:
+                        web_code = m_wc2.group(1)
+
+                # Extract tour_code_real
+                tour_code_real = ""
+                m_tc = re.search(r'รหัสทัวร์:\s*([A-Z0-9\-]{4,20})', block)
+                if m_tc:
+                    tour_code_real = m_tc.group(1)
+
+                # Extract name (first line after "ตัวที่ N" marker)
+                name = ""
+                m_name = re.search(r'ตัวที่\s*[123๑๒๓][:\s]+(.+?)(?:\n|$)', block)
+                if m_name:
+                    name = m_name.group(1).strip().rstrip('\u200b').strip()
+
+                # Extract price
+                price_min = 0
+                m_price = re.search(r'(?:ราคา|เริ่ม)\D*?([\d,]+)\s*บาท', block)
+                if m_price:
+                    try:
+                        price_min = int(m_price.group(1).replace(',', ''))
+                    except ValueError:
+                        pass
+
+                # Extract airline
+                airline = ""
+                m_al = re.search(r'สายการบิน:\s*([A-Z]{2,3})', block)
+                if m_al:
+                    airline = m_al.group(1)
+
+                # Extract URL
+                url = ""
+                m_url = re.search(r'(https?://[^\s]+)', block)
+                if m_url:
+                    url = m_url.group(1).rstrip(')')
+
+                if web_code or name or price_min:
+                    options_with_idx.append({
+                        "_offer_index": offer_idx,
+                        "web_code": web_code,
+                        "tour_code_real": tour_code_real,
+                        "name": name,
+                        "price_min": price_min,
+                        "airline": airline,
+                        "url": url,
+                    })
+
+            if not options_with_idx:
+                continue
+
+            # Sort by _offer_index
+            options_with_idx.sort(key=lambda x: x["_offer_index"])
+
+            import uuid as _uuid2
+            rebuilt_snapshot = {
+                "psid": psid,
+                "offer_set_id": str(_uuid2.uuid4()),
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "expires_at": (datetime.utcnow() + timedelta(days=30)).isoformat() + "Z",
+                "search_context": {"rebuilt_from_history": True},
+                "options": options_with_idx,
+            }
+
+            # Cache rebuilt snapshot in Redis for future loads
+            if _redis:
+                try:
+                    _redis.setex(
+                        _offer_snapshot_redis_key(psid),
+                        REDIS_TTL_SEC,
+                        json.dumps(rebuilt_snapshot, ensure_ascii=False),
+                    )
+                    logger.info("OFFER_SNAPSHOT_REBUILD_CACHED psid=%s options=%d", psid, len(options_with_idx))
+                except Exception as _ce:
+                    logger.warning("OFFER_SNAPSHOT_REBUILD_CACHE_FAIL psid=%s error=%s", psid, _ce)
+
+            logger.info("OFFER_SNAPSHOT_LOAD source=rebuilt_history psid=%s options=%d", psid, len(options_with_idx))
+            return rebuilt_snapshot
+
+    except Exception as _re:
+        logger.error("OFFER_SNAPSHOT_REBUILD_ERROR psid=%s error=%s", psid, _re)
+
+    return None
+
+
+def save_offer_snapshot(psid: str, options_list: list, search_context: dict) -> tuple:
+    """Save offer snapshot to Redis + Supabase.
+    Returns (offer_set_id, redis_ok, supabase_ok) tuple."""
     import uuid as _uuid
     offer_set_id = str(_uuid.uuid4())
+    redis_ok = False
+    supabase_ok = False
+
+    opts = options_list[:3]
+    logger.info("OFFER_SNAPSHOT_BUILD count=%d psid=%s offer_set_id=%s", len(opts), psid, offer_set_id)
 
     # Add 1-based index to each option (max 3)
     options_with_idx = []
-    for i, opt in enumerate(options_list[:3]):
+    for i, opt in enumerate(opts):
         o = dict(opt)
         o["_offer_index"] = i + 1
         options_with_idx.append(o)
@@ -3135,21 +3272,26 @@ def save_offer_snapshot(psid: str, options_list: list, search_context: dict) -> 
     }
 
     # Save to Redis
-    try:
-        redis_client.setex(
-            _offer_snapshot_redis_key(psid),
-            REDIS_TTL_SEC,
-            json.dumps(snapshot, ensure_ascii=False),
-        )
-    except Exception as _e:
-        logger.error(f"save_offer_snapshot Redis error: {_e}")
+    if _redis:
+        try:
+            _redis.setex(
+                _offer_snapshot_redis_key(psid),
+                REDIS_TTL_SEC,
+                json.dumps(snapshot, ensure_ascii=False),
+            )
+            redis_ok = True
+            logger.info("OFFER_SNAPSHOT_REDIS_SAVE success psid=%s", psid)
+        except Exception as _e:
+            logger.warning("OFFER_SNAPSHOT_REDIS_SAVE fail psid=%s error=%s", psid, _e)
+    else:
+        logger.warning("OFFER_SNAPSHOT_REDIS_SAVE skip psid=%s reason=no_redis_client", psid)
 
     # Save to Supabase (fire-and-forget)
     try:
         _supa_url = os.environ.get("SUPABASE_URL", "")
         _supa_key = os.environ.get("SUPABASE_KEY", "")
         if _supa_url and _supa_key:
-            requests.post(
+            _resp = requests.post(
                 f"{_supa_url}/rest/v1/offer_snapshots",
                 headers={
                     "apikey": _supa_key,
@@ -3160,21 +3302,33 @@ def save_offer_snapshot(psid: str, options_list: list, search_context: dict) -> 
                 json=snapshot,
                 timeout=5,
             )
+            if _resp.status_code in (200, 201):
+                supabase_ok = True
+                logger.info("OFFER_SNAPSHOT_SUPABASE_SAVE success psid=%s", psid)
+            else:
+                logger.warning("OFFER_SNAPSHOT_SUPABASE_SAVE fail psid=%s status=%d body=%s",
+                               psid, _resp.status_code, _resp.text[:200])
+        else:
+            logger.warning("OFFER_SNAPSHOT_SUPABASE_SAVE skip psid=%s reason=no_supabase_config", psid)
     except Exception as _e:
-        logger.error(f"save_offer_snapshot Supabase error: {_e}")
+        logger.warning("OFFER_SNAPSHOT_SUPABASE_SAVE fail psid=%s error=%s", psid, _e)
 
-    return offer_set_id
+    return offer_set_id, redis_ok, supabase_ok
 
 
 def load_offer_snapshot(psid: str) -> dict:
-    """Load latest offer snapshot from Redis (fallback: Supabase)."""
+    """Load latest offer snapshot from Redis (fallback: Supabase, then history rebuild)."""
     # Try Redis first
-    try:
-        raw = redis_client.get(_offer_snapshot_redis_key(psid))
-        if raw:
-            return json.loads(raw)
-    except Exception as _e:
-        logger.error(f"load_offer_snapshot Redis error: {_e}")
+    if _redis:
+        try:
+            raw = _redis.get(_offer_snapshot_redis_key(psid))
+            if raw:
+                logger.info("OFFER_SNAPSHOT_LOAD source=redis psid=%s", psid)
+                return json.loads(raw)
+        except Exception as _e:
+            logger.error("load_offer_snapshot Redis error psid=%s error=%s", psid, _e)
+    else:
+        logger.warning("OFFER_SNAPSHOT_LOAD skip_redis psid=%s reason=no_redis_client", psid)
 
     # Fallback to Supabase
     try:
@@ -3198,10 +3352,18 @@ def load_offer_snapshot(psid: str) -> dict:
             )
             data = resp.json()
             if data and isinstance(data, list) and len(data) > 0:
+                logger.info("OFFER_SNAPSHOT_LOAD source=supabase psid=%s", psid)
                 return data[0]
     except Exception as _e:
-        logger.error(f"load_offer_snapshot Supabase fallback error: {_e}")
+        logger.error("load_offer_snapshot Supabase fallback error psid=%s error=%s", psid, _e)
 
+    # Final fallback: rebuild from conversation history
+    logger.warning("OFFER_SNAPSHOT_LOAD miss psid=%s — trying history rebuild", psid)
+    rebuilt = _rebuild_snapshot_from_history(psid)
+    if rebuilt:
+        return rebuilt
+
+    logger.warning("OFFER_SNAPSHOT_LOAD miss psid=%s — no snapshot found anywhere", psid)
     return None
 
 
@@ -3214,7 +3376,9 @@ def resolve_tour_selection(text: str, snapshot: dict) -> dict:
       {"ambiguous": True, "matches": [...]}              — multiple matches
       {"tour": None, "match_type": None}                 — no match
     """
+    logger.debug("OFFER_SELECTION_ATTEMPT attempting text='%s'", text[:50])
     if not snapshot or not snapshot.get("options"):
+        logger.info("OFFER_SELECTION_FAILED reason=no_snapshot text='%s'", text[:50])
         return {"tour": None, "match_type": None}
 
     options = snapshot["options"]
@@ -3296,6 +3460,7 @@ def resolve_tour_selection(text: str, snapshot: dict) -> dict:
             "matches": [{"index": _i, "tour": _t} for _i, _t in _name_matches],
         }
 
+    logger.info("OFFER_SELECTION_FAILED reason=no_match text='%s'", text[:50])
     return {"tour": None, "match_type": None}
 
 
@@ -3638,6 +3803,7 @@ def process_message(sender_id: str, text: str):
                 send_message(sender_id, _amb_msg)
                 return
             elif _resolution.get("tour"):
+                logger.info("STATE_ENGINE_FIRED psid=%s resolution_type=%s", sender_id, _resolution.get("match_type"))
                 _sel = _resolution["tour"]
                 # Lock selection into context
                 ctx["selected_tour"] = _sel
@@ -3653,6 +3819,8 @@ def process_message(sender_id: str, text: str):
                 save_to_history(sender_id, "assistant", _confirm_msg)
                 send_message(sender_id, _confirm_msg)
                 _state_engine_fired = True
+                logger.info("OFFER_SELECTION_RESOLVED index=%s match_type=%s psid=%s",
+                            _sel.get("_offer_index"), _resolution.get("match_type"), sender_id)
                 return
         # ═══════════════════════════════════════════════════════════════
 
@@ -4066,8 +4234,22 @@ def process_message(sender_id: str, text: str):
                             "budget_per_person": ctx.get("budget_per_person"),
                             "search_mode": ctx.get("search_mode", "normal"),
                         }
-                        save_offer_snapshot(sender_id, tour_meta[:3], _snap_search_ctx)
+                        _snap_offer_set_id, _snap_redis_ok, _snap_supa_ok = save_offer_snapshot(
+                            sender_id, tour_meta[:3], _snap_search_ctx
+                        )
                         ctx["conversation_state"] = "options_presented"
+                        ctx["current_offer_set_id"] = _snap_offer_set_id
+                        if not _snap_redis_ok and not _snap_supa_ok:
+                            logger.error("OFFER_SNAPSHOT_SAVE_FAIL_BOTH psid=%s offer_set_id=%s",
+                                         sender_id, _snap_offer_set_id)
+                            _save_fail_msg = "ขออภัยค่ะ ระบบบันทึกรายการทัวร์ขัดข้องชั่วคราว เดี๋ยวให้ทีมงานช่วยเช็กให้นะคะ"
+                            send_message(sender_id, _save_fail_msg)
+                            save_to_history(sender_id, "assistant", _save_fail_msg)
+                            save_context(sender_id, ctx)
+                            return
+                        elif not _snap_redis_ok:
+                            logger.warning("OFFER_SNAPSHOT_REDIS_FAIL_ONLY psid=%s — continuing with Supabase only",
+                                           sender_id)
                     except Exception as _snap_err:
                         logger.error(f"save_offer_snapshot (search path) error: {_snap_err}")
                     if city_hint:
@@ -4345,8 +4527,17 @@ def process_message(sender_id: str, text: str):
                                 "budget_per_person": ctx.get("budget_per_person"),
                                 "search_mode": "faimai",
                             }
-                            save_offer_snapshot(sender_id, _flash_meta[:3], _snap_flash_ctx)
+                            _snap_flash_id, _snap_flash_redis_ok, _snap_flash_supa_ok = save_offer_snapshot(
+                                sender_id, _flash_meta[:3], _snap_flash_ctx
+                            )
                             ctx["conversation_state"] = "options_presented"
+                            ctx["current_offer_set_id"] = _snap_flash_id
+                            if not _snap_flash_redis_ok and not _snap_flash_supa_ok:
+                                logger.error("OFFER_SNAPSHOT_SAVE_FAIL_BOTH psid=%s path=flash",
+                                             sender_id)
+                            elif not _snap_flash_redis_ok:
+                                logger.warning("OFFER_SNAPSHOT_REDIS_FAIL_ONLY psid=%s path=flash",
+                                               sender_id)
                         except Exception as _snap_flash_err:
                             logger.error(f"save_offer_snapshot (flash path) error: {_snap_flash_err}")
                         ctx["pending_action"] = "wait_user"
