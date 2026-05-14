@@ -1681,6 +1681,7 @@ def fetch_tours(country_id: str, city_hint: str = None, budget_max: int = None,
                     "name": t["name"],
                     "price_min": promo,
                     "url": t.get("url", ""),
+                    "departure_dates": t.get("departure_dates", ""),
                     "is_faimai": t.get("is_faimai", False),
                     "discount_amount": t.get("discount_amount"),
                     "tip_fee": t.get("tip_fee"),
@@ -4105,7 +4106,9 @@ def process_message(sender_id: str, text: str):
         _offer_snap = None
         if ctx.get("conversation_state") in ("options_presented", "tour_selected") or ctx.get("last_options"):
             _offer_snap = load_offer_snapshot(sender_id)
-        if _offer_snap and not ctx.get("booking_context_locked") and not _direct_country_fill:
+        # FIX3: Also fire if user explicitly selected an index (ตัวที่ X) even when locked
+        _explicit_reselect = bool(_rule_option_idx and ctx.get("booking_context_locked"))
+        if _offer_snap and (not ctx.get("booking_context_locked") or _explicit_reselect) and not _direct_country_fill:
             _resolution = resolve_tour_selection(text, _offer_snap)
             if _resolution.get("ambiguous"):
                 _amb_msg = _build_ambiguous_msg(_resolution["matches"])
@@ -4217,7 +4220,10 @@ def process_message(sender_id: str, text: str):
                     return
 
         # ── Resolve selected_option_index → set selected_tour ────────────
-        if uses_previous and selected_option_idx and ctx.get("last_options"):
+        # FIX2: Only allow LLM-based selected_option_idx to update tour if NOT already locked
+        # (unless user explicitly typed an index → _rule_option_idx)
+        if uses_previous and selected_option_idx and ctx.get("last_options") and (
+                not ctx.get("booking_context_locked") or _rule_option_idx):
             opts = ctx["last_options"]
             if isinstance(opts, str):
                 try:
