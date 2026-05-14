@@ -3495,15 +3495,26 @@ def _format_tour_selected_msg(ctx: dict, selected_option: dict, resolution: dict
     _dates = selected_option.get("departure_dates") or []
     _idx = resolution.get("index", "")
 
-    # Format dates
-    if isinstance(_dates, list) and _dates:
-        _dates_str = ", ".join(str(_d) for _d in _dates[:5])
-        if len(_dates) > 5:
-            _dates_str += f" (+{len(_dates)-5} วัน)"
-    elif isinstance(_dates, str) and _dates:
-        _dates_str = _dates
-    else:
-        _dates_str = "กรุณาสอบถาม"
+    # Format departure dates — handle multiple formats from DB
+    def _fmt_dates(raw):
+        if not raw:
+            return None
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+        if isinstance(raw, list) and raw:
+            # Filter out None/empty
+            valid = [str(d).strip() for d in raw if d and str(d).strip()]
+            if not valid:
+                return None
+            if len(valid) == 1:
+                return valid[0]
+            if len(valid) <= 5:
+                return " | ".join(valid)
+            # Many dates: show first 3 + count
+            return f"{' | '.join(valid[:3])} ... (+{len(valid)-3} วัน)"
+        return None
+
+    _dates_str = _fmt_dates(_dates) or "กรุณาสอบถามทีมงานค่ะ"
 
     _cname = ctx.get("customer_name") or ""
     _greeting = f"ได้เลยค่ะ คุณ{_cname} 😊" if _cname else "ได้เลยค่ะ 😊"
@@ -3669,6 +3680,84 @@ def _build_airline_hint(ctx: dict, airline_found: bool) -> str:
     return ""
 
 
+def _detect_dates_inquiry(text: str) -> bool:
+    """Detect if user is asking about departure dates for the selected tour."""
+    _t = text.strip().lower()
+    _patterns = [
+        "มีวันไหนบ้าง", "มีวันอะไรบ้าง", "มีวันไหน", "วันเดินทาง",
+        "เดินทางได้เมื่อไหร่", "เดินทางวันไหน", "ออกเดินทางวันไหน",
+        "มีเดตไหนบ้าง", "มีรอบไหนบ้าง", "มีกี่วัน", "ขอดูวัน",
+        "วันที่มี", "มีรอบไหน", "ดูวันเดินทาง", "เช็กวัน",
+        "available", "วันว่าง", "รอบเดินทาง",
+    ]
+    return any(p in _t for p in _patterns)
+
+
+def _format_departure_dates_reply(ctx: dict) -> str:
+    """Format a full departure dates reply for the selected tour."""
+    _tour = ctx.get("selected_tour") or {}
+    _name = _tour.get("name") or ctx.get("selected_tour_name") or "โปรแกรมที่เลือก"
+    _dates = _tour.get("departure_dates")
+    _url = _tour.get("url") or ctx.get("selected_tour_url") or ""
+
+    # If dates missing from snapshot, try fetching fresh from Supabase
+    if not _dates:
+        _web_code = _tour.get("web_code") or ctx.get("selected_tour_web_code")
+        if _web_code:
+            try:
+                _supa_url = os.environ.get("SUPABASE_URL", "")
+                _supa_key = os.environ.get("SUPABASE_KEY", "")
+                if _supa_url and _supa_key:
+                    _resp = requests.get(
+                        f"{_supa_url}/rest/v1/tours",
+                        headers={"apikey": _supa_key, "Authorization": f"Bearer {_supa_key}"},
+                        params={"web_code": f"eq.{_web_code}", "select": "departure_dates,name"},
+                        timeout=5,
+                    )
+                    _fresh = _resp.json()
+                    if _fresh and isinstance(_fresh, list) and _fresh[0].get("departure_dates"):
+                        _dates = _fresh[0]["departure_dates"]
+                        logger.info("DATES_REFETCH_OK web_code=%s", _web_code)
+            except Exception as _fe:
+                logger.warning("DATES_REFETCH_FAIL web_code=%s error=%s", _web_code, _fe)
+
+    if not _dates:
+        return (
+            f"ขออภัยค่ะ ระบบไม่พบข้อมูลวันเดินทางสำหรับ {_name} ในขณะนี้\n"
+            f"ขอให้ทีมงานเช็กให้ตรงๆ เลยนะคะ"
+            + (f"\n🔗 {_url}" if _url else "")
+        )
+
+    def _fmt_single(d):
+        return str(d).strip()
+
+    if isinstance(_dates, str):
+        dates_list = [_dates]
+    elif isinstance(_dates, list):
+        dates_list = [_fmt_single(d) for d in _dates if d and str(d).strip()]
+    else:
+        dates_list = []
+
+    if not dates_list:
+        return (
+            f"ขออภัยค่ะ ยังไม่พบวันเดินทางสำหรับ {_name} ในระบบค่ะ\n"
+            f"ขอให้ทีมงานเช็กให้นะคะ" + (f"\n🔗 {_url}" if _url else "")
+        )
+
+    _cname = ctx.get("customer_name") or ""
+    _greeting = f"คุณ{_cname} " if _cname else ""
+
+    lines = [f"วันเดินทางที่มีสำหรับ {_name} มีดังนี้ค่ะ {_greeting}😊\n"]
+    for i, d in enumerate(dates_list[:15], 1):
+        lines.append(f"  📅 {d}")
+    if len(dates_list) > 15:
+        lines.append(f"  ... และอีก {len(dates_list)-15} วัน")
+    lines.append("\nสนใจเดินทางวันไหนคะ? บอกได้เลยค่ะ 😊")
+    if _url:
+        lines.append(f"🔗 {_url}")
+    return "\n".join(lines)
+
+
 def process_message(sender_id: str, text: str):
     """Main logic — รันใน background thread"""
     # Fix 5: strip [REPLY_TO_BOT] hint injected by webhook but keep it for LLM context
@@ -3803,6 +3892,17 @@ def process_message(sender_id: str, text: str):
         # ──────────────────────────────────────────────────────────────
 
         _airline_hint = ""  # may be populated in search path below
+
+        # ── Dates inquiry handler: when tour selected, answer date questions immediately ──
+        if ctx.get("booking_context_locked") and ctx.get("selected_tour") and _detect_dates_inquiry(text):
+            _dates_reply = _format_departure_dates_reply(ctx)
+            save_to_history(sender_id, "assistant", _dates_reply)
+            save_context(sender_id, ctx)
+            send_message(sender_id, _dates_reply)
+            logger.info("DATES_INQUIRY_HANDLED psid=%s tour=%s", sender_id, ctx.get("selected_tour_name", ""))
+            return
+        # ─────────────────────────────────────────────────────────────────────────────────
+
         # ── Smart action override: upgrade/downgrade with known country ────
         _skip_llm_classify = False
         _should_skip = (
