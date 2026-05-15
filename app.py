@@ -177,6 +177,8 @@ _EMPTY_CTX = {
     "month": None,
     "budget_per_person": None,
     "budget_type": None,           # 'strict'|'flexible'|'unknown'
+    "budget_is_total": None,       # None=unknown, 'pending'=waiting answer, True=total, False=per_person
+    "budget_total_raw": None,      # เก็บงบรวมดิบ ก่อน recalculate เป็น/คน
     "pax": None,
     # ── Options & Selection ───────────────────────────────────────────────
     "last_options": [],           # list of tour dicts ที่เสนอล่าสุด
@@ -2849,6 +2851,7 @@ def generate_response(user_message: str, history: list, tour_data: str = "",
         _field_hints = {
             "country": "ถามว่าอยากไปประเทศหรือภูมิภาคไหน",
             "city": "ถามว่าสนใจเมือง/เส้นทางไหนในประเทศนั้น",
+            "pax": "ถามจำนวนผู้เดินทาง เพื่อคัดโปรแกรมให้ตรงงบ (ถามสั้นๆ ว่า 'ไปกี่คนคะ?')",
             "budget_per_person": "ถามงบประมาณต่อคน (ตอบข้อมูลภาพรวมก่อน แล้วค่อยถาม)",
             "month": "ถามช่วงเดือน/วันที่สะดวกเดินทาง",
             "pax": "ถามจำนวนผู้เดินทาง",
@@ -3714,6 +3717,31 @@ def _build_airline_hint(ctx: dict, airline_found: bool) -> str:
     return ""
 
 
+def _detect_budget_clarify_answer(text: str):
+    """Detect if text answers 'งบต่อคน หรือรวมทั้งกลุ่ม?' question.
+    Returns 'per_person' | 'total' | None
+    """
+    t = text.strip().lower()
+    _per_person = [
+        "ต่อคน", "ต่อหัว", "คนละ", "per person", "ต่อท่าน",
+        "แต่ละคน", "หัวละ", "คนนึง", "คนหนึ่ง", "แยกคน",
+    ]
+    _total = [
+        "รวมกัน", "รวมทั้งหมด", "ทั้งหมด", "ทั้งกลุ่ม",
+        "รวมทั้งคู่", "รวม 2 คน", "รวม 3 คน", "รวม 4 คน",
+        "รวมกลุ่ม", "total", "รวมค่าใช้จ่าย", "รวมของทุกคน",
+    ]
+    if any(p in t for p in _per_person):
+        return "per_person"
+    if any(p in t for p in _total):
+        return "total"
+    # Short "รวม" alone (no adjacent word) → total
+    import re as _re
+    if _re.search(r"(?<!\w)รวม(?!\w)", t):
+        return "total"
+    return None
+
+
 def _detect_dates_inquiry(text: str) -> bool:
     """Detect if user is asking about departure dates for the selected tour."""
     _t = text.strip().lower()
@@ -3889,6 +3917,29 @@ def process_message(sender_id: str, text: str):
         _last_opts_count = len(ctx.get("last_options", []))
         if _last_opts_count > 0:
             logger.info(f"[MEMORY_LOAD] psid=...{sender_id[-6:]} last_options_count={_last_opts_count}")
+
+        # ── STEP C: Detect pending budget clarification answer ─────────────
+        # เกิดเมื่อ bot ถาม "งบ X ต่อคน หรือรวม Y คนคะ?" และรอคำตอบ
+        if ctx.get("budget_is_total") == "pending":
+            _clarify_ans = _detect_budget_clarify_answer(text)
+            if _clarify_ans:
+                _pax_val = ctx.get("pax") or 1
+                _raw_bgt = ctx.get("budget_per_person") or 0
+                if isinstance(_raw_bgt, (int, float)) and _raw_bgt > 0:
+                    if _clarify_ans == "total":
+                        _per_person = max(1, int(_raw_bgt / _pax_val))
+                        ctx["budget_total_raw"] = _raw_bgt
+                        ctx["budget_per_person"] = _per_person
+                        ctx["budget_is_total"] = True
+                        logger.info("BUDGET_CLARIFY total=%d pax=%d → per_person=%d",
+                                    _raw_bgt, _pax_val, _per_person)
+                    else:  # per_person
+                        ctx["budget_is_total"] = False
+                        logger.info("BUDGET_CLARIFY confirmed per_person=%d", _raw_bgt)
+                # ต่อ flow ปกติ (action=search จะ trigger ด้านล่าง)
+            # ถ้า parse ไม่ออก → let LLM handle normally
+        # ─────────────────────────────────────────────────────────────────
+
         # ── Rule-based option selection (fast, before Claude call) ─────
         _rule_option_idx = parse_option_index_rule_based(text, _last_opts_count) if _last_opts_count > 0 else None
         if _rule_option_idx:
@@ -4131,6 +4182,47 @@ def process_message(sender_id: str, text: str):
             ctx["country"] = classifier_country
         if country_id and not ctx.get("country_id"):
             ctx["country_id"] = country_id
+
+        # ── STEP A: Budget known but pax unknown → ถามจำนวนคนก่อน search ─
+        # ไม่ถามถ้า: กำลัง browse ต่อ (last_options มีแล้ว) / locked / ไม่ใช่ search
+        _bgt_known  = bool(ctx.get("budget_per_person"))
+        _pax_known  = bool(ctx.get("pax"))
+        _is_search  = action in ("search",)
+        _is_locked  = bool(ctx.get("booking_context_locked"))
+        _has_browse = bool(ctx.get("last_options"))  # เคยแสดง options แล้ว
+
+        if _is_search and _bgt_known and not _pax_known and not _is_locked and not _has_browse:
+            _ask_pax_msg = "ไปกี่คนคะ? จะได้คัดโปรแกรมให้พอดีงบยิ่งขึ้นเลยค่ะ 😊"
+            save_to_history(sender_id, "user", text)
+            save_to_history(sender_id, "assistant", _ask_pax_msg)
+            save_context(sender_id, ctx)
+            send_message(sender_id, _ask_pax_msg)
+            logger.info("BUDGET_PAX_GATE step_A: ask pax — budget=%s country=%s",
+                        ctx.get("budget_per_person"), ctx.get("country_name"))
+            return
+
+        # ── STEP B: Pax>1 + budget known → ถามต่อคนหรือรวมกลุ่ม ────────
+        # ถามครั้งเดียว (budget_is_total is None = ยังไม่เคยถาม)
+        _pax_val = ctx.get("pax") or 1
+        _clarified = ctx.get("budget_is_total")  # None=ยังไม่ถาม, 'pending'=รอคำตอบ
+
+        if (_is_search and _bgt_known and _pax_known and _pax_val > 1
+                and _clarified is None and not _is_locked):
+            _bgt_raw = ctx.get("budget_per_person")
+            try:
+                _bgt_int = int(str(_bgt_raw).replace(",", "").replace(" ", ""))
+                _q = f"งบ {_bgt_int:,} บาท ต่อคน หรือรวมทั้ง {_pax_val} คนคะ? 🙂"
+            except Exception:
+                _q = f"งบที่บอกไว้ ต่อคน หรือรวมทั้ง {_pax_val} คนคะ? 🙂"
+            ctx["budget_is_total"] = "pending"
+            save_to_history(sender_id, "user", text)
+            save_to_history(sender_id, "assistant", _q)
+            save_context(sender_id, ctx)
+            send_message(sender_id, _q)
+            logger.info("BUDGET_PAX_GATE step_B: ask per-person vs total — budget=%s pax=%d",
+                        _bgt_raw, _pax_val)
+            return
+        # ─────────────────────────────────────────────────────────────────
 
         # ── Resolve by price/code/name (before index resolver) ─────────
         # ลูกค้าพิมพ์ "สนใจตัว 8999" / "ap242807" / "VZ-TPE07-2" / ชื่อเมือง
