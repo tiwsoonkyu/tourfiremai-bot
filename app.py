@@ -3689,7 +3689,13 @@ def _build_airline_hint(ctx: dict, airline_found: bool) -> str:
                 f"กรุณาแจ้งสุภาพแล้วเสนอ alternative airlines ที่มีในรายการ]"
             )
     elif _type_pref == "full_service" and airline_found:
-        return "\n[ลูกค้าต้องการสายการบิน full service — เน้นความสะดวกสบายและบริการบนเครื่อง]"
+        return "\n[ลูกค้าต้องการสายการบิน full service — เน้นความสะดวกสบายและบริการบนเครื่อง ห้ามถามซ้ำเรื่องปลายทาง]"
+    elif _type_pref == "full_service" and not airline_found:
+        return (
+            "\n[ลูกค้าต้องการสายการบิน full service แต่ไม่พบในรายการปัจจุบัน "
+            "กรุณาแจ้งอย่างสุภาพว่าตอนนี้มีเฉพาะสายการบิน low-cost สำหรับเส้นทางนี้ "
+            "แล้วเสนอตัวเลือกที่ดีที่สุดจากรายการ พร้อมแนะนำให้ติดต่อแอดมินถ้าต้องการ full service จริงๆ]"
+        )
     elif _pref and airline_found:
         _name = _airline_names.get(_pref, _pref)
         return f"\n[ลูกค้าต้องการ {_name} — แสดงผลที่กรองแล้ว]"
@@ -3900,6 +3906,9 @@ def process_message(sender_id: str, text: str):
         if _intent_mods.get("airline_preference"):
             ctx["airline_preference"] = _intent_mods["airline_preference"]
             ctx["airline_type_preference"] = _intent_mods.get("airline_type_preference", "any")
+        elif _intent_mods.get("airline_type_preference"):
+            # "full service" / "บิน full service" — no specific airline code but type is known
+            ctx["airline_type_preference"] = _intent_mods["airline_type_preference"]
         if _intent_mods.get("hotel_preference"):
             ctx["hotel_preference"] = _intent_mods["hotel_preference"]
         if _intent_mods.get("trip_style"):
@@ -4584,6 +4593,19 @@ def process_message(sender_id: str, text: str):
                                 tour_meta = _fs_tours
                                 logger.info("AIRLINE_FILTER fallback full_service found=%d", len(tour_meta))
                         logger.info("AIRLINE_FILTER pref=%s not found — showing alternatives", _airline_pref)
+                    elif ctx.get("airline_type_preference") == "full_service":
+                        # "บิน full service" — no specific airline, but filter to FS carriers
+                        _fs_codes = {"TG", "PG", "WE", "BR", "CX", "KE", "OZ", "CI", "JX",
+                                     "MU", "CZ", "NH", "JL", "SQ", "EK", "QR", "EY", "BA", "LH"}
+                        _fs_tours = [t for t in tour_meta
+                                     if (t.get("airline") or "").upper().split("/")[0].strip() in _fs_codes]
+                        if _fs_tours:
+                            tour_meta = _fs_tours
+                            _airline_found = True
+                            logger.info("AIRLINE_FILTER full_service_generic found=%d", len(tour_meta))
+                        else:
+                            _airline_found = False  # no FS in DB → hint Claude to suggest alternatives
+                            logger.info("AIRLINE_FILTER full_service_generic — no FS found in DB")
                     else:
                         _airline_found = True  # no specific airline requested
 
