@@ -1084,7 +1084,8 @@ def normalize_country_typo(text: str):
     return None, None
 
 
-def select_budget_tiers(tours: list, budget: int, budget_type: str) -> list:
+def select_budget_tiers(tours: list, budget: int, budget_type: str,
+                        prefer_premium: bool = False) -> list:
     """จัดเรียงทัวร์ตาม budget tier — value / recommended / upgrade
     คืน list เรียงลำดับตามความเหมาะสมกับงบ (ไม่ตัดทิ้ง)
 
@@ -1093,6 +1094,10 @@ def select_budget_tiers(tours: list, budget: int, budget_type: str) -> list:
       recommended : 65–85% ของงบ — ราคาเหมาะ คุ้มสุด
       upgrade     : 85–105% (flexible) หรือ 85–100% (strict)
       outlier     : ที่เหลือ (เรียงต่อท้าย)
+
+    prefer_premium=True  (ลูกค้าบอก "หรูๆ" / upgrade intent):
+      เรียง upgrade ก่อน → recommended → value → outlier
+      ภายใน tier เดียวกัน เรียงราคาสูงไปต่ำ (ใกล้งบสูงสุดก่อน)
 
     Premium route bonus: ฮอกไกโด|ยุโรป|สแกน|นอร์เวย์|สวีเดน|ฟินแลนด์|ไอซ์แลนด์|อเมริกา
     Full-service airline bonus: TG|JL|NH|SQ|CX|MH|QR|EK|EY|BA|LH
@@ -1110,24 +1115,32 @@ def select_budget_tiers(tours: list, budget: int, budget_type: str) -> list:
     upgrade_ceil = budget * 1.05 if budget_type != "strict" else budget
 
     def _score(t):
-        """คืน (tier_rank, bonus) — tier_rank ต่ำ = แสดงก่อน"""
+        """คืน (tier_rank, price_sort, bonus) — tier_rank ต่ำ = แสดงก่อน"""
         pm = t.get("price_min") or t.get("price")
         try:
             price = int(str(pm).replace(",", "").replace(" ", ""))
         except (TypeError, ValueError):
-            return (99, 0)  # ไม่รู้ราคา → ท้ายสุด
+            return (99, 0, 0)  # ไม่รู้ราคา → ท้ายสุด
 
         ratio = price / budget
         if ratio < 0.40:
-            tier = 3  # ถูกเกินไป — แสดงหลัง recommended
-        elif ratio <= 0.65:
-            tier = 1  # value
-        elif ratio <= 0.85:
-            tier = 0  # recommended — แสดงก่อนเพื่อน
-        elif price <= upgrade_ceil:
-            tier = 2  # upgrade
+            cheap_tier = True
+            if prefer_premium:
+                tier = 3  # ถูกเกินไป — ไม่เหมาะกับลูกค้า "หรูๆ"
+            else:
+                tier = 3
         else:
-            tier = 4  # outlier — เกินงบ
+            cheap_tier = False
+
+        if not cheap_tier:
+            if ratio <= 0.65:
+                tier = 2 if prefer_premium else 1  # value: หลัง recommended เมื่อ premium
+            elif ratio <= 0.85:
+                tier = 1 if prefer_premium else 0  # recommended: เสมอ tier 1 เมื่อ premium
+            elif price <= upgrade_ceil:
+                tier = 0 if prefer_premium else 2  # upgrade: แสดงก่อนเมื่อ premium
+            else:
+                tier = 4  # outlier — เกินงบ
 
         bonus = 0
         name = (t.get("name") or "").upper()
@@ -1137,7 +1150,9 @@ def select_budget_tiers(tours: list, budget: int, budget_type: str) -> list:
         if any(a in airline for a in _FSC_AIRLINES):
             bonus -= 1  # full-service carrier → priority
 
-        return (tier, bonus, price)
+        # เมื่อ prefer_premium: ภายใน tier เดียวกัน เรียงราคาสูงไปต่ำ (ใกล้งบสุด)
+        price_sort = -price if prefer_premium else price
+        return (tier, bonus, price_sort)
 
     return sorted(tours, key=_score)
 
@@ -4534,8 +4549,11 @@ def process_message(sender_id: str, text: str):
                 # ── Budget-aware tier ranking ─────────────────────────────
                 if tour_meta and budget_max:
                     _btype = ctx.get("budget_type") or "unknown"
-                    tour_meta = select_budget_tiers(tour_meta, budget_max, _btype)
-                    logger.info(f"[BUDGET_TIERS] ranked {len(tour_meta)} tours budget={budget_max} type={_btype}")
+                    _prefer_premium = (ctx.get("request_type") == "upgrade_options")
+                    tour_meta = select_budget_tiers(tour_meta, budget_max, _btype,
+                                                    prefer_premium=_prefer_premium)
+                    logger.info(f"[BUDGET_TIERS] ranked {len(tour_meta)} tours budget={budget_max} "
+                                f"type={_btype} premium={_prefer_premium}")
                 # ── Sort by soonest departure when user wants เร็วๆนี้ ────────
                 if departure_urgency == "soonest" and tour_meta:
                     tour_meta = sorted(tour_meta, key=_earliest_departure_sort_key)
