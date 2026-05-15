@@ -3602,6 +3602,18 @@ def _detect_intent_modifiers(text: str) -> dict:
     if any(p in t for p in _downgrade_patterns):
         result["request_type"] = "downgrade_options"
 
+    # ── Show more / continue browsing (ยังไม่ได้เลือก → ขอดูเพิ่ม) ───────
+    _show_more_patterns = [
+        "มีอีกไหม", "มีอื่นไหม", "มีแบบอื่นไหม", "มีตัวอื่นไหม",
+        "ขอดูเพิ่ม", "ดูเพิ่มเติม", "อยากดูเพิ่ม", "ขอเพิ่มเติม",
+        "มีโปรแกรมอื่น", "โปรแกรมอื่นไหม", "มีอะไรอีก",
+        "อื่นๆ ไหม", "มีอีกบ้างไหม", "ขอดูอื่น", "ดูตัวอื่น",
+        "show more", "more options", "other options",
+        "มีแค่นี้ไหม", "แค่นี้เองไหม", "มีอะไรแนะนำอีก",
+    ]
+    if any(p in t for p in _show_more_patterns) and "request_type" not in result:
+        result["request_type"] = "show_more"
+
     # ── Airline preference ────────────────────────────────────────────────
     _airline_map = [
         (["การบินไทย", "บินการบินไทย", "ไทยแอร์เวย์", "thai airways", "thai air", " tg ", "สายการบินไทย", "tg ", "ทีจี", "อยากบิน tg"], "TG", "full_service"),
@@ -3931,8 +3943,9 @@ def process_message(sender_id: str, text: str):
         # ── Smart action override: upgrade/downgrade with known country ────
         _skip_llm_classify = False
         _should_skip = (
-            # Explicit upgrade/downgrade/airline request with known country
-            (ctx.get("request_type") in ("upgrade_options", "downgrade_options", "airline_filter")
+            # Explicit upgrade/downgrade/airline/show_more request with known country
+            (ctx.get("request_type") in ("upgrade_options", "downgrade_options",
+                                         "airline_filter", "show_more")
              and ctx.get("country_id"))
             or
             # Airline just detected + country known (even if request_type not explicitly set)
@@ -4612,6 +4625,12 @@ def process_message(sender_id: str, text: str):
                 if _req_type == "downgrade_options" and tour_meta:
                     tour_meta = sorted(tour_meta, key=lambda t: (t.get("price_min") or 999999))
                     logger.info("DOWNGRADE_SORT applied — cheapest first, count=%d", len(tour_meta))
+
+                if _req_type == "show_more" and tour_meta:
+                    # show_more: just use default sort (recommended-first), no special filtering
+                    # Reset so next search won't carry over
+                    logger.info("SHOW_MORE: showing next results for country=%s count=%d",
+                                ctx.get("country_name", ""), len(tour_meta))
 
                 # Price floor post-filter for upgrade (remove tours below last max)
                 if _req_type == "upgrade_options" and tour_meta:
