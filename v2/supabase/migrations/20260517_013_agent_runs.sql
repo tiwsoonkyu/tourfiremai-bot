@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   duration_ms     INTEGER,
 
   meta_message_id TEXT,
-  platform        TEXT NOT NULL DEFAULT 'fb',
+  platform        TEXT NOT NULL DEFAULT 'fb' CHECK (platform IN ('fb','line','web')),
 
   started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   finished_at     TIMESTAMPTZ

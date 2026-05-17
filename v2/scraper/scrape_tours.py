@@ -85,16 +85,6 @@ THAI_MONTHS = {
 }
 
 
-def _thai_year_to_ce(year_thai: int) -> int:
-    """ค.ศ.: 69 → 2026 (พ.ศ. 2569 = ค.ศ. 2026). Heuristic if 4-digit BE given."""
-    if year_thai > 2400:
-        return year_thai - 543
-    if year_thai < 100:
-        # Two-digit BE year, e.g. 69 → 2569 BE → 2026 CE
-        return 2469 + year_thai if year_thai < 50 else 2400 + year_thai - 543 + 543  # noqa
-    return year_thai  # already CE
-
-
 _COMMA_PRICE_RE = re.compile(r"\b([1-9]\d{0,2}(?:,\d{3})+)\b")
 _BARE_PRICE_RE = re.compile(r"(?<![a-zA-Z_/])\b(\d{4,6})\b")
 

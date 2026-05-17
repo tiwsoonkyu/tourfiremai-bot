@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
   llm_tokens_out  INTEGER,
   latency_ms      INTEGER,
   meta_message_id TEXT,
-  platform        TEXT NOT NULL DEFAULT 'fb',
+  platform        TEXT NOT NULL DEFAULT 'fb' CHECK (platform IN ('fb','line','web')),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
