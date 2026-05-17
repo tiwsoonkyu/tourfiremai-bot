@@ -81,15 +81,17 @@ def download_pdf(
             "User-Agent": "Mozilla/5.0 (TourFireMai V2 PDF cache)",
             "Accept": "application/pdf,*/*;q=0.5",
         })
-        ok = resp.status_code == 200
+        status = resp.status_code
+        ok = status == 200
         content = resp.content
     else:
         r = http_client.get(url, timeout=timeout_sec)
-        ok = r.status_code == 200
+        status = r.status_code
+        ok = status == 200
         content = r.content if hasattr(r, "content") else (r.text or "").encode()
 
     if not ok:
-        raise RuntimeError(f"PDF download failed: {url} → status {r.status_code if not http_client else r.status_code}")
+        raise RuntimeError(f"PDF download failed: {url} → status {status}")
 
     with open(path, "wb") as f:
         f.write(content)

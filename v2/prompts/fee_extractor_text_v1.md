@@ -15,20 +15,30 @@ response_format:
       required:
         - tip_amount
         - visa_fee
+        - visa_status
         - single_supplement
         - infant_fee
         - child_fee_no_bed
         - deposit_amount
+        - joinland_price
+        - mandatory_fees_summary
         - extraction_confidence
+        - source_page
+        - raw_snippet
         - notes
       properties:
         tip_amount:        { type: ["integer", "null"], description: "Total tip in THB, per person" }
         visa_fee:          { type: ["integer", "null"], description: "Visa fee in THB, per person" }
+        visa_status:       { type: ["string", "null"], enum: ["exempt","required","on_arrival","evisa","unknown",null], description: "Whether visa is needed and how it is obtained" }
         single_supplement: { type: ["integer", "null"], description: "Single-supplement upcharge in THB" }
         infant_fee:        { type: ["integer", "null"], description: "Infant (no seat) fee in THB" }
         child_fee_no_bed:  { type: ["integer", "null"], description: "Child no-bed discount/fee in THB" }
         deposit_amount:    { type: ["integer", "null"], description: "Initial deposit in THB" }
+        joinland_price:    { type: ["integer", "null"], description: "Land-only price (no flights) in THB, if quoted" }
+        mandatory_fees_summary: { type: ["string", "null"], description: "Concise one-liner summary of all mandatory extras" }
         extraction_confidence: { type: number, minimum: 0, maximum: 1 }
+        source_page:       { type: ["integer", "null"], description: "1-indexed page where fees appear" }
+        raw_snippet:       { type: ["string", "null"], description: "200-500 char window of the fee section text" }
         notes:             { type: string, description: "Brief note re any ambiguity" }
 purpose: |
   Extract tour fees from PDF text. NEVER invent values. NEVER copy wholesale brand.

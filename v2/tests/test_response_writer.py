@@ -48,8 +48,8 @@ class TestStripWholesale:
 class TestBrandLeak:
     @pytest.mark.parametrize("text", [
         "ลูกค้ารับทราบจาก TTN",
-        "Best ทัวร์น่าสนใจ",
-        "GS partner",
+        "Best Tour ทัวร์น่าสนใจ",
+        "GS Travel partner",
         "Zego เพิ่งออกโปร",
         "ส่งจาก formosa",
     ])
@@ -63,6 +63,42 @@ class TestBrandLeak:
     ])
     def test_clean(self, text):
         assert _has_brand_leak(text) is False
+
+
+
+
+
+class TestBrandLeakFalsePositives:
+    """QA flagged: previous substring blacklist matched innocent text like
+    'tags', 'the best in Tokyo', 'check in 14.00 น.'. Word-boundary regex fixes this."""
+
+    @pytest.mark.parametrize("text", [
+        "เช็คอินโรงแรม 14.00 น.",
+        "เริ่ม check in เวลา 15.00",
+        "the best of Tokyo",
+        "ทัวร์ดีที่สุดในญี่ปุ่น",
+        "tags ที่แนะนำสำหรับนักท่องเที่ยว",
+        "พระราชวังต้องห้าม",
+        "messages ที่ลูกค้าส่งมา",
+        "เลือกที่นั่ง GSM ได้",
+    ])
+    def test_no_false_positive(self, text):
+        assert _has_brand_leak(text) is False, f"False positive on: {text!r}"
+
+    @pytest.mark.parametrize("text", [
+        "TTN เกิดมาเที่ยว",
+        "ทัวร์นี้ของ TTN",
+        "Best Tour Group",
+        "Zego เพิ่งออกโปร",
+        "ส่งจาก Formosa",
+        "GS Travel",
+        "GS Tour",
+        "I Travel agency",
+        "I-Travel ตัวแทน",
+        "Rich Tour ผู้จัด",
+    ])
+    def test_actual_brand_caught(self, text):
+        assert _has_brand_leak(text) is True, f"Missed brand in: {text!r}"
 
 
 class TestTruncate:

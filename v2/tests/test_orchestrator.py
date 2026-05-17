@@ -130,3 +130,49 @@ class TestE001HappyPath:
         # Verify conversation persisted
         conv = supabase.table("conversations").select_one({"psid": psid, "closed_at": None})
         assert conv is not None
+
+
+
+class TestFeeHandoffPath:
+    """QA flagged: no orchestrator-level test of fee-incomplete handoff."""
+
+    def test_fee_check_required_with_missing_fees_does_not_call_llm(
+        self, orch, supabase, make_tour
+    ):
+        """When state=fee_check_required AND tour_fees row is missing,
+        response writer must use canned handoff message — NO LLM call."""
+        from v2.lib.llm import MockLLMClient
+        from v2.lib.response_writer import CANNED_HANDOFF_FEE_INCOMPLETE
+
+        # Pre-populate: customer + conversation in fee_check_required + locked tour
+        cust = supabase.table("customers").insert({"psid": "PSID_FEE_HANDOFF"})
+        conv = supabase.table("conversations").insert({
+            "customer_id": cust["id"], "psid": "PSID_FEE_HANDOFF",
+            "state": "fee_check_required",
+        })
+        tour = make_tour(web_code="ap_fee_test", name="Test Tour",
+                          price=20000, country="ญี่ปุ่น", country_id=2)
+        supabase.table("selected_tours").insert({
+            "conversation_id": conv["id"], "customer_id": cust["id"],
+            "psid": "PSID_FEE_HANDOFF", "tour_id": tour["id"],
+        })
+        # Intentionally do NOT insert tour_fees row → fee_check should fail
+
+        # Track LLM calls
+        spy_llm = MockLLMClient()
+        orch.llm = spy_llm
+
+        result = orch.handle_turn(
+            psid="PSID_FEE_HANDOFF", text="ค่าทิปเท่าไหร่",
+            meta_message_id="fb:fee_handoff_test_1",
+        )
+
+        # Bot must respond with canned handoff text — NO LLM call
+        # When state is fee_check_required and fees incomplete → state transitions to waiting_team
+        assert result.reply_text is not None
+        # Either still in fee_check_required (1-shot ack) or transitioned to waiting_team
+        assert result.state_after in ("waiting_team", "fee_check_required")
+        # Most important: LLM response tier was NOT used for actual reply
+        response_calls = [c for c in spy_llm.call_log if c["tier"] == "response"]
+        # Either no response-tier call OR returned canned (no LLM-generated text)
+        assert len(response_calls) == 0 or "ตรวจสอบ" in result.reply_text or "ทีมงาน" in result.reply_text

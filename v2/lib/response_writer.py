@@ -25,11 +25,17 @@ from .llm import LLMClient, LLMResponse
 
 logger = logging.getLogger("v2.response_writer")
 
-# Wholesale brand names that must NEVER appear in customer-facing reply
-_WHOLESALE_BLACKLIST = {
-    "gs", "ttn", "best", "zego", "formosa", "check in", "rich tour", "i travel",
-    "i-travel", "best tour", "ttn เกิดมาเที่ยว",
-}
+# Wholesale brand names that must NEVER appear in customer-facing reply.
+# Use word-boundary regex (compiled below) to avoid false positives on innocent
+# substrings like "tags", "the best in Tokyo", "check in 14.00 น.", etc.
+import re as _re_brand_check
+
+_WHOLESALE_BLACKLIST = [
+    # Conservative: require either whole-token match OR brand-specific multi-word phrase
+    _re_brand_check.compile(r"\b(?:ttn|zego|formosa|i[-\s]?travel|rich\s+tour|best\s+tour)\b", _re_brand_check.I),
+    _re_brand_check.compile(r"(?:^|[\s.,/])GS\s+(?:travel|tour)", _re_brand_check.I),  # GS only when followed by travel/tour to avoid 'tags','GSM' etc
+    _re_brand_check.compile(r"ttn[\s_]?เกิดมาเที่ยว"),
+]
 
 # Canned messages for state-silence + handoff cases (NO LLM CALL)
 CANNED_HANDOFF_FEE_INCOMPLETE = (
@@ -71,9 +77,10 @@ def _strip_wholesale(tool_results: dict) -> dict:
 
 
 def _has_brand_leak(text: str) -> bool:
-    """Check if reply mentions any wholesale partner name."""
-    lower = text.lower()
-    return any(brand in lower for brand in _WHOLESALE_BLACKLIST)
+    """Check if reply mentions any wholesale partner name (word-boundary match)."""
+    if not text:
+        return False
+    return any(pat.search(text) for pat in _WHOLESALE_BLACKLIST)
 
 
 def _truncate(text: str, limit: int = 400) -> str:

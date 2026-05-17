@@ -15,20 +15,30 @@ response_format:
       required:
         - tip_amount
         - visa_fee
+        - visa_status
         - single_supplement
         - infant_fee
         - child_fee_no_bed
         - deposit_amount
+        - joinland_price
+        - mandatory_fees_summary
         - extraction_confidence
+        - source_page
+        - raw_snippet
         - notes
       properties:
         tip_amount:        { type: ["integer", "null"] }
         visa_fee:          { type: ["integer", "null"] }
+        visa_status:       { type: ["string", "null"], enum: ["exempt","required","on_arrival","evisa","unknown",null] }
         single_supplement: { type: ["integer", "null"] }
         infant_fee:        { type: ["integer", "null"] }
         child_fee_no_bed:  { type: ["integer", "null"] }
         deposit_amount:    { type: ["integer", "null"] }
+        joinland_price:    { type: ["integer", "null"] }
+        mandatory_fees_summary: { type: ["string", "null"] }
         extraction_confidence: { type: number, minimum: 0, maximum: 1 }
+        source_page:       { type: ["integer", "null"] }
+        raw_snippet:       { type: ["string", "null"] }
         notes:             { type: string }
 purpose: |
   Vision fallback when PDF text extraction fails (scanned/image-based PDFs).

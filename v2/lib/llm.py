@@ -156,7 +156,7 @@ class MockLLMClient:
             text=text,
             usage=LLMUsage(tokens_in=len(user_text)//4, tokens_out=len(text)//4,
                            model_used="mock:response",
-                           latency_ms=int((time.time()-time.time())*1000)+5),
+                           latency_ms=5),  # mock fixed latency
             mock_decision=decision,
         )
 
