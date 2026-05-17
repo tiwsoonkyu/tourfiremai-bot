@@ -22,6 +22,10 @@ from typing import Any, Optional
 
 from .state_machine import State, is_silent_state
 from .llm import LLMClient, LLMResponse
+from .fee_answer_policy import (
+    decide_fee_answer, detect_asked_field, format_fee_answer,
+    FeeAnswerDecision,
+)
 
 logger = logging.getLogger("v2.response_writer")
 
@@ -135,13 +139,36 @@ def write_response(
         )
 
     if state == State.FEE_CHECK_REQUIRED:
-        fees = tool_results.get("fees")
-        if not fees or not fees.get("is_complete"):
+        # Sprint 4 follow-up: per-field, confidence-gated fee answers.
+        # `fees` is the orchestrator's snapshot from _get_tour_fees; it may
+        # carry a `fees_row` (DB row) and `asked_field` hint.
+        fees = tool_results.get("fees") or tool_results.get("get_tour_fees") or {}
+        fees_row = (fees or {}).get("fees") or (fees or {}).get("fees_row")
+        raw_text = tool_results.get("raw_customer_text") or ""
+        asked_field = (fees or {}).get("asked_field") or detect_asked_field(raw_text)
+
+        decision = decide_fee_answer(fees_row, asked_field)
+        if decision.can_answer:
             return ResponseDecision(
-                text=CANNED_HANDOFF_FEE_INCOMPLETE,
-                decision="canned_handoff", used_canned=True,
-                notes=["fee_incomplete_handoff"],
+                text=format_fee_answer(decision),
+                decision="canned_fee_answer",
+                used_canned=True,
+                notes=[
+                    f"fee_answer:{decision.asked_field}",
+                    f"confidence={decision.confidence:.2f}",
+                    f"threshold={decision.threshold:.2f}",
+                ],
             )
+        # Otherwise handoff — keep existing canned message
+        return ResponseDecision(
+            text=CANNED_HANDOFF_FEE_INCOMPLETE,
+            decision="canned_handoff", used_canned=True,
+            notes=[
+                f"fee_incomplete_handoff:{decision.decision}",
+                f"asked_field:{decision.asked_field}",
+                f"reason:{decision.handoff_reason or 'n/a'}",
+            ],
+        )
 
     if state == State.BOOKING_READY_FOR_HANDOFF:
         return ResponseDecision(

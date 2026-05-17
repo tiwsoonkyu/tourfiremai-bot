@@ -291,7 +291,10 @@ class Orchestrator:
             return self._get_tour_detail(intent, accumulated)
 
         if tool_name == "get_tour_fees":
-            return self._get_tour_fees(psid)
+            return self._get_tour_fees(
+                psid,
+                raw_customer_text=accumulated.get("raw_customer_text"),
+            )
 
         if tool_name == "append_conversation_event":
             return None  # noop placeholder; orchestrator already logs to agent_runs
@@ -386,37 +389,89 @@ class Orchestrator:
         # Strip wholesale field (defense in depth — response_writer also strips)
         return {k: v for k, v in row.items() if k != "wholesale"}
 
-    def _get_tour_fees(self, psid: str) -> Optional[dict]:
+    def _get_tour_fees(self, psid: str, *,
+                       raw_customer_text: Optional[str] = None) -> Optional[dict]:
         """
-        Get fees for currently-locked tour. If not present or low confidence,
-        flags `needs_handoff` so the StateContext.fee_complete = False path triggers
-        waiting_team transition.
+        Get fees for currently-locked tour, surfacing per-field confidence and the
+        asked-field hint so response writer can apply field-level policy
+        (Sprint 4 follow-up).
+
+        Returns a dict with shape:
+          {
+            "is_complete": bool,
+            "fees": <fee_row dict or None>,
+            "confidence": float,              # row-level extraction_confidence
+            "field_confidences": {
+                "tip_confidence": ..., "deposit_confidence": ...,
+                "single_supplement_confidence": ..., "visa_confidence": ...,
+            },
+            "needs_handoff": bool,
+            "handoff_reason": str | None,
+            "asked_field": str,               # detected from customer text
+            "pdf_hash": str | None,           # for on-demand vision cache key
+            "pdf_url": str | None,            # for on-demand vision fetch
+            "tour_id": str | None,
+            "needs_on_demand_extraction": bool,
+          }
         """
+        # Local import to avoid hard dependency at module load
+        from .fee_answer_policy import detect_asked_field, decide_fee_answer
+
         lock = self.memory.get_selected_tour(psid)
         if not lock:
             return None
+        asked_field = detect_asked_field(raw_customer_text or "")
         fees_row = self.supabase.table("tour_fees").select_one({"tour_id": lock.tour_id})
         if not fees_row:
             return {
-                "is_complete": False, "fees": None, "needs_handoff": True,
+                "is_complete": False,
+                "fees": None,
+                "confidence": 0.0,
+                "field_confidences": {},
+                "needs_handoff": True,
                 "handoff_reason": "no_fee_row",
+                "asked_field": asked_field,
+                "pdf_hash": None,
+                "pdf_url": None,
+                "tour_id": lock.tour_id,
+                "needs_on_demand_extraction": True,
             }
-        # Required fields (Sprint 3 R2 brief): tip + single_supplement + deposit
-        # + visa decided (fee OR status)
         required_ok = all(
             fees_row.get(f) is not None
             for f in ("tip_amount", "single_supplement", "deposit_amount")
         )
-        visa_ok = (fees_row.get("visa_fee") is not None) or (fees_row.get("visa_status") in
-                                                              ("exempt", "required", "on_arrival", "evisa"))
+        visa_ok = (fees_row.get("visa_fee") is not None) or (
+            fees_row.get("visa_status") in ("exempt", "required", "on_arrival", "evisa")
+        )
         confidence = float(fees_row.get("extraction_confidence", 0) or 0)
         is_complete = required_ok and visa_ok and confidence >= 0.7
+
+        # Decide whether on-demand extraction would help. Trigger when:
+        #   - asked_field is specific (not "any") AND
+        #   - field value is missing OR per-field confidence is below threshold.
+        from .fee_answer_policy import decide_fee_answer as _decide
+        d = _decide(fees_row, asked_field)
+        needs_on_demand = d.decision in (
+            "handoff_missing", "handoff_low_confidence",
+        )
+
         return {
             "is_complete": is_complete,
             "fees": fees_row,
             "confidence": confidence,
-            "needs_handoff": not is_complete,
-            "handoff_reason": "fee_incomplete" if not is_complete else None,
+            "field_confidences": {
+                "tip_confidence":               fees_row.get("tip_confidence"),
+                "deposit_confidence":           fees_row.get("deposit_confidence"),
+                "single_supplement_confidence": fees_row.get("single_supplement_confidence"),
+                "visa_confidence":              fees_row.get("visa_confidence"),
+            },
+            "needs_handoff": not is_complete and d.decision != "answer",
+            "handoff_reason": d.handoff_reason if not d.can_answer else None,
+            "asked_field": asked_field,
+            "pdf_hash": fees_row.get("pdf_hash"),
+            "pdf_url": fees_row.get("pdf_url"),
+            "tour_id": lock.tour_id,
+            "needs_on_demand_extraction": needs_on_demand,
         }
 
     # --- Persistence helpers ---

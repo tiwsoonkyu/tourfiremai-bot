@@ -100,6 +100,12 @@ class ExtractionResult:
     source_page: Optional[int] = None          # 1-indexed page where fees found
     raw_snippet: Optional[str] = None          # ~500-char window around fee region
 
+    # Sprint 4 follow-up: per-field confidence (None = fall back to extraction_confidence)
+    tip_confidence: Optional[float] = None
+    deposit_confidence: Optional[float] = None
+    single_supplement_confidence: Optional[float] = None
+    visa_confidence: Optional[float] = None
+
     @property
     def is_complete(self) -> bool:
         # All required numeric fields present + visa decided
@@ -133,6 +139,10 @@ class ExtractionResult:
             "extraction_errors": self.extraction_errors,
             "source_page": self.source_page,
             "raw_snippet": self.raw_snippet,
+            "tip_confidence": self.tip_confidence,
+            "deposit_confidence": self.deposit_confidence,
+            "single_supplement_confidence": self.single_supplement_confidence,
+            "visa_confidence": self.visa_confidence,
             "manually_verified": False,
         }
 
@@ -220,6 +230,21 @@ def regex_extract(text: str, *, source_page: Optional[int] = None) -> Extraction
     visa_ok = (result.visa_fee is not None) or (result.visa_status is not None)
     completion = (required_hits + (1 if visa_ok else 0)) / (len(_REQUIRED_FIELDS) + 1)
     result.extraction_confidence = round(min(0.95, completion) * 0.95, 2)
+
+    # Per-field confidence: regex layer alone is "moderate" → 0.70 for matched fields.
+    # The LLM layers in scraper.ondemand_vision can bump these to 0.85+ when they
+    # confirm or refine the value. NULL stays NULL if the value wasn't matched.
+    _REGEX_PER_FIELD_CONF = 0.70
+    if result.tip_amount is not None:
+        result.tip_confidence = _REGEX_PER_FIELD_CONF
+    if result.deposit_amount is not None:
+        result.deposit_confidence = _REGEX_PER_FIELD_CONF
+    if result.single_supplement is not None:
+        # single_supplement regex is the weakest pattern historically (20% baseline);
+        # cap at 0.60 so policy threshold (0.90) forces handoff until vision lifts it.
+        result.single_supplement_confidence = 0.60
+    if result.visa_status is not None or result.visa_fee is not None:
+        result.visa_confidence = _REGEX_PER_FIELD_CONF
 
     result.notes = f"regex matched {matched} fields ({required_hits}/{len(_REQUIRED_FIELDS)} required, visa={result.visa_status})"
     return result
@@ -379,6 +404,10 @@ def _result_from_dict(data: dict, *, method: str) -> ExtractionResult:
         notes=data.get("notes", ""),
         source_page=data.get("source_page"),
         raw_snippet=data.get("raw_snippet"),
+        tip_confidence=data.get("tip_confidence"),
+        deposit_confidence=data.get("deposit_confidence"),
+        single_supplement_confidence=data.get("single_supplement_confidence"),
+        visa_confidence=data.get("visa_confidence"),
     )
 
 
