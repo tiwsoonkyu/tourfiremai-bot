@@ -39,6 +39,10 @@ _PATTERNS = [
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "***EMAIL-REDACTED***"),
     # Thai phone (with or without country code)
     (re.compile(r"\b(?:\+?66|0)\d{8,9}\b"), "***PHONE-REDACTED***"),
+    # FB Page-Scoped ID (PSID) embedded in free text — 14-20 consecutive digits.
+    # Conservative threshold (14+) so 10-digit Thai phones already matched above
+    # are not double-matched here.
+    (re.compile(r"\b\d{14,20}\b"), "***PSID-REDACTED***"),
 ]
 
 # Long numeric IDs (FB PSID is 15-17 digits) — only redact when value-only

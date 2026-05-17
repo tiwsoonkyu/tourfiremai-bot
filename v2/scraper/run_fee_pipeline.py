@@ -138,9 +138,18 @@ def main(argv=None) -> int:
     parser.add_argument("--tour-id", help="Single tour UUID")
     parser.add_argument("--web-code", help="Single tour web_code")
     parser.add_argument("--all", action="store_true", help="All active tours")
+    parser.add_argument("--pdf-corpus", action="store_true",
+                         help="Run on v2/tests/fixtures/pdfs/* corpus instead of DB")
     parser.add_argument("--limit", type=int, default=10, help="Max tours when --all")
     parser.add_argument("--skip-vision", action="store_true")
     parser.add_argument("--mock-llm", action="store_true", help="Force mock LLM (default if no API key)")
+    parser.add_argument("--record", action="store_true",
+                         help="Record cassettes (requires live OPENAI_API_KEY)")
+    parser.add_argument("--accuracy", action="store_true",
+                         help="Run accuracy report against ground_truth/ fixtures")
+    parser.add_argument("--cassette-dir", default=None)
+    parser.add_argument("--output-report", default=None,
+                         help="Path to save accuracy report markdown")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -148,14 +157,33 @@ def main(argv=None) -> int:
 
     config = cfg_module.load_config(strict=True)
 
-    # LLM: mock by default; live only if explicitly NOT --mock-llm AND key exists
-    if args.mock_llm or not config.openai_api_key:
+    # LLM: mock by default; live/record only when explicitly set
+    if args.mock_llm:
         llm = MockLLMClient(config)
-        logger.info("Using MockLLMClient (no live API calls)")
-    else:
+        logger.info("Using MockLLMClient (forced via --mock-llm)")
+    elif args.record:
+        if not config.openai_api_key:
+            logger.error("--record requires V2_STAGING_OPENAI_API_KEY")
+            return 2
+        os.environ.setdefault("V2_STAGING_OPENAI_TEST_MODE", "record")
+        # Patch config in place
+        try:
+            object.__setattr__(config, "openai_test_mode", "record")
+        except Exception:
+            pass
+        llm = make_llm_client(config, cassette_dir=args.cassette_dir)
+        logger.info("Using RecordingLLMClient (live API + cassette persistence)")
+    elif config.openai_test_mode == "live" and config.openai_api_key:
         llm = make_llm_client(config)
+        logger.info("Using OpenAILLMClient (live, no recording)")
+    else:
+        llm = MockLLMClient(config)
+        logger.info("Using MockLLMClient (default)")
 
-    supabase = make_supabase_from_config(config)
+    supabase = make_supabase_from_config(config) if not args.pdf_corpus else None
+
+    if args.pdf_corpus:
+        return _run_pdf_corpus(args, config, llm, supabase)
 
     if args.tour_id:
         row = supabase.table("tours_canonical").select_one({"id": args.tour_id})
@@ -209,6 +237,68 @@ def main(argv=None) -> int:
                  total, saved, handoff, errors)
     return 0
 
+
+
+def _run_pdf_corpus(args, config, llm, supabase) -> int:
+    """
+    Corpus mode: iterate v2/tests/fixtures/pdfs/{text_based,scanned,mixed}/*.pdf
+    extract fees, optionally accuracy-grade against fixtures/ground_truth/.
+
+    Does NOT write to tour_fees (corpus is a fixtures dir, not production tours).
+    """
+    import glob
+    from .extract_fees import extract_fees_per_page
+    from .extraction_accuracy import (
+        run_accuracy_corpus, format_report_markdown,
+    )
+
+    fixture_root = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "tests", "fixtures",
+    )
+    pdf_dirs = [
+        os.path.join(fixture_root, "pdfs", sub)
+        for sub in ("text_based", "scanned", "mixed")
+    ]
+    pdfs: list[str] = []
+    for d in pdf_dirs:
+        pdfs.extend(sorted(glob.glob(os.path.join(d, "*.pdf"))))
+
+    if not pdfs:
+        logger.warning("No PDFs found in %s — drop fixtures and re-run", pdf_dirs)
+        return 1
+
+    logger.info("Processing %d PDFs", len(pdfs))
+    results: list[tuple[str, "ExtractionResult"]] = []
+    for pdf_path in pdfs:
+        basename = os.path.basename(pdf_path)
+        logger.info("→ %s", basename)
+        try:
+            res = extract_fees_per_page(pdf_path, llm, skip_vision=args.skip_vision)
+            logger.info("   conf=%.2f method=%s tip=%s deposit=%s",
+                         res.extraction_confidence, res.extraction_method,
+                         res.tip_amount, res.deposit_amount)
+            results.append((basename, res))
+        except Exception as e:
+            logger.exception("   FAILED: %s", e)
+
+    if args.accuracy:
+        gt_dir = os.path.join(fixture_root, "ground_truth")
+        report = run_accuracy_corpus(results, gt_dir)
+        md = format_report_markdown(report)
+        if args.output_report:
+            with open(args.output_report, "w", encoding="utf-8") as f:
+                f.write(md)
+            logger.info("Accuracy report → %s", args.output_report)
+        else:
+            print(md)
+        logger.info("Avg overall=%.1f%% hardest=%.1f%%",
+                     report.avg_overall * 100, report.avg_hardest_required * 100)
+    else:
+        for basename, res in results:
+            print(f"{basename}: conf={res.extraction_confidence:.2f}, method={res.extraction_method}")
+
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

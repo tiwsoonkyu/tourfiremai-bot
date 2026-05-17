@@ -374,6 +374,98 @@ class OpenAILLMClient:
                           max_tokens=max_tokens)
 
 
+# --- Recording client (wraps live → persists cassettes) ----------------------
+
+class RecordingLLMClient:
+    """
+    Wraps OpenAILLMClient: makes a live call, then writes a redacted cassette.
+
+    Use during Sprint 4 'record' phase. After cassettes are committed, switch
+    test_mode back to 'cassette' (or 'mock' for CI default).
+
+    The redactor function is injected so tests can swap it; default is
+    `lib.cassette_redactor.redact_cassette` (lazy import).
+    """
+
+    def __init__(self, live_client, cassette_dir: str, *, redactor=None,
+                 meta: Optional[dict] = None):
+        self.live = live_client
+        self.dir = cassette_dir
+        self.meta = meta or {}
+        os.makedirs(cassette_dir, exist_ok=True)
+        if redactor is None:
+            try:
+                from .cassette_redactor import redact_cassette
+                redactor = redact_cassette
+            except Exception:
+                # Last-resort no-op (still passes raw text — tests should use injection)
+                redactor = lambda d: d
+        self._redact = redactor
+
+    def chat(self, *, tier, messages, response_format=None,
+             max_tokens=None, temperature=None) -> LLMResponse:
+        rsp = self.live.chat(
+            tier=tier, messages=messages, response_format=response_format,
+            max_tokens=max_tokens, temperature=temperature,
+        )
+        self._persist(tier=tier, messages=messages,
+                       response_format=response_format, rsp=rsp,
+                       extra_meta={"max_tokens": max_tokens, "temperature": temperature})
+        return rsp
+
+    def vision(self, *, messages, image_bytes, response_format=None,
+               max_tokens=None) -> LLMResponse:
+        import hashlib as _hl
+        rsp = self.live.vision(
+            messages=messages, image_bytes=image_bytes,
+            response_format=response_format, max_tokens=max_tokens,
+        )
+        ihash = _hl.sha256(image_bytes).hexdigest()[:16]
+        wrapped_messages = list(messages) + [
+            {"role": "image", "content": {"image_sha256": ihash}}
+        ]
+        self._persist(tier="vision", messages=wrapped_messages,
+                       response_format=response_format, rsp=rsp,
+                       extra_meta={"max_tokens": max_tokens, "image_sha256": ihash})
+        return rsp
+
+    def _persist(self, *, tier, messages, response_format, rsp, extra_meta):
+        import datetime as _dt
+        h = CassetteLLMClient._hash_request(tier, messages, response_format)
+        cassette = {
+            "request": {
+                "tier": tier,
+                "messages": messages,
+                "response_format": response_format,
+                **extra_meta,
+            },
+            "response": {
+                "text": rsp.text,
+                "structured": rsp.structured,
+                "finish_reason": rsp.finish_reason,
+                "usage": {
+                    "tokens_in": rsp.usage.tokens_in,
+                    "tokens_out": rsp.usage.tokens_out,
+                    "model_used": rsp.usage.model_used,
+                    "latency_ms": rsp.usage.latency_ms,
+                    "cost_usd_estimate": rsp.usage.cost_usd_estimate,
+                },
+            },
+            "meta": {
+                "recorded_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                **self.meta,
+            },
+        }
+        # Redact + write
+        try:
+            cassette = self._redact(cassette)
+        except Exception:
+            pass  # fall through; raw cassette better than crash
+        path = os.path.join(self.dir, f"{h}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cassette, f, ensure_ascii=False, indent=2, default=str)
+
+
 # --- Factory ------------------------------------------------------------------
 
 def make_llm_client(config, *, cassette_dir: Optional[str] = None) -> LLMClient:
@@ -394,4 +486,11 @@ def make_llm_client(config, *, cassette_dir: Optional[str] = None) -> LLMClient:
         return CassetteLLMClient(path, config)
     if mode == "live":
         return OpenAILLMClient(config)
-    raise ValueError(f"unknown openai_test_mode={mode!r}; expected mock|cassette|live")
+    if mode == "record":
+        live_client = OpenAILLMClient(config)
+        path = cassette_dir or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "tests", "cassettes",
+        )
+        return RecordingLLMClient(live_client, path)
+    raise ValueError(f"unknown openai_test_mode={mode!r}; expected mock|cassette|live|record")
