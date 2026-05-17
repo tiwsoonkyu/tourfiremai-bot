@@ -1,0 +1,17 @@
+{
+  "pdf_filename": "WS05_jp_tour.pdf",
+  "pdf_hash": "480d6a92cc8e",
+  "expected": {
+    "tip_amount": null,
+    "deposit_amount": null,
+    "single_supplement": 8900,
+    "visa_fee": null,
+    "visa_status": "exempt",
+    "infant_fee": null,
+    "child_fee_no_bed": null,
+    "joinland_price": null,
+    "mandatory_fees_summary": "พักเดี่ยว 8900"
+  },
+  "expected_source_page": 9,
+  "notes": "WS05. Same layout family as WS03/04. single_supplement=8,900 from table. Infant section visible but value cut off in pdfplumber output. Other fees need vision."
+}

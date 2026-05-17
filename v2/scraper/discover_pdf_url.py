@@ -20,7 +20,8 @@ from typing import Optional
 logger = logging.getLogger("v2.scraper.pdf_discovery")
 
 BASE_URL = "https://www.tourfiremai.com"
-DETAIL_PATH = "/intertourdetail/{web_code}"
+DETAIL_PATH = "/tour/{web_code}"
+DETAIL_PATH_LEGACY = "/intertourdetail/{web_code}"
 
 
 # Anchor href ending with .pdf (case-insensitive)
@@ -86,6 +87,7 @@ def discover_pdf_url(
         prefer_db: if False, always fetch detail page (forces refresh)
     """
     detail_url = BASE_URL + DETAIL_PATH.format(web_code=web_code)
+    detail_url_legacy = BASE_URL + DETAIL_PATH_LEGACY.format(web_code=web_code)
 
     # 1) Prefer pdf_url in DB if available
     if prefer_db and supabase is not None:
@@ -107,24 +109,26 @@ def discover_pdf_url(
                 notes="requests_not_installed",
             )
         import requests
-        try:
-            resp = requests.get(detail_url, timeout=timeout_sec, headers={
-                "User-Agent": "Mozilla/5.0 (TourFireMai V2 PDF discover)",
-                "Accept": "text/html",
-            })
-        except Exception as e:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (TourFireMai V2 PDF discover)",
+            "Accept": "text/html",
+        }
+        html = ""
+        for url in (detail_url, detail_url_legacy):
+            try:
+                resp = requests.get(url, timeout=timeout_sec, headers=headers)
+                if resp.status_code == 200:
+                    html = resp.text
+                    detail_url = url  # remember which one worked
+                    break
+            except Exception:
+                continue
+        if not html:
             return PdfDiscoveryResult(
                 web_code=web_code, pdf_url=None,
                 found_in="not_found", detail_url=detail_url,
-                notes=f"http_error: {type(e).__name__}",
+                notes="http_failed_both_paths",
             )
-        if resp.status_code != 200:
-            return PdfDiscoveryResult(
-                web_code=web_code, pdf_url=None,
-                found_in="not_found", detail_url=detail_url,
-                notes=f"http_status: {resp.status_code}",
-            )
-        html = resp.text
     else:
         r = http_client.get(detail_url, timeout=timeout_sec)
         if r.status_code != 200:

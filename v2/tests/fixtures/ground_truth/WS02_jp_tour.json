@@ -1,0 +1,17 @@
+{
+  "pdf_filename": "WS02_jp_tour.pdf",
+  "pdf_hash": "13f9d31dccef",
+  "expected": {
+    "tip_amount": 2000,
+    "deposit_amount": null,
+    "single_supplement": null,
+    "visa_fee": null,
+    "visa_status": "exempt",
+    "infant_fee": 6000,
+    "child_fee_no_bed": null,
+    "joinland_price": null,
+    "mandatory_fees_summary": "ทิป 2000 / ทารก 6000 / JOINTOUR ลด 7000"
+  },
+  "expected_source_page": 4,
+  "notes": "WS02. Layout heavy with broken Thai (กรณีที่ม PDF font has issues). tip/infant visible. JOINTOUR (joinland) hinted as 'ลด 7000 จากราคาทัวร์' but absolute price not extractable from text — requires vision."
+}

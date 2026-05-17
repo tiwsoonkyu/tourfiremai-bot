@@ -1,0 +1,17 @@
+{
+  "pdf_filename": "WS03_jp_tour.pdf",
+  "pdf_hash": "16447696b25f",
+  "expected": {
+    "tip_amount": null,
+    "deposit_amount": null,
+    "single_supplement": 8900,
+    "visa_fee": null,
+    "visa_status": "exempt",
+    "infant_fee": 9900,
+    "child_fee_no_bed": null,
+    "joinland_price": null,
+    "mandatory_fees_summary": "พักเดี่ยว 8900 / ทารก 9900"
+  },
+  "expected_source_page": 8,
+  "notes": "WS03. price table p.8 — single_supplement column shows 8,900. Infant explicit (=9,900). tip/deposit/visa fields likely on later page that pdfplumber didn't reach or are image-only — needs vision."
+}

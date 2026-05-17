@@ -1,0 +1,17 @@
+{
+  "pdf_filename": "WS01_jp_tour.pdf",
+  "pdf_hash": "7e5fc8e972cb",
+  "expected": {
+    "tip_amount": 2000,
+    "deposit_amount": 15000,
+    "single_supplement": 6000,
+    "visa_fee": null,
+    "visa_status": "exempt",
+    "infant_fee": 6000,
+    "child_fee_no_bed": 15990,
+    "joinland_price": null,
+    "mandatory_fees_summary": "ทิป 2000 / มัดจำ 15000 / พักเดี่ยว 6000 / ทารก 6000"
+  },
+  "expected_source_page": 3,
+  "notes": "WS01 = anonymized partner. tip + deposit + infant explicit in p.3 text. single_supplement is the last column of price table (ห้องพักเดี่ยว). visa_status=exempt (Japan)."
+}
