@@ -1,0 +1,356 @@
+"""
+v2.webhook.app — Flask webhook receiver for Meta Messenger.
+
+Sprint 2 deliverable. Wires:
+  - X-Hub-Signature-256 verification
+  - Idempotency check (Redis NX) + DB-level meta_message_id unique index
+  - Per-PSID conversation lock (60s TTL)
+  - Inbound message persistence (conversation_turns)
+  - DLQ promotion on repeated failure (>3)
+  - Webhook acked < 5s; processing deferred to background thread
+
+In Sprint 2 there is NO LLM call and NO outbound message — the bot remains
+silent. We just ingest, persist, log a state-machine decision, and return 200.
+
+Endpoints:
+    GET  /webhook          — Meta verification handshake
+    POST /webhook          — Meta event delivery
+    GET  /healthz          — liveness probe
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import logging
+import os
+import threading
+import time
+import uuid
+from typing import Any, Optional
+
+from flask import Flask, request, jsonify
+
+from ..lib import config as cfg_module
+from ..lib import idempotency, redactor
+from ..lib.cache import make_redis
+from ..lib.db import make_supabase_from_config
+from ..lib.intent import classify
+from ..lib.state_machine import (
+    State, StateContext, transition, allowed_tools, is_silent_state,
+)
+
+logger = logging.getLogger("v2.webhook")
+
+
+# --- App factory --------------------------------------------------------------
+
+def create_app(*, test_config=None, test_supabase=None, test_redis=None) -> Flask:
+    """
+    Flask app factory. test_config + injected dependencies for unit tests.
+    """
+    app = Flask(__name__)
+    app.url_map.strict_slashes = False
+
+    # Config
+    if test_config is not None:
+        config = test_config
+    else:
+        config = cfg_module.load_config(strict=True)
+
+    # Dependencies
+    redis = test_redis if test_redis is not None else make_redis(config)
+    supabase = test_supabase if test_supabase is not None else make_supabase_from_config(config)
+
+    # Stash on app for handlers + tests
+    app.config["V2_CONFIG"] = config
+    app.config["V2_REDIS"] = redis
+    app.config["V2_SUPABASE"] = supabase
+
+    _register_routes(app)
+    return app
+
+
+# --- Helpers ------------------------------------------------------------------
+
+def _verify_meta_signature(body_bytes: bytes, signature_header: str, app_secret: str) -> bool:
+    """Verify X-Hub-Signature-256 sent by Meta."""
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = signature_header.split("=", 1)[1]
+    computed = hmac.new(
+        app_secret.encode("utf-8"), body_bytes, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(computed, expected)
+
+
+def _redacted_event_for_log(event: dict) -> dict:
+    return redactor.redact_event(event)
+
+
+# --- Background processing ----------------------------------------------------
+
+def _persist_inbound(supabase, *, conversation_id: str, psid: str, turn_number: int,
+                    text: str, meta_message_id: str, intent_dict: dict, state_before: str,
+                    state_after: str) -> Optional[dict]:
+    """Insert inbound conversation_turns row. Returns row or None on dedup."""
+    try:
+        return supabase.table("conversation_turns").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "psid": psid,
+            "turn_number": turn_number,
+            "direction": "inbound",
+            "speaker": "customer",
+            "message_text": text,
+            "intent": intent_dict,
+            "state_before": state_before,
+            "state_after": state_after,
+            "meta_message_id": meta_message_id,
+            "platform": "fb",
+        })
+    except Exception as e:
+        # Likely the dedup unique index — that's the desired behavior on replay
+        if "idx_turns_dedup" in str(e):
+            logger.info("Dedup hit on conversation_turns for %s", meta_message_id)
+            return None
+        raise
+
+
+def _get_or_create_conversation(supabase, psid: str) -> dict:
+    """Idempotently fetch active conversation row; create with state=new_lead if missing."""
+    existing = supabase.table("conversations").select_one({"psid": psid, "closed_at": None})
+    if existing:
+        return existing
+
+    # Need customer first
+    customer = supabase.table("customers").select_one({"psid": psid})
+    if not customer:
+        customer = supabase.table("customers").insert({"psid": psid})
+
+    row = supabase.table("conversations").insert({
+        "customer_id": customer["id"],
+        "psid": psid,
+        "state": State.NEW_LEAD.value,
+    })
+    return row
+
+
+def _increment_turn_counter(supabase, conversation_id: str) -> int:
+    """Return next turn_number for this conversation (count + 1)."""
+    # In a real system, use SELECT MAX or row-level lock. For Sprint 2 single-pod, count works.
+    with supabase.table("conversation_turns")._cursor() as cur:
+        cur.execute(
+            'SELECT COALESCE(MAX(turn_number), 0) FROM "conversation_turns" WHERE "conversation_id" = %s',
+            [conversation_id],
+        )
+        max_n = cur.fetchone()[0] or 0
+    return int(max_n) + 1
+
+
+def _process_event(app, event: dict, full_message_id: str, trace_id: str) -> None:
+    """Background work after webhook ack. Persists turn + computes state transition."""
+    supabase = app.config["V2_SUPABASE"]
+    redis_ = app.config["V2_REDIS"]
+
+    sender = event.get("sender") or {}
+    psid = sender.get("id")
+    msg = event.get("message") or {}
+    text = msg.get("text") or ""
+    attachments = msg.get("attachments") or []
+
+    if not psid:
+        logger.warning("[%s] missing PSID in event — DLQ candidate", trace_id)
+        return
+
+    # Acquire per-PSID lock
+    lock = idempotency.ConversationLock(redis_, psid, trace_id)
+    if not lock.acquire():
+        logger.warning("[%s] lock-timeout for PSID %s — Meta will retry", trace_id, redactor._mask_psid(psid))
+        # Force clear idem to allow retry
+        idempotency.DuplicateChecker(redis_).force_clear(full_message_id)
+        return
+
+    try:
+        # Conversation row
+        conv = _get_or_create_conversation(supabase, psid)
+        state_before = State(conv["state"])
+
+        # Classify intent (rule-based only in Sprint 2)
+        intent_obj = classify(text, attachments=attachments, current_state=state_before.value)
+
+        # Transition
+        ctx = StateContext()
+        result = transition(state_before, _intent_to_sm(intent_obj), ctx)
+        state_after = result.next_state
+
+        # Persist inbound turn (dedup-safe)
+        turn_no = _increment_turn_counter(supabase, conv["id"])
+        _persist_inbound(
+            supabase,
+            conversation_id=conv["id"],
+            psid=psid,
+            turn_number=turn_no,
+            text=text,
+            meta_message_id=full_message_id,
+            intent_dict=intent_obj.to_dict(),
+            state_before=state_before.value,
+            state_after=state_after.value,
+        )
+
+        # Update conversation state if changed
+        if state_before != state_after:
+            supabase.table("conversations").update(
+                {"id": conv["id"]},
+                {"state": state_after.value, "last_activity_at": "now()"},
+            )
+            supabase.table("conversation_events").insert({
+                "id": str(uuid.uuid4()),
+                "conversation_id": conv["id"],
+                "psid": psid,
+                "event_type": "state_change",
+                "event_data": {"from": state_before.value, "to": state_after.value, "reason": result.reason},
+                "triggered_by": "bot",
+                "meta_message_id": full_message_id,
+                "platform": "fb",
+            })
+
+        logger.info(
+            "[%s] PSID=%s state=%s→%s intent=%s reason=%s tools=%s",
+            trace_id, redactor._mask_psid(psid),
+            state_before.value, state_after.value,
+            intent_obj.type, result.reason, result.tool_hints,
+        )
+
+    except Exception as e:
+        logger.exception("[%s] processing failed: %s", trace_id, e)
+        _maybe_promote_dlq(supabase, redis_, full_message_id, psid, event, str(e))
+    finally:
+        lock.release()
+
+
+def _intent_to_sm(intent_obj):
+    """Adapt v2.lib.intent.Intent → v2.lib.state_machine.Intent."""
+    from .. import lib  # noqa
+    from ..lib.state_machine import Intent as SMIntent
+    return SMIntent(
+        type=intent_obj.type,
+        raw_text=intent_obj.raw_text,
+        country=intent_obj.country,
+        budget=intent_obj.budget,
+        selected_index=intent_obj.selected_index,
+        selected_code=intent_obj.selected_code,
+        has_attachment=intent_obj.has_attachment,
+    )
+
+
+def _maybe_promote_dlq(supabase, redis_, full_message_id: str, psid: str,
+                       event: dict, error: str) -> None:
+    """Increment retry counter; if > 3, write to dlq_messages."""
+    retry_key = f"retry:{full_message_id}"
+    current = redis_.get(retry_key)
+    count = int(current) if current and current.isdigit() else 0
+    count += 1
+    redis_.set(retry_key, str(count), ex=86400)
+
+    if count > 3:
+        logger.error("DLQ promotion for %s after %d failures", full_message_id, count)
+        try:
+            supabase.table("dlq_messages").insert({
+                "id": str(uuid.uuid4()),
+                "platform": "fb",
+                "meta_message_id": full_message_id,
+                "psid": psid,
+                "raw_payload": redactor.redact_event(event),
+                "failure_count": count,
+                "last_error": error[:1000],
+                "first_failed_at": "now()",
+                "last_failed_at": "now()",
+            })
+        except Exception as dlq_err:
+            logger.error("DLQ write itself failed: %s", dlq_err)
+
+
+# --- Routes -------------------------------------------------------------------
+
+def _register_routes(app: Flask) -> None:
+    config = app.config["V2_CONFIG"]
+
+    @app.route("/healthz", methods=["GET"])
+    def healthz():
+        return jsonify({
+            "status": "ok",
+            "env": config.env_name,
+            "has_redis": config.has_redis,
+            "has_llm": config.has_llm,
+            "has_line": config.has_line,
+        })
+
+    @app.route("/webhook", methods=["GET"])
+    def verify():
+        """Meta webhook verification handshake."""
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == config.fb_verify_token:
+            return challenge or "", 200
+        return "forbidden", 403
+
+    @app.route("/webhook", methods=["POST"])
+    def receive():
+        raw = request.get_data()
+        sig = request.headers.get("X-Hub-Signature-256", "")
+
+        # 1) Verify signature
+        if not config.fb_app_secret:
+            logger.error("FB_APP_SECRET not configured — refusing all webhooks")
+            return "misconfigured", 500
+        if not _verify_meta_signature(raw, sig, config.fb_app_secret):
+            return "invalid signature", 401
+
+        # 2) Parse body
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return "invalid json", 400
+
+        if body.get("object") != "page":
+            return "ignored", 200
+
+        # 3) For each entry → each messaging event
+        redis_ = app.config["V2_REDIS"]
+        scheduled = 0
+
+        for entry in body.get("entry", []):
+            for ev in entry.get("messaging", []):
+                identity = idempotency.build_meta_message_id(ev, platform="fb")
+                dup_result = idempotency.check_duplicate_event(redis_, identity.full_id)
+                if dup_result.is_duplicate:
+                    logger.info("Duplicate %s (trace_id=%s)", identity.full_id, dup_result.trace_id)
+                    continue
+
+                # Defer to background thread; Flask returns 200 immediately
+                thread = threading.Thread(
+                    target=_process_event,
+                    args=(app, ev, identity.full_id, dup_result.trace_id),
+                    name=f"v2-proc-{dup_result.trace_id[:8]}",
+                    daemon=True,
+                )
+                thread.start()
+                scheduled += 1
+
+        return jsonify({"status": "accepted", "scheduled": scheduled}), 200
+
+    @app.errorhandler(Exception)
+    def _on_error(e):
+        logger.exception("Unhandled error: %s", e)
+        return "internal error", 500
+
+
+# --- Entrypoint ---------------------------------------------------------------
+
+if __name__ == "__main__":
+    logging.basicConfig(level=os.environ.get("V2_STAGING_LOG_LEVEL", "INFO"))
+    app = create_app()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))

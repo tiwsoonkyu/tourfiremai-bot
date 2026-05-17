@@ -129,9 +129,29 @@ class _InMemoryTable:
         count = 0
         for row in self._rows:
             if self._matches(row, where):
-                row.update(patch)
+                # Substitute SQL literal "now()" with actual timestamp
+                patch_real = {k: (datetime.now(timezone.utc).isoformat() if v == "now()" else v) for k, v in patch.items()}
+                row.update(patch_real)
                 count += 1
         return count
+
+    class _CursorStub:
+        """Minimal psycopg-cursor compat for code paths that call _cursor()."""
+        def __init__(self, table): self._table = table
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, sql, vals=None):
+            self._result = None
+            # Recognize the MAX(turn_number) query used in webhook handler
+            if "MAX(turn_number)" in sql and vals:
+                conv_id = vals[0]
+                turns = [r for r in self._table._rows if r.get("conversation_id") == conv_id]
+                max_n = max((t.get("turn_number") or 0) for t in turns) if turns else 0
+                self._result = (max_n,)
+        def fetchone(self): return self._result
+
+    def _cursor(self):
+        return self._CursorStub(self)
 
     def upsert(self, *, match: dict, insert: dict, update: dict) -> dict:
         existing = self.select_one(match)
