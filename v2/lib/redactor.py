@@ -54,6 +54,11 @@ _SENSITIVE_KEYS = {
 }
 
 
+def mask_psid(psid: str) -> str:
+    """Public wrapper — preferred for callers outside this module."""
+    return _mask_psid(psid)
+
+
 def _mask_psid(psid: str) -> str:
     """Show first 4 + last 2 chars only: 1234567890 → 1234******90."""
     if not psid or len(psid) < 8:

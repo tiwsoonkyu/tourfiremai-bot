@@ -138,9 +138,21 @@ def _get_or_create_conversation(supabase, psid: str) -> dict:
 
 
 def _increment_turn_counter(supabase, conversation_id: str) -> int:
-    """Return next turn_number for this conversation (count + 1)."""
-    # In a real system, use SELECT MAX or row-level lock. For Sprint 2 single-pod, count works.
+    """
+    Return next turn_number atomically. Locks conversations row to prevent
+    races between concurrent webhook threads on the same PSID.
+
+    Pattern: BEGIN; SELECT 1 FROM conversations WHERE id=... FOR UPDATE;
+             SELECT COALESCE(MAX(turn_number),0)+1 FROM conversation_turns ...; COMMIT.
+    The per-PSID Redis lock SHOULD already serialize this, but the DB lock
+    is defense-in-depth in case Redis is bypassed or evicted mid-flight.
+    """
     with supabase.table("conversation_turns")._cursor() as cur:
+        # Lock the conversations row
+        cur.execute(
+            'SELECT id FROM "conversations" WHERE id = %s FOR UPDATE',
+            [conversation_id],
+        )
         cur.execute(
             'SELECT COALESCE(MAX(turn_number), 0) FROM "conversation_turns" WHERE "conversation_id" = %s',
             [conversation_id],
@@ -167,7 +179,18 @@ def _process_event(app, event: dict, full_message_id: str, trace_id: str) -> Non
     # Acquire per-PSID lock
     lock = idempotency.ConversationLock(redis_, psid, trace_id)
     if not lock.acquire():
-        logger.warning("[%s] lock-timeout for PSID %s — Meta will retry", trace_id, redactor._mask_psid(psid))
+        # Track contention so it's visible in DLQ retry counter (not a hard failure yet)
+        retry_key = f"retry:{full_message_id}"
+        try:
+            current = redis_.get(retry_key)
+            count = int(current) if current and current.isdigit() else 0
+            redis_.set(retry_key, str(count + 1), ex=86400)
+        except Exception:
+            pass
+        logger.warning(
+            "[%s] lock-timeout for PSID %s (retry %d) — Meta will retry",
+            trace_id, redactor.mask_psid(psid), count + 1 if 'count' in locals() else 1,
+        )
         # Force clear idem to allow retry
         idempotency.DuplicateChecker(redis_).force_clear(full_message_id)
         return
@@ -218,7 +241,7 @@ def _process_event(app, event: dict, full_message_id: str, trace_id: str) -> Non
 
         logger.info(
             "[%s] PSID=%s state=%s→%s intent=%s reason=%s tools=%s",
-            trace_id, redactor._mask_psid(psid),
+            trace_id, redactor.mask_psid(psid),
             state_before.value, state_after.value,
             intent_obj.type, result.reason, result.tool_hints,
         )

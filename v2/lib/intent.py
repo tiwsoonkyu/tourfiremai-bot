@@ -83,7 +83,7 @@ _BUDGET_AMOUNT_RE = re.compile(
     re.I,
 )
 _BUDGET_STRICT_RE = re.compile(r"(ไม่เกิน|ห้ามเกิน|under|max|ขั้นต่ำ|low)", re.I)
-_BUDGET_FLEX_RE = re.compile(r"(ประมาณ|ราว|around|about|แถว|sukha)", re.I)
+_BUDGET_FLEX_RE = re.compile(r"(ประมาณ|ราว|around|about|แถว)", re.I)
 
 # Pax: "4 คน" / "2 ผู้ใหญ่"
 _PAX_RE = re.compile(r"(\d{1,2})\s*(?:คน|ผู้ใหญ่|adult|pax|person)", re.I)
@@ -103,7 +103,7 @@ _INDEX_RE = re.compile(
     re.I,
 )
 _TH_INDEX_WORDS = {
-    "ตัวแรก": 1, "ตัวที่สอง": 2, "ตัวที่สาม": 2, "ที่หนึ่ง": 1, "ที่สอง": 2, "ที่สาม": 3,
+    "ตัวแรก": 1, "ตัวที่สอง": 2, "ตัวที่สาม": 3, "ที่หนึ่ง": 1, "ที่สอง": 2, "ที่สาม": 3,
 }
 
 
