@@ -1,0 +1,6 @@
+# V2 runtime dependencies
+requests>=2.31,<3
+psycopg[binary]>=3.1,<4
+redis>=5.0,<6
+pydantic>=2.6,<3
+anthropic>=0.40,<1
