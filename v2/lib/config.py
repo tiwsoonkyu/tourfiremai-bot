@@ -73,7 +73,12 @@ class Config:
 
     # LLM (V2 staging key only — stub if absent)
     openai_api_key: Optional[str]
-    openai_model: str
+    openai_response_model: str        # Reasoning tier (response writer)
+    openai_fast_model: str             # Fast tier (intent / fee extract from text)
+    openai_vision_model: str           # Vision tier (scanned PDF / image triage)
+    openai_test_mode: str              # 'mock' | 'cassette' | 'live'
+    openai_max_retries: int
+    openai_timeout_sec: int
 
     # LINE notify (V2 staging — separate from V1)
     line_channel_token: Optional[str]
@@ -121,7 +126,12 @@ def load_config(*, strict: bool = True) -> Config:
         fb_page_access_token=_env("FB_PAGE_ACCESS_TOKEN"),
         fb_verify_token=_env("FB_VERIFY_TOKEN"),
         openai_api_key=_env("OPENAI_API_KEY"),
-        openai_model=_env("OPENAI_MODEL", "gpt-4o-mini"),
+        openai_response_model=_env("OPENAI_RESPONSE_MODEL", "gpt-5.1"),
+        openai_fast_model=_env("OPENAI_FAST_MODEL", "gpt-5-nano"),
+        openai_vision_model=_env("OPENAI_VISION_MODEL", "gpt-4o"),
+        openai_test_mode=_env("OPENAI_TEST_MODE", "mock"),
+        openai_max_retries=int(_env("LLM_MAX_RETRIES", "3")),
+        openai_timeout_sec=int(_env("LLM_TIMEOUT_SEC", "30")),
         line_channel_token=_env("LINE_CHANNEL_TOKEN"),
         line_admin_user_or_group_id=_env("LINE_ADMIN_USER_OR_GROUP_ID"),
         log_level=_env("LOG_LEVEL", "INFO"),
