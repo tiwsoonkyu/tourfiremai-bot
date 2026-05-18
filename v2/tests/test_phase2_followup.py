@@ -16,6 +16,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from pathlib import Path
 
 from v2.lib.llm_pricing import (
     MODEL_PRICING_USD_PER_TOKEN, estimate_cost, format_cost, sum_costs,
@@ -62,7 +63,10 @@ class TestCassetteReplayWiring:
         real_join = runner.os.path.join
         def fake_join(a, *parts):
             j = real_join(a, *parts)
-            if j.endswith("v2/tests/fixtures") or j.endswith("tests/fixtures"):
+            # Cross-platform check via pathlib.parts (Windows-safe).
+            chain = Path(j).parts
+            if chain[-3:] == ("v2", "tests", "fixtures") \
+                    or chain[-2:] == ("tests", "fixtures"):
                 return str(fix)
             return j
         monkeypatch.setattr(runner.os.path, "join", fake_join)
@@ -95,7 +99,10 @@ class TestCassetteReplayWiring:
         real_join = runner.os.path.join
         def fake_join(a, *parts):
             j = real_join(a, *parts)
-            if j.endswith("v2/tests/fixtures") or j.endswith("tests/fixtures"):
+            # Cross-platform check via pathlib.parts (Windows-safe).
+            chain = Path(j).parts
+            if chain[-3:] == ("v2", "tests", "fixtures") \
+                    or chain[-2:] == ("tests", "fixtures"):
                 return str(fix)
             return j
         monkeypatch.setattr(runner.os.path, "join", fake_join)

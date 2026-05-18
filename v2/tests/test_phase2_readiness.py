@@ -15,6 +15,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from pathlib import Path
 
 from v2.lib.fee_schema import (
     TOUR_FEES_JSON_SCHEMA, TOUR_FEES_REQUIRED_FIELDS, build_response_format,
@@ -249,7 +250,13 @@ class TestCorpusOnDemandRunner:
         def fake_join(a, *parts):
             # When the runner builds the fixture path, return our tmp tree.
             joined = real_join(a, *parts)
-            if joined.endswith("v2/tests/fixtures") or joined.endswith("tests/fixtures"):
+            # Cross-platform check: pathlib normalizes both / and \ separators
+            # so this matches on Windows too (Codex review caught the
+            # endswith("v2/tests/fixtures") bug that silently fell through
+            # to the real 5-PDF corpus on Windows).
+            parts_chain = Path(joined).parts
+            if parts_chain[-3:] == ("v2", "tests", "fixtures") \
+                    or parts_chain[-2:] == ("tests", "fixtures"):
                 return str(fixture_root)
             return joined
         monkeypatch.setattr(pipeline_mod.os.path, "join", fake_join)
