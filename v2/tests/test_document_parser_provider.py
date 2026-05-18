@@ -328,3 +328,153 @@ class TestPricingUnchanged:
     def test_format_cost_with_disclaimer_present(self):
         from v2.lib.llm_pricing import format_cost_with_disclaimer
         assert "estimate" in format_cost_with_disclaimer(0.41).lower()
+
+
+
+# ---- QA L1 + L2 cleanup regression tests -----------------------------------
+
+class TestQACleanupL1ConfidenceKeys:
+    """QA L1 — MockDocumentParser must emit the EXACT confidence-column names
+    used by tour_fees / ExtractionResult. Old shorthand produced
+    `single_confidence` for `single_supplement`; the grader silently dropped
+    it. Lock in the corrected mapping."""
+
+    def test_single_supplement_maps_to_correct_column(self):
+        m = MockDocumentParser()
+        r = m.parse("/tmp/WS01_jp_tour.pdf")
+        keys = set(r.fee_field_confidences.keys())
+        # Correct column name present:
+        assert "single_supplement_confidence" in keys
+        # Buggy shorthand absent:
+        assert "single_confidence" not in keys
+
+    def test_deposit_maps_to_correct_column(self):
+        m = MockDocumentParser()
+        r = m.parse("/tmp/WS01_jp_tour.pdf")
+        # WS01 mock returns deposit_amount=15000 → should produce
+        # deposit_confidence (not "deposit_confidence" via mangled prefix).
+        assert "deposit_confidence" in r.fee_field_confidences
+        # NB: old code did `k.split('_')[0]` so "deposit_amount" became
+        # "deposit_confidence" by accident — same key. Defense: ensure
+        # the value is exactly 0.85.
+        assert r.fee_field_confidences["deposit_confidence"] == 0.85
+
+    def test_tip_visa_keys_match_extractionresult(self):
+        m = MockDocumentParser()
+        r = m.parse("/tmp/WS01_jp_tour.pdf")
+        # All keys must match ExtractionResult field names from extract_fees.py.
+        from v2.scraper.extract_fees import ExtractionResult
+        valid_columns = {
+            "tip_confidence", "deposit_confidence",
+            "single_supplement_confidence", "visa_confidence",
+        }
+        for k in r.fee_field_confidences:
+            assert k in valid_columns,                 f"mock emitted unrecognized confidence column: {k}"
+            # Field exists on ExtractionResult:
+            assert hasattr(ExtractionResult, k)
+
+    def test_benchmark_grader_sees_single_supplement_confidence(self, tmp_path):
+        """End-to-end: the benchmark conversion previously dropped the mock's
+        single_supplement_confidence because it was emitted under the wrong
+        key. After the fix, _parse_result_to_extraction picks it up."""
+        import json
+        from v2.scraper.benchmark_providers import (
+            benchmark_providers, _parse_result_to_extraction,
+        )
+        from v2.tests.fixtures.synthetic_pdf import build_synthetic_fee_pdf
+
+        m = MockDocumentParser()
+        r = m.parse("/tmp/WS01_jp_tour.pdf")
+        extraction = _parse_result_to_extraction(r)
+        # Critical assertion: the converted ExtractionResult MUST carry the
+        # single_supplement_confidence value. Previously this was None
+        # because the mock emitted the wrong column name.
+        assert extraction.single_supplement_confidence == 0.85
+        assert extraction.tip_confidence == 0.85
+        assert extraction.deposit_confidence == 0.85
+
+
+class TestQACleanupL2NoSupabaseInBenchmarkMode:
+    """QA L2 — `--benchmark-providers` must NOT instantiate Supabase, since
+    that path only needs fixture PDFs + ground-truth JSON from disk.
+    Otherwise the operator needs V2_STAGING_DB_* env vars even for a pure
+    in-process mock benchmark."""
+
+    def _set_min_env(self, monkeypatch):
+        # Provide JUST enough env for cfg_module.load_config(strict=True),
+        # NOT enough for a real DB connect. If main() incorrectly tries to
+        # connect, the test fails at make_supabase_from_config (or earlier).
+        monkeypatch.setenv("V2_STAGING_SUPABASE_URL", "http://x")
+        monkeypatch.setenv("V2_STAGING_DB_HOST", "h")
+        monkeypatch.setenv("V2_STAGING_DB_USER", "u")
+        monkeypatch.setenv("V2_STAGING_DB_PASSWORD", "p")
+        monkeypatch.delenv("V2_STAGING_OPENAI_TEST_MODE", raising=False)
+
+    def test_benchmark_providers_does_not_call_make_supabase(self,
+                                                              tmp_path,
+                                                              monkeypatch):
+        self._set_min_env(monkeypatch)
+        # Empty fixture tree so the runner returns rc=1 quickly AFTER the
+        # supabase-init check (which is what we're testing).
+        fix = tmp_path / "fixtures"
+        for sub in ("pdfs/text_based", "pdfs/scanned", "pdfs/mixed",
+                    "ground_truth"):
+            (fix / sub).mkdir(parents=True)
+
+        import v2.scraper.run_fee_pipeline as runner
+        # Spy on make_supabase_from_config — must NOT be called.
+        called = []
+        real_make = runner.make_supabase_from_config
+        def spy(*args, **kwargs):
+            called.append((args, kwargs))
+            return real_make(*args, **kwargs)
+        monkeypatch.setattr(runner, "make_supabase_from_config", spy)
+
+        # Redirect fixture root to our tmp tree
+        real_join = runner.os.path.join
+        def fake_join(a, *parts):
+            j = real_join(a, *parts)
+            chain = Path(j).parts
+            if chain[-3:] == ("v2", "tests", "fixtures") \
+                    or chain[-2:] == ("tests", "fixtures"):
+                return str(fix)
+            return j
+        monkeypatch.setattr(runner.os.path, "join", fake_join)
+
+        rc = runner.main(["--benchmark-providers", "mock"])
+        assert called == [],             "Supabase init should NOT happen in benchmark-only mode " \
+            f"(got {len(called)} call(s))"
+
+    def test_pdf_corpus_ondemand_also_skips_supabase(self, tmp_path,
+                                                       monkeypatch):
+        """The original --pdf-corpus path already skipped Supabase via the
+        old check `if not args.pdf_corpus`. The combined L2 fix preserves
+        that for --pdf-corpus-ondemand too (the on-demand corpus runner
+        also doesn't touch DB)."""
+        self._set_min_env(monkeypatch)
+        fix = tmp_path / "fixtures"
+        for sub in ("pdfs/text_based", "pdfs/scanned", "pdfs/mixed",
+                    "ground_truth"):
+            (fix / sub).mkdir(parents=True)
+
+        import v2.scraper.run_fee_pipeline as runner
+        called = []
+        real_make = runner.make_supabase_from_config
+        def spy(*args, **kwargs):
+            called.append((args, kwargs))
+            return real_make(*args, **kwargs)
+        monkeypatch.setattr(runner, "make_supabase_from_config", spy)
+
+        real_join = runner.os.path.join
+        def fake_join(a, *parts):
+            j = real_join(a, *parts)
+            chain = Path(j).parts
+            if chain[-3:] == ("v2", "tests", "fixtures") \
+                    or chain[-2:] == ("tests", "fixtures"):
+                return str(fix)
+            return j
+        monkeypatch.setattr(runner.os.path, "join", fake_join)
+
+        runner.main(["--pdf-corpus-ondemand", "--mock-llm"])
+        assert called == [], \
+            "Supabase init should not happen in --pdf-corpus-ondemand"

@@ -215,7 +215,13 @@ def main(argv=None) -> int:
         llm = MockLLMClient(config)
         logger.info("Using MockLLMClient (mode=%s)", effective_mode)
 
-    supabase = make_supabase_from_config(config) if not args.pdf_corpus else None
+    # QA L2 fix: skip Supabase config/client init for the corpus-only / benchmark-only paths.
+    # Those paths read fixture PDFs + ground-truth JSON from disk; they do not
+    # touch tour_fees or any other DB table. Initializing Supabase here would
+    # require V2_STAGING_DB_* env vars even when the operator only wants a
+    # mock benchmark run.
+    needs_supabase = not (args.pdf_corpus or args.pdf_corpus_ondemand or args.benchmark_providers)
+    supabase = make_supabase_from_config(config) if needs_supabase else None
 
     if args.benchmark_providers:
         return _run_benchmark_providers(args)

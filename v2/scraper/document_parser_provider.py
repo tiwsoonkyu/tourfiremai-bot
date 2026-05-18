@@ -196,8 +196,28 @@ class MockDocumentParser:
         # Conservative confidences for the mock provider: any populated
         # field gets 0.85 (regex-equivalent), so the benchmark grader can
         # exercise the policy thresholds without exceeding them.
-        confs = {f"{k.split('_')[0]}_confidence": (0.85 if v is not None else None)
-                  for k, v in fee_fields.items() if v is not None}
+        #
+        # QA L1 fix: explicit field→column mapping. The previous
+        # `f"{k.split('_')[0]}_confidence"` shorthand produced
+        # `single_confidence` for `single_supplement` and dropped
+        # `deposit_confidence` for `deposit_amount`, so the per-field
+        # confidence never reached the benchmark grader. Now each value
+        # field maps to its exact confidence column name from
+        # `tour_fees` / `ExtractionResult`.
+        _CONF_COL = {
+            "tip_amount":         "tip_confidence",
+            "deposit_amount":     "deposit_confidence",
+            "single_supplement":  "single_supplement_confidence",
+            "visa_fee":           "visa_confidence",
+            # infant_fee and child_fee_no_bed have no per-field confidence
+            # column in tour_fees — leave them unset; the grader falls back
+            # to the row-level extraction_confidence.
+        }
+        confs = {
+            _CONF_COL[k]: 0.85
+            for k, v in fee_fields.items()
+            if v is not None and k in _CONF_COL
+        }
         return DocumentParseResult(
             provider=self.name,
             raw_text=f"<mock raw_text for {basename}>",
