@@ -139,6 +139,35 @@ class Orchestrator:
                 tool_calls_log.append({"tool": tool_name, "status": "success"})
                 if out is not None:
                     tool_results[tool_name] = out
+                    # Sprint 4 follow-up wire-in: when get_tour_fees signals
+                    # `needs_on_demand_extraction`, invoke the on-demand vision
+                    # entry point (cached + page-capped) and refresh tool_results.
+                    # NB: this only fires when the policy decided handoff_missing
+                    # or handoff_low_confidence — high-confidence rows skip the
+                    # vision call entirely (cost saved).
+                    if tool_name == "get_tour_fees" and isinstance(out, dict) \
+                            and out.get("needs_on_demand_extraction"):
+                        try:
+                            updated = self._run_on_demand_fee_extraction(
+                                psid=psid, fee_info=out,
+                                raw_customer_text=text,
+                            )
+                            if updated is not None:
+                                tool_results["get_tour_fees"] = updated
+                                tool_results["fees"] = updated  # response_writer alias
+                                tool_calls_log.append({
+                                    "tool": "extract_fees_on_demand",
+                                    "status": "success",
+                                    "cache_hit": updated.get("on_demand", {}).get("cache_hit"),
+                                    "vision_pages_used": updated.get("on_demand", {}).get("vision_pages_used", 0),
+                                })
+                        except Exception as ee:
+                            logger.exception("[%s] on_demand fee extract failed: %s", trace_id, ee)
+                            tool_calls_log.append({
+                                "tool": "extract_fees_on_demand",
+                                "status": "error",
+                                "error": str(ee)[:200],
+                            })
             except Exception as e:
                 logger.exception("[%s] tool %s failed: %s", trace_id, tool_name, e)
                 tool_calls_log.append({"tool": tool_name, "status": "error", "error": str(e)[:200]})
@@ -473,6 +502,179 @@ class Orchestrator:
             "tour_id": lock.tour_id,
             "needs_on_demand_extraction": needs_on_demand,
         }
+
+    # ------------------------------------------------------------------
+    # Sprint 4 follow-up: on-demand vision/OCR wiring
+    # ------------------------------------------------------------------
+
+    def _run_on_demand_fee_extraction(self, *,
+                                       psid: str,
+                                       fee_info: dict,
+                                       raw_customer_text: str) -> Optional[dict]:
+        """
+        Trigger on-demand Vision/OCR for the locked tour when the policy says we
+        cannot answer the asked field from the existing DB row.
+
+        Returns the new fee_info dict (same shape as `_get_tour_fees`) with the
+        updated DB row, or None on graceful failure.
+
+        Hard rules:
+          - Vision/OCR is gated by `vision_available()` — graceful skip if not.
+          - Max 3 candidate pages per PDF (per spec).
+          - Cache keyed by `pdf_hash + extraction_version` — second call free.
+          - Persisted back to `tour_fees` via existing `upsert_tour_fees`
+            (idempotent on tour_id + pdf_hash + confidence improvement).
+          - Bot never gets a value below the per-field threshold — that is the
+            response writer's job; this method only refreshes the data.
+        """
+        # Local imports to avoid hard runtime dependency at module load
+        from ..scraper.ondemand_vision import (
+            extract_fees_on_demand, EXTRACTION_VERSION,
+        )
+        from ..scraper.extract_fees import ExtractionResult
+        from ..scraper.save_fees import upsert_tour_fees
+        from .fee_answer_policy import decide_fee_answer
+
+        tour_id = fee_info.get("tour_id")
+        pdf_url = fee_info.get("pdf_url")
+        pdf_hash = fee_info.get("pdf_hash")
+        asked_field = fee_info.get("asked_field") or "any"
+
+        # If we don't have a pdf_url at all, we can't fetch — graceful no-op.
+        if not pdf_url and tour_id:
+            # try lookup on tours_canonical for the tour's pdf_url (some flows
+            # store it there before the first fee extraction).
+            tour_row = self.supabase.table("tours_canonical").select_one({"id": tour_id})
+            if tour_row:
+                pdf_url = tour_row.get("pdf_url") or pdf_url
+        if not pdf_url:
+            logger.info("on_demand: no pdf_url available for tour %s — skipping", tour_id)
+            return None
+
+        # Resolve a local PDF path (download + hash). The downloader has its
+        # own cache by URL; we rely on its sha256 as the canonical pdf_hash.
+        pdf_path: Optional[str] = None
+        try:
+            from ..scraper.download_pdf import download_pdf
+            artifact = download_pdf(pdf_url)
+            pdf_path = artifact.local_path
+            if not pdf_hash:
+                pdf_hash = artifact.sha256
+        except Exception as e:
+            logger.warning("on_demand: download_pdf failed for %s: %s", pdf_url, e)
+            return None
+
+        if not pdf_path or not pdf_hash:
+            return None
+
+        # Build a `prior` ExtractionResult from the existing DB row so the
+        # vision-bump can lift its per-field confidences instead of starting
+        # from scratch (which would lose the regex match).
+        prior_row = (fee_info.get("fees") or {})
+        prior: Optional[ExtractionResult] = None
+        if prior_row:
+            prior = ExtractionResult(
+                tip_amount=prior_row.get("tip_amount"),
+                deposit_amount=prior_row.get("deposit_amount"),
+                single_supplement=prior_row.get("single_supplement"),
+                visa_fee=prior_row.get("visa_fee"),
+                visa_status=prior_row.get("visa_status"),
+                infant_fee=prior_row.get("infant_fee"),
+                child_fee_no_bed=prior_row.get("child_fee_no_bed"),
+                joinland_price=prior_row.get("joinland_price"),
+                mandatory_fees_summary=prior_row.get("mandatory_fees_summary"),
+                extraction_method=prior_row.get("extraction_method") or "pdfplumber+regex",
+                extraction_confidence=float(prior_row.get("extraction_confidence") or 0),
+                source_page=prior_row.get("source_page"),
+                raw_snippet=prior_row.get("raw_snippet"),
+                tip_confidence=prior_row.get("tip_confidence"),
+                deposit_confidence=prior_row.get("deposit_confidence"),
+                single_supplement_confidence=prior_row.get("single_supplement_confidence"),
+                visa_confidence=prior_row.get("visa_confidence"),
+            )
+
+        od = extract_fees_on_demand(
+            pdf_path, self.llm,
+            pdf_hash=pdf_hash,
+            prior=prior,
+            cache=self.redis,
+            max_vision_pages=3,
+            asked_field=asked_field,
+            extraction_version=EXTRACTION_VERSION,
+        )
+
+        # If OCR is unavailable, we keep the existing fee_info unchanged
+        # (downstream response_writer issues canned handoff — same as today).
+        if not od.ocr_available:
+            logger.info("on_demand: OCR unavailable (%s) — graceful handoff",
+                         od.skipped_reason)
+            # Annotate the fee_info so audit log captures the attempt.
+            out = dict(fee_info)
+            out["on_demand"] = {"attempted": True, "skipped_reason": od.skipped_reason,
+                                 "cache_hit": False, "vision_pages_used": 0,
+                                 "ocr_available": False}
+            return out
+
+        # Persist updated extraction back to tour_fees. upsert_tour_fees is
+        # idempotent on tour_id and only updates when pdf_hash changed OR
+        # extraction_confidence improved — so cache-hit + no-lift = no DB write.
+        if tour_id:
+            try:
+                upsert_tour_fees(
+                    self.supabase,
+                    tour_id=tour_id,
+                    tour_code_real=prior_row.get("tour_code_real"),
+                    pdf_url=pdf_url, pdf_hash=pdf_hash,
+                    result=od.result,
+                )
+                # Backfill extraction_version on the row (upsert_tour_fees doesn't
+                # know about it; do a targeted update).
+                try:
+                    self.supabase.table("tour_fees").update(
+                        {"tour_id": tour_id},
+                        {"extraction_version": EXTRACTION_VERSION},
+                    )
+                except Exception:
+                    pass  # column may be absent in fakes — fine
+            except Exception as e:
+                logger.warning("on_demand: upsert_tour_fees failed: %s", e)
+
+        # Re-read the row + re-run policy gating so the caller has fresh data.
+        refreshed_row = self.supabase.table("tour_fees").select_one({"tour_id": tour_id}) if tour_id else None
+        d = decide_fee_answer(refreshed_row, asked_field)
+
+        return {
+            "is_complete": d.can_answer or bool(refreshed_row and
+                                                  refreshed_row.get("tip_amount") is not None and
+                                                  refreshed_row.get("deposit_amount") is not None and
+                                                  refreshed_row.get("single_supplement") is not None),
+            "fees": refreshed_row,
+            "confidence": float((refreshed_row or {}).get("extraction_confidence") or 0),
+            "field_confidences": {
+                "tip_confidence":               (refreshed_row or {}).get("tip_confidence"),
+                "deposit_confidence":           (refreshed_row or {}).get("deposit_confidence"),
+                "single_supplement_confidence": (refreshed_row or {}).get("single_supplement_confidence"),
+                "visa_confidence":              (refreshed_row or {}).get("visa_confidence"),
+            },
+            "needs_handoff": not d.can_answer,
+            "handoff_reason": d.handoff_reason if not d.can_answer else None,
+            "asked_field": asked_field,
+            "pdf_hash": pdf_hash,
+            "pdf_url": pdf_url,
+            "tour_id": tour_id,
+            "needs_on_demand_extraction": False,  # already ran
+            "on_demand": {
+                "attempted": True,
+                "cache_hit": od.cache_hit,
+                "vision_pages_used": od.vision_pages_used,
+                "ocr_available": True,
+                "candidate_pages": list(od.candidate_pages),
+                "estimated_cost_usd": od.estimated_cost_usd,
+                "estimated_tokens_in": od.estimated_tokens_in,
+                "estimated_tokens_out": od.estimated_tokens_out,
+            },
+        }
+
 
     # --- Persistence helpers ---
 

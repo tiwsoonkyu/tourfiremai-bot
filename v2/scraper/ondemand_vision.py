@@ -416,20 +416,25 @@ def extract_fees_on_demand(
 def _bump_field_confidence_from_vision(merged: ExtractionResult,
                                          page: ExtractionResult) -> None:
     """
-    Vision extracted a value for a field → set per-field confidence to the
+    Vision extracted a value for a field → upgrade per-field confidence to the
     overall extraction_confidence reported by the vision call (cap at 0.95).
+
+    Take-max semantics (QA N1 fix): if the regex tier already populated the
+    column with a lower baseline (e.g. single_supplement_confidence=0.60),
+    vision must still be able to lift it. We only skip the bump when the
+    existing confidence is already at-or-above what vision is offering.
     Field-level columns stay NULL for fields not extracted on this page.
     """
     conf = min(0.95, float(page.extraction_confidence or 0))
     if conf <= 0:
         return
-    if page.tip_amount is not None and merged.tip_amount == page.tip_amount and merged.tip_confidence is None:
+    if page.tip_amount is not None and merged.tip_amount == page.tip_amount             and conf > (merged.tip_confidence or 0):
         merged.tip_confidence = conf
-    if page.deposit_amount is not None and merged.deposit_amount == page.deposit_amount and merged.deposit_confidence is None:
+    if page.deposit_amount is not None and merged.deposit_amount == page.deposit_amount             and conf > (merged.deposit_confidence or 0):
         merged.deposit_confidence = conf
-    if page.single_supplement is not None and merged.single_supplement == page.single_supplement and merged.single_supplement_confidence is None:
+    if page.single_supplement is not None and merged.single_supplement == page.single_supplement             and conf > (merged.single_supplement_confidence or 0):
         merged.single_supplement_confidence = conf
-    if (page.visa_status is not None or page.visa_fee is not None) and merged.visa_confidence is None:
+    if (page.visa_status is not None or page.visa_fee is not None)             and conf > (merged.visa_confidence or 0):
         merged.visa_confidence = conf
 
 
