@@ -102,9 +102,13 @@ class TestOnDemandTriggered:
         r = od.result
         assert r.tip_amount == 1500
         assert r.single_supplement == 5500
-        # Per-field confidences were bumped (vision_available path sets >= 0.90)
+        # Per-field confidences were bumped — but capped at
+        # VISION_PER_FIELD_CAP=0.84 because no regex baseline corroborates
+        # (added in Phase 2 live-accuracy follow-up). Vision-only single_supp
+        # stays below policy threshold 0.90, which is the safety design.
+        from v2.scraper.ondemand_vision import VISION_PER_FIELD_CAP
         assert r.single_supplement_confidence is not None
-        assert r.single_supplement_confidence >= 0.85
+        assert r.single_supplement_confidence == VISION_PER_FIELD_CAP
 
     def test_respects_max_vision_pages_cap(self, synth_pdf):
         cache = _InMemoryRedis()

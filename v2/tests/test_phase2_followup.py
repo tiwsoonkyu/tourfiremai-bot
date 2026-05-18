@@ -162,11 +162,24 @@ class TestCassetteReplayWiring:
 
 class TestLLMPricing:
     def test_known_model_returns_nonzero_cost(self):
+        # Phase 2 follow-up: values in MODEL_PRICING are per-TOKEN, not per-1k.
+        # gpt-4o real OpenAI quote (May 2026): $0.0025/1k input, $0.01/1k output.
+        # Stored as $0.0000025/in + $0.00001/out per token.
+        # 1000 in + 500 out → 1000*0.0000025 + 500*0.00001 = 0.0025 + 0.005 = 0.0075
         cost = estimate_cost("gpt-4o", tokens_in=1000, tokens_out=500)
         assert cost is not None
         assert cost > 0
-        # Sanity: gpt-4o is $0.0025/in + $0.01/out → 1000*0.0025 + 500*0.01 = 7.5
-        assert cost == pytest.approx(7.5, rel=0.01)
+        assert cost == pytest.approx(0.0075, rel=0.01), \
+            f"expected ~$0.0075 for 1k+0.5k tokens of gpt-4o, got ${cost}"
+
+    def test_realistic_vision_call_cost_is_pennies(self):
+        # The Phase 2 live run had ~126,840 input + 9,020 output tokens for
+        # 5 vision calls combined. Cost MUST land near $0.40, NOT $407.
+        cost = estimate_cost("gpt-4o", tokens_in=126840, tokens_out=9020)
+        assert cost is not None
+        # 126840*0.0000025 + 9020*0.00001 = 0.3171 + 0.0902 = 0.4073
+        assert cost == pytest.approx(0.4073, rel=0.05), \
+            f"got ${cost} — pricing table units regressed"
 
     def test_unknown_model_returns_none(self):
         cost = estimate_cost("gpt-99-not-a-real-model", tokens_in=100, tokens_out=100)
@@ -238,8 +251,8 @@ class TestOpenAILLMClientCostPlumbing:
                         return _FakeRsp()
         client._client = _FakeClient()
         rsp = client.chat(tier="response", messages=[{"role": "user", "content": "x"}])
-        # gpt-4o (response tier default): 1000 in * 0.0025 + 500 out * 0.01 = 7.5
-        assert rsp.usage.cost_usd_estimate == pytest.approx(7.5, rel=0.01)
+        # Phase 2 follow-up: per-token units. 1000 in + 500 out → ~$0.0075
+        assert rsp.usage.cost_usd_estimate == pytest.approx(0.0075, rel=0.01)
         assert rsp.usage.model_used == "gpt-4o"
 
     def test_chat_unknown_model_keeps_zero(self):

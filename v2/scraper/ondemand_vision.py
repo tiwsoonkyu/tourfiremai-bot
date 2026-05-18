@@ -414,26 +414,95 @@ def extract_fees_on_demand(
 def _bump_field_confidence_from_vision(merged: ExtractionResult,
                                          page: ExtractionResult) -> None:
     """
-    Vision extracted a value for a field → upgrade per-field confidence to the
-    overall extraction_confidence reported by the vision call (cap at 0.95).
+    Vision extracted a value → upgrade per-field confidence using take-max
+    semantics, with two safety caps from Phase 2 live-accuracy follow-up:
 
-    Take-max semantics (QA N1 fix): if the regex tier already populated the
-    column with a lower baseline (e.g. single_supplement_confidence=0.60),
-    vision must still be able to lift it. We only skip the bump when the
-    existing confidence is already at-or-above what vision is offering.
-    Field-level columns stay NULL for fields not extracted on this page.
+      1) VISION_PER_FIELD_CAP — vision-only values cap at 0.84. Regex
+         corroboration (existing per-field confidence > 0 means regex
+         already matched the same value with a "บาท" suffix) is required
+         to push above 0.84. Without regex corroboration, single_supplement
+         (policy 0.90) cannot clear its threshold; vision-only tip/deposit/
+         visa can still answer at 0.84 ≥ 0.80 — intentional for non-strict
+         fields.
+
+      2) Duplicate-value detection (_apply_duplicate_value_penalty) catches
+         the common LLM-hallucination pattern where the model picks the same
+         number for two money-critical fields. Both per-field confidences
+         drop to DUPLICATE_VALUE_CONF (0.50) → handoff for both.
+
+    Both safeguards favor handoff over a wrong answer.
     """
     conf = min(0.95, float(page.extraction_confidence or 0))
     if conf <= 0:
         return
-    if page.tip_amount is not None and merged.tip_amount == page.tip_amount             and conf > (merged.tip_confidence or 0):
-        merged.tip_confidence = conf
-    if page.deposit_amount is not None and merged.deposit_amount == page.deposit_amount             and conf > (merged.deposit_confidence or 0):
-        merged.deposit_confidence = conf
-    if page.single_supplement is not None and merged.single_supplement == page.single_supplement             and conf > (merged.single_supplement_confidence or 0):
-        merged.single_supplement_confidence = conf
-    if (page.visa_status is not None or page.visa_fee is not None)             and conf > (merged.visa_confidence or 0):
-        merged.visa_confidence = conf
+
+    def _apply(value_attr: str, conf_attr: str):
+        page_val = getattr(page, value_attr)
+        if page_val is None:
+            return
+        if getattr(merged, value_attr) != page_val:
+            return
+        existing = float(getattr(merged, conf_attr) or 0)
+        capped = conf if existing > 0 else min(conf, VISION_PER_FIELD_CAP)
+        if capped > existing:
+            setattr(merged, conf_attr, capped)
+
+    _apply("tip_amount", "tip_confidence")
+    _apply("deposit_amount", "deposit_confidence")
+    _apply("single_supplement", "single_supplement_confidence")
+    # visa: any of status or fee being on the page counts as a corroborating signal
+    if page.visa_status is not None or page.visa_fee is not None:
+        existing = float(merged.visa_confidence or 0)
+        capped = conf if existing > 0 else min(conf, VISION_PER_FIELD_CAP)
+        if capped > existing:
+            merged.visa_confidence = capped
+
+    _apply_duplicate_value_penalty(merged)
+
+
+# Phase 2 live-accuracy-followup constants (module-level for tests to import).
+VISION_PER_FIELD_CAP = 0.84
+DUPLICATE_VALUE_CONF = 0.50
+
+
+def _apply_duplicate_value_penalty(merged: ExtractionResult) -> None:
+    """
+    If two money-critical fields share the same numeric value, BOTH
+    per-field confidences drop to DUPLICATE_VALUE_CONF.
+
+    Real wholesale fees rarely coincide — tip + deposit + single + visa
+    are independent line items. A duplicate is the LLM's "least-effort"
+    guess that the same number applies to multiple slots. Forcing handoff
+    on duplicates is the safe call: skip answering rather than echo a
+    confident-but-wrong value.
+
+    NB: zero values (e.g. visa_fee == 0 from visa_status='exempt') are NOT
+    treated as duplicates — they're real semantic answers.
+    """
+    candidates = [
+        ("tip_amount", "tip_confidence"),
+        ("deposit_amount", "deposit_confidence"),
+        ("single_supplement", "single_supplement_confidence"),
+        ("visa_fee", "visa_confidence"),
+        ("infant_fee", None),
+        ("child_fee_no_bed", None),
+    ]
+    by_value: dict[int, list[tuple[str, Optional[str]]]] = {}
+    for val_attr, conf_attr in candidates:
+        v = getattr(merged, val_attr)
+        if v is None or v == 0:
+            continue
+        by_value.setdefault(int(v), []).append((val_attr, conf_attr))
+    for _v, hits in by_value.items():
+        if len(hits) <= 1:
+            continue
+        for val_attr, conf_attr in hits:
+            if conf_attr is None:
+                continue
+            existing = float(getattr(merged, conf_attr) or 0)
+            if existing > DUPLICATE_VALUE_CONF:
+                setattr(merged, conf_attr, DUPLICATE_VALUE_CONF)
+
 
 
 def _maybe_load_vision_prompt():

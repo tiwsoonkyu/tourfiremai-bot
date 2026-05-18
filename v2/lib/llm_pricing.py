@@ -26,20 +26,28 @@ from __future__ import annotations
 from typing import Optional
 
 
-# All values are USD per token (i.e. divided by 1000 from per-1k-token quotes).
-# Source: OpenAI public pricing (May 2026 snapshot). Update as quotes change.
+# All values are USD **per single token** (NOT per 1,000 tokens).
+# Source: OpenAI public pricing (May 2026 snapshot), divided by 1000.
+# Update as quotes change. These are ESTIMATES for budget guardrails; they
+# are NOT exact OpenAI billing — actual invoices may differ due to caching,
+# enterprise discounts, prompt cache hits, etc.
+#
+# Phase 2 follow-up bug fix: the previous values were per-1k-token figures
+# stored under a "per token" name; estimate_cost() multiplied by raw token
+# counts → 1000× overstated cost ($407 for ~$0.41 of real usage). Now values
+# are stored at the unit advertised by the variable name.
 MODEL_PRICING_USD_PER_TOKEN: dict[str, dict[str, float]] = {
-    # GPT-5 family (price guesses for placeholder gpt-5.x ids)
-    "gpt-5":            {"in": 0.0015,  "out": 0.0060},
-    "gpt-5-mini":       {"in": 0.00030, "out": 0.0012},
-    "gpt-5-nano":       {"in": 0.00005, "out": 0.0002},
-    "gpt-5.1":          {"in": 0.0020,  "out": 0.0080},
-    "gpt-5-vision":     {"in": 0.0025,  "out": 0.0100},
+    # GPT-5 family (best-guess placeholders for gpt-5.x model ids)
+    "gpt-5":            {"in": 0.0000015,  "out": 0.0000060},
+    "gpt-5-mini":       {"in": 0.00000030, "out": 0.0000012},
+    "gpt-5-nano":       {"in": 0.00000005, "out": 0.0000002},
+    "gpt-5.1":          {"in": 0.0000020,  "out": 0.0000080},
+    "gpt-5-vision":     {"in": 0.0000025,  "out": 0.0000100},
 
     # GPT-4o family
-    "gpt-4o":           {"in": 0.0025,  "out": 0.0100},
-    "gpt-4o-mini":      {"in": 0.00015, "out": 0.0006},
-    "gpt-4o-mini-2024-07-18": {"in": 0.00015, "out": 0.0006},
+    "gpt-4o":           {"in": 0.0000025,  "out": 0.0000100},
+    "gpt-4o-mini":      {"in": 0.00000015, "out": 0.0000006},
+    "gpt-4o-mini-2024-07-18": {"in": 0.00000015, "out": 0.0000006},
 }
 
 
@@ -63,10 +71,23 @@ def estimate_cost(model_name: Optional[str],
 
 
 def format_cost(cost: Optional[float]) -> str:
-    """Render a per-call cost for human-readable reports / logs."""
+    """Render a per-call cost (USD estimate) for human-readable reports/logs.
+
+    Always reflects an *estimate* — never claim it matches OpenAI billing.
+    Callers that want the disclaimer included in the rendered string should
+    use `format_cost_with_disclaimer()` instead.
+    """
     if cost is None:
         return "unknown"
     return f"${cost:.4f}"
+
+
+def format_cost_with_disclaimer(cost: Optional[float]) -> str:
+    """Same as format_cost but appends an 'estimate only' note."""
+    base = format_cost(cost)
+    if base == "unknown":
+        return base
+    return f"{base} (estimate, not exact OpenAI billing)"
 
 
 def sum_costs(costs: list[Optional[float]]) -> tuple[Optional[float], int]:
