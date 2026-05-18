@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ..lib.llm import LLMClient
+from ..lib.fee_schema import build_response_format
 
 logger = logging.getLogger("v2.scraper.fee_extractor")
 
@@ -269,8 +270,7 @@ def llm_text_extract(text: str, llm: LLMClient) -> ExtractionResult:
             messages=messages,
             max_tokens=600,
             temperature=0.0,
-            response_format={"type": "json_schema",
-                              "json_schema": {"name": "TourFees", "strict": True}},
+            response_format=build_response_format(),
         )
     except Exception as e:
         logger.exception("LLM text extract failed: %s", e)
@@ -315,8 +315,7 @@ def llm_vision_extract(pdf_path: str, llm: LLMClient, max_pages: int = 2) -> Ext
     try:
         rsp = llm.vision(
             messages=messages, image_bytes=img_bytes, max_tokens=600,
-            response_format={"type": "json_schema",
-                              "json_schema": {"name": "TourFees", "strict": True}},
+            response_format=build_response_format(),
         )
     except Exception as e:
         return ExtractionResult(extraction_method="llm_vision",

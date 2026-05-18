@@ -139,7 +139,13 @@ def main(argv=None) -> int:
     parser.add_argument("--web-code", help="Single tour web_code")
     parser.add_argument("--all", action="store_true", help="All active tours")
     parser.add_argument("--pdf-corpus", action="store_true",
-                         help="Run on v2/tests/fixtures/pdfs/* corpus instead of DB")
+                         help="Run on v2/tests/fixtures/pdfs/* corpus instead of DB (per-page Sprint 3 path)")
+    parser.add_argument("--pdf-corpus-ondemand", action="store_true",
+                         help=("Run corpus via the Sprint 4 follow-up on-demand "
+                                "runtime path: per (PDF, asked_field) call "
+                                "extract_fees_on_demand with cache + page cap. "
+                                "Use this for Phase 2 live recording — it "
+                                "measures the same code path the bot will run."))
     parser.add_argument("--limit", type=int, default=10, help="Max tours when --all")
     parser.add_argument("--skip-vision", action="store_true")
     parser.add_argument("--mock-llm", action="store_true", help="Force mock LLM (default if no API key)")
@@ -182,6 +188,8 @@ def main(argv=None) -> int:
 
     supabase = make_supabase_from_config(config) if not args.pdf_corpus else None
 
+    if args.pdf_corpus_ondemand:
+        return _run_pdf_corpus_ondemand(args, config, llm)
     if args.pdf_corpus:
         return _run_pdf_corpus(args, config, llm, supabase)
 
@@ -299,6 +307,142 @@ def _run_pdf_corpus(args, config, llm, supabase) -> int:
             print(f"{basename}: conf={res.extraction_confidence:.2f}, method={res.extraction_method}")
 
     return 0
+
+def _run_pdf_corpus_ondemand(args, config, llm) -> int:
+    """
+    Corpus mode (Sprint 4 follow-up): drive `extract_fees_on_demand` per (PDF,
+    asked_field) so the recording measures the EXACT code path the bot will
+    run when a customer asks a fee question on a locked tour.
+
+    For each fixture PDF:
+      1. Compute pdf_hash from the file bytes (matches download_pdf semantics).
+      2. Run regex once to seed a `prior` ExtractionResult (mirrors what the
+         orchestrator passes in from the DB row).
+      3. For each `asked_field` in (tip, deposit, single_supplement, visa),
+         call `extract_fees_on_demand(... asked_field=...)`.
+         - First call per PDF: cache miss, vision runs on up to 3 candidate
+           pages (per spec).
+         - Subsequent calls per same PDF: cache HIT, no second OpenAI call.
+      4. Optionally write the final merged result to
+         `docs/SPRINT_4_ACCURACY_REPORT.md` via the existing accuracy framework
+         (--accuracy flag).
+
+    Does NOT touch the live DB. Does NOT call upsert_tour_fees (corpus is for
+    measurement; production upsert happens through the orchestrator runtime
+    wire-in for real customer tours).
+    """
+    import glob
+    import hashlib
+    from .extract_fees import (
+        extract_fees_per_page, regex_extract, ExtractionResult,
+        extract_text_from_pdf,
+    )
+    from .ondemand_vision import extract_fees_on_demand, EXTRACTION_VERSION
+    from ..lib.cache import _InMemoryRedis
+    from .extraction_accuracy import run_accuracy_corpus, format_report_markdown
+
+    fixture_root = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "tests", "fixtures",
+    )
+    pdf_dirs = [
+        os.path.join(fixture_root, "pdfs", sub)
+        for sub in ("text_based", "scanned", "mixed")
+    ]
+    pdfs: list[str] = []
+    for d in pdf_dirs:
+        pdfs.extend(sorted(glob.glob(os.path.join(d, "*.pdf"))))
+    if not pdfs:
+        logger.warning("No PDFs found in %s — drop fixtures and re-run", pdf_dirs)
+        return 1
+
+    ASKED_FIELDS = ("tip", "deposit", "single_supplement", "visa")
+    logger.info("On-demand corpus mode: %d PDFs × %d asked_fields = %d runs",
+                 len(pdfs), len(ASKED_FIELDS), len(pdfs) * len(ASKED_FIELDS))
+
+    # Shared in-memory cache so the (pdf_hash, version) cache hit assertion
+    # across asked_fields holds. In production the orchestrator uses Redis.
+    cache = _InMemoryRedis()
+
+    results: list[tuple[str, ExtractionResult]] = []
+    cache_hits = 0
+    cache_misses = 0
+    total_tokens_in = 0
+    total_tokens_out = 0
+    total_cost = 0.0
+
+    for pdf_path in pdfs:
+        basename = os.path.basename(pdf_path)
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
+
+        # Step 1: regex-only baseline (acts as `prior` for vision lift)
+        text = extract_text_from_pdf(pdf_path)
+        prior = regex_extract(text) if text else ExtractionResult(extraction_method="none")
+
+        merged: ExtractionResult = prior
+        for asked_field in ASKED_FIELDS:
+            od = extract_fees_on_demand(
+                pdf_path, llm,
+                pdf_hash=pdf_hash,
+                prior=merged,
+                cache=cache,
+                max_vision_pages=3,
+                asked_field=asked_field,
+                extraction_version=EXTRACTION_VERSION,
+            )
+            if od.cache_hit:
+                cache_hits += 1
+            else:
+                cache_misses += 1
+            total_tokens_in += od.estimated_tokens_in
+            total_tokens_out += od.estimated_tokens_out
+            total_cost += od.estimated_cost_usd
+            merged = od.result  # carry confidence + values forward
+            logger.info("   %s [%s] cache_hit=%s vision_pages=%d ocr_avail=%s",
+                         basename, asked_field, od.cache_hit,
+                         od.vision_pages_used, od.ocr_available)
+        results.append((basename, merged))
+
+    logger.info("=" * 60)
+    logger.info("On-demand corpus summary: cache_hits=%d cache_misses=%d",
+                 cache_hits, cache_misses)
+    logger.info("Aggregate tokens_in=%d tokens_out=%d cost_usd=%.4f",
+                 total_tokens_in, total_tokens_out, total_cost)
+    if total_cost > 5.0:
+        logger.error("BUDGET CAP EXCEEDED ($5.00) — recorded cost $%.4f", total_cost)
+
+    if args.accuracy:
+        gt_dir = os.path.join(fixture_root, "ground_truth")
+        report = run_accuracy_corpus(results, gt_dir)
+        md = format_report_markdown(report)
+        # Append run summary to the report
+        md += (
+            f"\n\n## On-demand runtime stats\n"
+            f"- Cache hits: {cache_hits}\n"
+            f"- Cache misses: {cache_misses}\n"
+            f"- Total tokens in: {total_tokens_in}\n"
+            f"- Total tokens out: {total_tokens_out}\n"
+            f"- Total cost (USD est.): ${total_cost:.4f}\n"
+            f"- Budget cap: $5.00 ({'OK' if total_cost <= 5.0 else 'EXCEEDED'})\n"
+        )
+        if args.output_report:
+            with open(args.output_report, "w", encoding="utf-8") as f:
+                f.write(md)
+            logger.info("Accuracy report → %s", args.output_report)
+        else:
+            print(md)
+        logger.info("Avg overall=%.1f%% hardest=%.1f%%",
+                     report.avg_overall * 100, report.avg_hardest_required * 100)
+    else:
+        for basename, res in results:
+            print(f"{basename}: conf={res.extraction_confidence:.2f} "
+                   f"method={res.extraction_method} tip={res.tip_amount} "
+                   f"single={res.single_supplement}")
+
+    return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

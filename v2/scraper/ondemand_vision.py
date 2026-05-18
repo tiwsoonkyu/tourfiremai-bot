@@ -34,6 +34,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Any, Optional
 
 from ..lib.llm import LLMClient
+from ..lib.fee_schema import build_response_format
 from ..lib.pdf_classifier import classify_pdf, PdfClassification
 from .extract_fees import (
     ExtractionResult, _result_from_dict, _merge_results,
@@ -372,10 +373,7 @@ def extract_fees_on_demand(
                 messages=messages,
                 image_bytes=img_bytes,
                 max_tokens=600,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {"name": "TourFees", "strict": True},
-                },
+                response_format=build_response_format(),
             )
         except Exception as e:
             logger.warning("vision call failed page=%s: %s", page_no, e)
