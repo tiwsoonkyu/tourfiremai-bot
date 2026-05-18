@@ -154,6 +154,13 @@ def main(argv=None) -> int:
     parser.add_argument("--accuracy", action="store_true",
                          help="Run accuracy report against ground_truth/ fixtures")
     parser.add_argument("--cassette-dir", default=None)
+    parser.add_argument("--benchmark-providers", default=None,
+                         help=("Comma-separated provider names to benchmark "
+                                "against the PDF corpus + ground-truth fixtures. "
+                                "Default \"mock\" needs no credentials. Paid "
+                                "providers (mistral_ocr, google_document_ai, "
+                                "aws_textract) are skipped at runtime if their "
+                                "credentials/SDK are missing — no network call."))
     parser.add_argument("--replay-cassette", action="store_true",
                          help=("Force cassette replay mode (no network). Equivalent to setting V2_STAGING_OPENAI_TEST_MODE=cassette before running. Reads cassettes from --cassette-dir or v2/tests/cassettes/."))
     parser.add_argument("--output-report", default=None,
@@ -210,6 +217,8 @@ def main(argv=None) -> int:
 
     supabase = make_supabase_from_config(config) if not args.pdf_corpus else None
 
+    if args.benchmark_providers:
+        return _run_benchmark_providers(args)
     if args.pdf_corpus_ondemand:
         return _run_pdf_corpus_ondemand(args, config, llm)
     if args.pdf_corpus:
@@ -482,6 +491,47 @@ def _run_pdf_corpus_ondemand(args, config, llm) -> int:
                    f"method={res.extraction_method} tip={res.tip_amount} "
                    f"single={res.single_supplement}")
 
+    return 0
+
+
+def _run_benchmark_providers(args) -> int:
+    """Run provider-comparison benchmark over the fixture PDF corpus.
+
+    Pure-process default: only the `mock` provider is benchmarked. Pass
+    `--benchmark-providers mock,mistral_ocr` to ALSO probe paid providers —
+    paid providers whose creds/SDK are missing are simply skipped (no
+    network call, no exception).
+    """
+    import glob
+    from .benchmark_providers import benchmark_providers, format_benchmark_markdown
+
+    fixture_root = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "tests", "fixtures",
+    )
+    pdf_dirs = [os.path.join(fixture_root, "pdfs", sub)
+                 for sub in ("text_based", "scanned", "mixed")]
+    pdfs: list[str] = []
+    for d in pdf_dirs:
+        pdfs.extend(sorted(glob.glob(os.path.join(d, "*.pdf"))))
+    if not pdfs:
+        logger.warning("benchmark: no PDFs in %s", pdf_dirs)
+        return 1
+
+    provider_names = [p.strip() for p in args.benchmark_providers.split(",") if p.strip()]
+    if not provider_names:
+        provider_names = ["mock"]
+    logger.info("benchmark: %d PDFs × providers=%s", len(pdfs), provider_names)
+
+    gt_dir = os.path.join(fixture_root, "ground_truth")
+    report = benchmark_providers(pdfs, provider_names, ground_truth_dir=gt_dir)
+    md = format_benchmark_markdown(report)
+    if args.output_report:
+        with open(args.output_report, "w", encoding="utf-8") as f:
+            f.write(md)
+        logger.info("benchmark report → %s", args.output_report)
+    else:
+        print(md)
     return 0
 
 
