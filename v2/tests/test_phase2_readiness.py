@@ -317,6 +317,9 @@ class TestNoLiveLLMInPhase2Tests:
     """Defense-in-depth: every test in this module must run in mock mode."""
 
     def test_default_config_is_mock_mode(self, monkeypatch):
+        # Clear any test-mode leak from sibling tests that set it (e.g.
+        # the cassette-replay wiring test).
+        monkeypatch.delenv("V2_STAGING_OPENAI_TEST_MODE", raising=False)
         monkeypatch.setenv("V2_STAGING_SUPABASE_URL", "http://x")
         monkeypatch.setenv("V2_STAGING_DB_HOST", "h")
         monkeypatch.setenv("V2_STAGING_DB_USER", "u")

@@ -29,6 +29,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, Optional, Protocol
 
+from .llm_pricing import estimate_cost
+
 logger = logging.getLogger("v2.llm")
 
 Tier = Literal["response", "fast", "vision"]
@@ -333,12 +335,16 @@ class OpenAILLMClient:
                     except Exception:
                         pass
                 latency_ms = int((time.time() - start) * 1000)
+                _t_in = rsp.usage.prompt_tokens if rsp.usage else 0
+                _t_out = rsp.usage.completion_tokens if rsp.usage else 0
+                _cost = estimate_cost(model, _t_in, _t_out)
                 return LLMResponse(
                     text=text, structured=structured,
                     finish_reason=rsp.choices[0].finish_reason or "stop",
                     usage=LLMUsage(
-                        tokens_in=rsp.usage.prompt_tokens if rsp.usage else 0,
-                        tokens_out=rsp.usage.completion_tokens if rsp.usage else 0,
+                        tokens_in=_t_in,
+                        tokens_out=_t_out,
+                        cost_usd_estimate=(_cost if _cost is not None else 0.0),
                         model_used=model,
                         latency_ms=latency_ms,
                     ),

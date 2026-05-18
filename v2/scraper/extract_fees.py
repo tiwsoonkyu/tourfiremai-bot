@@ -43,36 +43,51 @@ _VISA_STATUS_PATTERNS = [
     (re.compile(r"(ต้องมีวีซ่า|วีซ่า\s*[1-9])", re.I), "required"),
 ]
 
+# Sprint 4 Phase 2 follow-up: money-critical fields now REQUIRE a "บาท"/"baht"
+# suffix within ~6 chars of the captured number. This stops the regex from
+# latching onto column values in price tables (e.g. "ห้องพักเดี่ยว ท่าน 19 – 23
+# มิถุนายน 2569 19,990 ..." used to extract `19` or `19,990` for
+# single_supplement — both wrong).
+_BAHT_TAIL = r"\s*(?:บาท|baht)"
+
 _PATTERNS: dict[str, list[re.Pattern]] = {
     "tip_amount": [
-        re.compile(rf"ค่าทิป[^0-9]*{_NUMBER_RE}\s*บาท", re.I),
-        re.compile(rf"ทิป(?:ไกด์|คนขับ)?[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
-        re.compile(rf"\btip\b[^0-9]*{_NUMBER_RE}", re.I),
+        # "ค่าทิป ... 2,000 บาท" (canonical)
+        re.compile(rf"ค่าทิป[^0-9]{{0,80}}{_NUMBER_RE}{_BAHT_TAIL}", re.I),
+        # "ทิปไกด์/คนขับ ... ท่านละ 2,000 บาท"
+        re.compile(rf"ทิป(?:ไกด์|คนขับ|หัวหน้าทัวร์)?[^0-9]{{0,80}}{_NUMBER_RE}{_BAHT_TAIL}", re.I),
+        re.compile(rf"\btip\b[^0-9]{{0,40}}{_NUMBER_RE}{_BAHT_TAIL}", re.I),
     ],
     "visa_fee": [
-        re.compile(rf"(?:ค่า)?วีซ่า[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
-        re.compile(rf"\bvisa\b[^0-9]*{_NUMBER_RE}", re.I),
+        re.compile(rf"(?:ค่า)?วีซ่า[^0-9]{{0,40}}{_NUMBER_RE}{_BAHT_TAIL}", re.I),
+        re.compile(rf"\bvisa\b[^0-9]{{0,30}}{_NUMBER_RE}{_BAHT_TAIL}", re.I),
     ],
     "single_supplement": [
-        re.compile(rf"พักเดี่ยว(?:เพิ่ม)?[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
-        re.compile(rf"single\s*supp(?:lement)?[^0-9]*{_NUMBER_RE}", re.I),
+        # "พักเดี่ยวเพิ่ม 5,500 บาท" / "single supplement 5,500 baht"
+        # NB: does NOT match "ห้องพักเดี่ยว ท่าน 19 – 23..." because no บาท follows
+        # the next number; price-table columns are caught by vision instead.
+        re.compile(rf"(?<!ห้อง)พักเดี่ยว(?:เพิ่ม)?[^0-9]{{0,40}}{_NUMBER_RE}{_BAHT_TAIL}", re.I),
+        re.compile(rf"single\s*supp(?:lement)?[^0-9]{{0,40}}{_NUMBER_RE}\s*(?:บาท|baht)", re.I),
     ],
     "deposit_amount": [
-        re.compile(rf"(?:ค่า)?มัดจำ[^0-9]{{0,20}}{_NUMBER_RE}", re.I),
-        re.compile(rf"\bdeposit\b[^0-9]*{_NUMBER_RE}", re.I),
+        # "ชำระเงินมัดจำ ท่านละ 15,000 บาท" / "deposit 10,000 baht"
+        re.compile(rf"(?:ค่า|ชำระเงิน|วาง)?มัดจำ[^0-9]{{0,40}}{_NUMBER_RE}{_BAHT_TAIL}", re.I),
+        re.compile(rf"\bdeposit\b[^0-9]{{0,30}}{_NUMBER_RE}\s*(?:บาท|baht)", re.I),
     ],
     "infant_fee": [
-        re.compile(rf"ทารก(?:[^0-9]{{0,30}}){_NUMBER_RE}", re.I),
-        re.compile(rf"infant[^0-9]*{_NUMBER_RE}", re.I),
+        # "(Infant) = 9,900.-" or "ทารก ... ท่านละ 6,000 บาท"
+        re.compile(rf"ทารก[^0-9]{{0,80}}{_NUMBER_RE}{_BAHT_TAIL}", re.I),
+        re.compile(rf"\(?infant\)?[^0-9]{{0,40}}{_NUMBER_RE}\s*(?:บาท|\.\-|baht)?", re.I),
     ],
     "child_fee_no_bed": [
-        re.compile(rf"เด็ก(?:ไม่)?เสริมเตียง[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
-        re.compile(rf"no\s*bed[^0-9]*{_NUMBER_RE}", re.I),
+        re.compile(rf"เด็ก(?:ไม่)?(?:มี)?เสริมเตียง[^0-9]{{0,30}}{_NUMBER_RE}{_BAHT_TAIL}?", re.I),
+        re.compile(rf"no\s*bed[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
     ],
     "joinland_price": [
+        # joinland is rarely บาท-suffixed in real PDFs; keep loose match.
         re.compile(rf"join[-\s]?land[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
         re.compile(rf"land\s*tour\s*(?:price|ราคา)?[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
-        re.compile(rf"(?:ราคา\s*)?land[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
+        re.compile(rf"jointour[^0-9]{{0,30}}{_NUMBER_RE}", re.I),
     ],
 }
 
@@ -232,20 +247,24 @@ def regex_extract(text: str, *, source_page: Optional[int] = None) -> Extraction
     completion = (required_hits + (1 if visa_ok else 0)) / (len(_REQUIRED_FIELDS) + 1)
     result.extraction_confidence = round(min(0.95, completion) * 0.95, 2)
 
-    # Per-field confidence: regex layer alone is "moderate" → 0.70 for matched fields.
-    # The LLM layers in scraper.ondemand_vision can bump these to 0.85+ when they
-    # confirm or refine the value. NULL stays NULL if the value wasn't matched.
-    _REGEX_PER_FIELD_CONF = 0.70
+    # Per-field confidence — Phase 2 follow-up: now that regex REQUIRES a
+    # "บาท"/"baht" suffix on the money-critical fields, a regex hit is highly
+    # reliable (no more table-column false positives). We can therefore raise
+    # the baselines above the policy thresholds:
+    #   tip / deposit / visa → 0.85  (policy threshold 0.80 ⇒ regex alone answers)
+    #   single_supplement     → 0.82 (policy threshold 0.90 ⇒ vision still required
+    #                                  for the final lift, but regex no longer
+    #                                  forces handoff with a *wrong* 0.60)
+    # The take-max vision bump from the wire-in commit still lifts these to
+    # 0.92+ when a vision call confirms the value.
     if result.tip_amount is not None:
-        result.tip_confidence = _REGEX_PER_FIELD_CONF
+        result.tip_confidence = 0.85
     if result.deposit_amount is not None:
-        result.deposit_confidence = _REGEX_PER_FIELD_CONF
+        result.deposit_confidence = 0.85
     if result.single_supplement is not None:
-        # single_supplement regex is the weakest pattern historically (20% baseline);
-        # cap at 0.60 so policy threshold (0.90) forces handoff until vision lifts it.
-        result.single_supplement_confidence = 0.60
+        result.single_supplement_confidence = 0.82
     if result.visa_status is not None or result.visa_fee is not None:
-        result.visa_confidence = _REGEX_PER_FIELD_CONF
+        result.visa_confidence = 0.85
 
     result.notes = f"regex matched {matched} fields ({required_hits}/{len(_REQUIRED_FIELDS)} required, visa={result.visa_status})"
     return result
@@ -437,14 +456,51 @@ def extract_text_per_page(pdf_path: str) -> list[tuple[int, str]]:
 
 def _merge_results(primary: ExtractionResult, other: ExtractionResult) -> ExtractionResult:
     """
-    Merge two ExtractionResults: primary fields take precedence; other fills gaps.
-    Confidence is the max of the two.
+    Merge two ExtractionResults.
+
+    Phase 2 follow-up: for the money-critical fields (tip/deposit/single/visa),
+    prefer the value with the HIGHER per-field confidence rather than always
+    keeping primary's value. This is the difference between:
+        - regex finds 19 for single_supplement (per-field conf 0.82) AND
+        - vision finds 6000 for single_supplement (per-field conf 0.92)
+    Old behavior kept the wrong 19; new behavior swaps in 6000 (higher conf).
+
+    For non-money fields and metadata, the old "fill gaps" semantics are
+    preserved (`primary` wins ties).
     """
-    for f in ("tip_amount", "visa_fee", "visa_status", "single_supplement",
-              "infant_fee", "child_fee_no_bed", "deposit_amount",
-              "joinland_price", "mandatory_fees_summary"):
+    _CONF_FIELDS = (
+        ("tip_amount", "tip_confidence"),
+        ("deposit_amount", "deposit_confidence"),
+        ("single_supplement", "single_supplement_confidence"),
+    )
+    for value_attr, conf_attr in _CONF_FIELDS:
+        p_val = getattr(primary, value_attr)
+        o_val = getattr(other, value_attr)
+        p_conf = float(getattr(primary, conf_attr) or 0)
+        o_conf = float(getattr(other, conf_attr) or 0)
+        if p_val is None and o_val is not None:
+            setattr(primary, value_attr, o_val)
+            if o_conf > p_conf:
+                setattr(primary, conf_attr, o_conf)
+        elif p_val is not None and o_val is not None and o_conf > p_conf:
+            setattr(primary, value_attr, o_val)
+            setattr(primary, conf_attr, o_conf)
+
+    # visa: prefer "exempt" status if either has it; otherwise fill-gap.
+    if primary.visa_status is None and other.visa_status is not None:
+        primary.visa_status = other.visa_status
+    if primary.visa_fee is None and other.visa_fee is not None:
+        primary.visa_fee = other.visa_fee
+    if other.visa_confidence is not None and \
+            float(other.visa_confidence) > float(primary.visa_confidence or 0):
+        primary.visa_confidence = other.visa_confidence
+
+    # Other fields: classic fill-gap semantics.
+    for f in ("infant_fee", "child_fee_no_bed", "joinland_price",
+              "mandatory_fees_summary"):
         if getattr(primary, f) is None and getattr(other, f) is not None:
             setattr(primary, f, getattr(other, f))
+
     if other.extraction_confidence > primary.extraction_confidence:
         primary.extraction_confidence = other.extraction_confidence
     if primary.source_page is None and other.source_page is not None:

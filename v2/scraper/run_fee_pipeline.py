@@ -154,6 +154,8 @@ def main(argv=None) -> int:
     parser.add_argument("--accuracy", action="store_true",
                          help="Run accuracy report against ground_truth/ fixtures")
     parser.add_argument("--cassette-dir", default=None)
+    parser.add_argument("--replay-cassette", action="store_true",
+                         help=("Force cassette replay mode (no network). Equivalent to setting V2_STAGING_OPENAI_TEST_MODE=cassette before running. Reads cassettes from --cassette-dir or v2/tests/cassettes/."))
     parser.add_argument("--output-report", default=None,
                          help="Path to save accuracy report markdown")
     args = parser.parse_args(argv)
@@ -163,28 +165,48 @@ def main(argv=None) -> int:
 
     config = cfg_module.load_config(strict=True)
 
-    # LLM: mock by default; live/record only when explicitly set
+    # LLM selection — explicit flags take precedence; otherwise config.openai_test_mode wins.
+    # The 4 modes (mock | cassette | record | live) are honored end-to-end so a
+    # caller can verify the cassettes recorded by Phase 2 without network access.
+    explicit_mode = None
     if args.mock_llm:
-        llm = MockLLMClient(config)
-        logger.info("Using MockLLMClient (forced via --mock-llm)")
+        explicit_mode = "mock"
+    elif args.replay_cassette:
+        explicit_mode = "cassette"
     elif args.record:
+        explicit_mode = "record"
+
+    effective_mode = (explicit_mode or
+                       (config.openai_test_mode or "mock").lower())
+
+    if effective_mode == "record":
         if not config.openai_api_key:
-            logger.error("--record requires V2_STAGING_OPENAI_API_KEY")
+            logger.error("record mode requires V2_STAGING_OPENAI_API_KEY")
             return 2
-        os.environ.setdefault("V2_STAGING_OPENAI_TEST_MODE", "record")
-        # Patch config in place
         try:
             object.__setattr__(config, "openai_test_mode", "record")
         except Exception:
             pass
+        os.environ["V2_STAGING_OPENAI_TEST_MODE"] = "record"
         llm = make_llm_client(config, cassette_dir=args.cassette_dir)
         logger.info("Using RecordingLLMClient (live API + cassette persistence)")
-    elif config.openai_test_mode == "live" and config.openai_api_key:
+    elif effective_mode == "cassette":
+        try:
+            object.__setattr__(config, "openai_test_mode", "cassette")
+        except Exception:
+            pass
+        os.environ["V2_STAGING_OPENAI_TEST_MODE"] = "cassette"
+        llm = make_llm_client(config, cassette_dir=args.cassette_dir)
+        logger.info("Using CassetteLLMClient (replay, NO network)")
+    elif effective_mode == "live":
+        if not config.openai_api_key:
+            logger.error("live mode requires V2_STAGING_OPENAI_API_KEY")
+            return 2
         llm = make_llm_client(config)
         logger.info("Using OpenAILLMClient (live, no recording)")
-    else:
+    else:  # mock (default)
         llm = MockLLMClient(config)
-        logger.info("Using MockLLMClient (default)")
+        logger.info("Using MockLLMClient (mode=%s)", effective_mode)
 
     supabase = make_supabase_from_config(config) if not args.pdf_corpus else None
 
@@ -370,6 +392,7 @@ def _run_pdf_corpus_ondemand(args, config, llm) -> int:
     total_tokens_in = 0
     total_tokens_out = 0
     total_cost = 0.0
+    unpriced_calls = 0
 
     for pdf_path in pdfs:
         basename = os.path.basename(pdf_path)
@@ -399,6 +422,10 @@ def _run_pdf_corpus_ondemand(args, config, llm) -> int:
             total_tokens_in += od.estimated_tokens_in
             total_tokens_out += od.estimated_tokens_out
             total_cost += od.estimated_cost_usd
+            if not od.cache_hit and od.vision_pages_used > 0 \
+                    and od.estimated_cost_usd <= 0 \
+                    and (od.estimated_tokens_in + od.estimated_tokens_out) > 0:
+                unpriced_calls += 1
             merged = od.result  # carry confidence + values forward
             logger.info("   %s [%s] cache_hit=%s vision_pages=%d ocr_avail=%s",
                          basename, asked_field, od.cache_hit,
@@ -417,15 +444,29 @@ def _run_pdf_corpus_ondemand(args, config, llm) -> int:
         gt_dir = os.path.join(fixture_root, "ground_truth")
         report = run_accuracy_corpus(results, gt_dir)
         md = format_report_markdown(report)
-        # Append run summary to the report
+        # Append run summary to the report.
+        # Cost is "known" only when every vision call had a priced model; if
+        # some used a model not in v2/lib/llm_pricing, surface as lower bound.
+        cost_label = (
+            f"${total_cost:.4f}" if total_cost > 0
+            else (f"unknown — {unpriced_calls} call(s) used a model not in "
+                   f"v2/lib/llm_pricing.MODEL_PRICING_USD_PER_TOKEN")
+            if unpriced_calls > 0
+            else "$0.0000 (no LLM calls — all hits served from cache)"
+        )
+        if unpriced_calls > 0 and total_cost > 0:
+            cost_label = (
+                f"≥ ${total_cost:.4f} (lower bound — {unpriced_calls} call(s) "
+                f"used a model not in pricing table)"
+            )
         md += (
             f"\n\n## On-demand runtime stats\n"
             f"- Cache hits: {cache_hits}\n"
             f"- Cache misses: {cache_misses}\n"
             f"- Total tokens in: {total_tokens_in}\n"
             f"- Total tokens out: {total_tokens_out}\n"
-            f"- Total cost (USD est.): ${total_cost:.4f}\n"
-            f"- Budget cap: $5.00 ({'OK' if total_cost <= 5.0 else 'EXCEEDED'})\n"
+            f"- Total cost (USD est.): {cost_label}\n"
+            f"- Budget cap: $5.00 ({'OK' if (total_cost or 0) <= 5.0 else 'EXCEEDED'})\n"
         )
         if args.output_report:
             with open(args.output_report, "w", encoding="utf-8") as f:

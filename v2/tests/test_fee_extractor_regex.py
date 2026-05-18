@@ -66,10 +66,16 @@ class TestRegexThaiPatterns:
         assert "empty_text_input" in r.extraction_errors
 
     def test_english_tip(self):
-        text = "tip 1500 baht\nvisa 2000\nsingle supplement 3000\ndeposit 8000"
+        # Phase 2 follow-up: regex now REQUIRES บาท/baht suffix for
+        # money-critical fields to prevent price-table column false positives.
+        # Real wholesale PDFs always include the suffix; the test fixture
+        # is updated to match.
+        text = "tip 1500 baht\nvisa 2000 baht\nsingle supplement 3000 baht\ndeposit 8000 baht"
         r = regex_extract(text)
         assert r.tip_amount == 1500
         assert r.visa_fee == 2000
+        assert r.single_supplement == 3000
+        assert r.deposit_amount == 8000
 
 
 class TestExtractionResult:
