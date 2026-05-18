@@ -6,16 +6,15 @@
   "status": "READY_FOR_QA",
   "verdict": "GO",
   "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T05:00:00+07:00",
+  "updated_at": "2026-05-19T06:00:00+07:00",
   "next_action": "WAITING_FOR_QA",
   "blocked_reason": null,
   "files_changed": [
-    "v2/scraper/document_parser_provider.py (NEW, +335) — DocumentParserProvider Protocol; MockDocumentParser; fail-closed stubs for mistral_ocr / google_document_ai / aws_textract; make_document_parser factory",
-    "v2/scraper/benchmark_providers.py (NEW, +295) — benchmark_providers() + format_benchmark_markdown; per-provider per-PDF grading; auto-skip unavailable providers",
-    "v2/scraper/run_fee_pipeline.py (modified, +50) — --benchmark-providers CLI flag; _run_benchmark_providers dispatch",
-    "v2/tests/test_document_parser_provider.py (NEW, +330) — 26 tests across 7 classes covering all 7 required test categories",
-    "docs/tasks/DEV_REPORT_CURRENT.md (this report) — written to BOTH repo path and OneDrive workspace path",
+    "v2/scraper/document_parser_provider.py (modified, +24/-3) — QA L1: explicit _CONF_COL field→column map so MockDocumentParser emits single_supplement_confidence (not single_confidence) and visa_confidence (not visa_confidence-by-coincidence)",
+    "v2/scraper/run_fee_pipeline.py (modified, +8/-1) — QA L2: needs_supabase predicate skips Supabase init when --pdf-corpus / --pdf-corpus-ondemand / --benchmark-providers is set",
+    "v2/tests/test_document_parser_provider.py (modified, +150) — 6 new regression tests across TestQACleanupL1ConfidenceKeys (4) and TestQACleanupL2NoSupabaseInBenchmarkMode (2)",
+    "docs/tasks/DEV_REPORT_CURRENT.md (this report) — written to BOTH repo and workspace folder",
     "docs/tasks/AGENT_STATUS.json (this file)"
   ],
-  "notes": "DEV-2026-05-19-003 complete. Branch v2/s4-followup-vision-ondemand advanced from ff28807 to d68a4be (4 files, +1010/-0). Optional paid OCR provider abstraction + benchmark harness — fail-closed by design. Mock provider is the only one that executes without credentials; paid stubs (mistral_ocr / google_document_ai / aws_textract) raise ProviderNotAvailableError before any network attempt and ProviderNotImplementedError as a defense-in-depth net. Test summary: 495 unit pass / 0 failures (469 prior + 26 new). Hard rules: no V1 / Make.com / Cloudflare / Railway / production webhook / Meta endpoint / secret / live paid call / live OpenAI in unit tests; fee_answer_policy thresholds unchanged (0.80 / 0.90); anti-guess invariant preserved (TestFeePolicyUnchanged proves mock conf 0.85 < policy 0.90 → handoff); no wholesale brand names in new runtime files (grep-clean). RCA explains why tip/deposit/single_supplement landed at 50/70/50% on first Phase 2 live run and why a higher-fidelity paid OCR layer is the next lever — the abstraction in this commit is the runway, not the destination. Spend this session: $0.00."
+  "notes": "DEV-2026-05-19-003 cleanup complete. Branch v2/s4-followup-vision-ondemand advanced bd4784e → e473a26 (3 files, +179/-3). Closes both QA informational notes from QA-2026-05-19-003: L1 — MockDocumentParser confidence keys now use explicit _CONF_COL map matching ExtractionResult field names exactly (was producing single_confidence instead of single_supplement_confidence, silently dropped during benchmark grading); L2 — Supabase init is skipped for --benchmark-providers and --pdf-corpus-ondemand (was unnecessarily required even for pure mock runs). Tests: 501 unit pass / 0 failures (495 prior + 6 new). Hard rules: no V1 / Make.com / Cloudflare / Railway / production webhook / Meta endpoint / secret / live paid call / live OpenAI in unit tests; fee_answer_policy.py thresholds UNCHANGED (0.80 / 0.90); anti-guess invariant preserved (mock cap 0.85 < single_supp policy 0.90 → handoff); production runtime path UNTOUCHED (git diff confirms zero changes to v2/lib/*.py and v2/scraper/{extract_fees,ondemand_vision}.py). Spend this session: $0.00."
 }
