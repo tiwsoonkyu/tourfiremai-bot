@@ -1,121 +1,200 @@
-# Dev Report — `S4-LIVE-DEV-2026-05-18-001` (Re-execution Attempt)
+# Dev Report — `DEV-2026-05-19-003`
 
-**Status:** `BLOCKED`
+**Status:** `READY_FOR_QA`
+**Verdict recommendation to QA:** **`GO`**
 **Author:** Claude Cowork Dev
 **Date:** 2026-05-19
 **Controller:** Codex
-**Spend this session:** **$0.00** — no live OpenAI call attempted; user-session hard rule explicitly forbids live paid-provider calls.
+**Branch:** `v2/s4-followup-vision-ondemand` (pushed)
+**HEAD commit:** `d68a4be` (parent: `ff28807` — Codex's task-resync)
+**Spend this session:** **$0.00** — no live paid call, no live OpenAI call, no tests required credentials.
 
 ---
 
 ## 1. Status
 
-`BLOCKED`. The task pointed to by `docs/tasks/CURRENT_DEV_TASK.md` (`S4-LIVE-DEV-2026-05-18-001`, status `PENDING`) requires a **live OpenAI run with `V2_STAGING_OPENAI_API_KEY`**. Three independent reasons all force the same stop:
-
-| Stop trigger | Evidence |
-|--------------|----------|
-| **Task's own stop rule** ("If missing, mark `BLOCKED` and stop.") | `V2_STAGING_OPENAI_API_KEY` is `MISSING` in this Cowork sandbox shell env (verified by name+length probe, no value echoed) |
-| **User-session hard rule** ("Do not make live paid-provider calls. Do not make live OpenAI calls in unit tests.") | Even if the key were present, the new hard rule forbids spending OpenAI tokens |
-| **`docs/tasks/STATUS_PROTOCOL.md` Stop Rules** ("API keys or secrets" → BLOCKED) | Touching the key path triggers the protocol's hard stop |
-
-This is the third time `S4-LIVE-DEV-2026-05-18-001` has been issued to a Cowork Dev session, and the third time the structural gap is the same: **Cowork's bash sandbox is an isolated Linux container that does not inherit the user's local shell env**, so a key Tiw exports in his own terminal never reaches my process. There is no operational change in the sandbox that would unblock this from inside Cowork; it remains an external-environment problem.
+`READY_FOR_QA`. The task asked for an *optional* paid OCR / document-parser provider abstraction + a benchmark harness, with NO live paid calls and NO weakening of the safety thresholds. Both pieces are in place; full unit suite goes from 469 → 495 passing / 0 failures.
 
 ---
 
-## 2. Files Reviewed
+## 2. Files Changed (committed on `v2/s4-followup-vision-ondemand` @ `d68a4be`)
 
-| # | File | Purpose | Verdict |
-|---|------|---------|---------|
-| 1 | `docs/AI_COMMAND_CENTER.md` | Operating model + Hard Safety Rules + Required Dev Report Format | Followed |
-| 2 | `docs/tasks/CURRENT_DEV_TASK.md` | Names `S4-LIVE-DEV-2026-05-18-001` as the active task | Read; task spec requires live OpenAI run |
-| 3 | `docs/tasks/TASK_LOG.md` | Append-only coordination log | Read; `S4-LIVE-DEV-2026-05-18-001` is still `PENDING` here despite five follow-up Dev runs since |
-| 4 | `docs/tasks/AGENT_STATUS.json` | Shows the *last* completed Dev pass was `S4-PHASE2-LIVE-FOLLOWUP-DEV-2026-05-19-001`, READY_FOR_QA, GO_WITH_NOTES | Read; reflects the d0a43bf branch state, which is the real "current work" |
-| 5 | `docs/tasks/STATUS_PROTOCOL.md` | Status JSON shape + Stop Rules | Followed for this BLOCKED report |
-
----
-
-## 3. Files Changed
-
-| File | Change | Reason |
-|------|--------|--------|
-| `docs/tasks/DEV_REPORT_CURRENT.md` | Overwritten with this BLOCKED report | Required deliverable for current task |
-| `docs/tasks/AGENT_STATUS.json` | Status → `BLOCKED`, role → `DEV`, `next_action` → `WAITING_FOR_OWNER_INPUT_OR_CODEX_TASK_RESYNC`, detailed `blocked_reason` | Required by `STATUS_PROTOCOL.md` Stop Rules |
-
-**Nothing else.** No runtime code, no prompts, no migrations, no env files, no secrets, no V1 paths, no Make.com modules, no Meta webhook code, no production deploy settings touched.
-
----
-
-## 4. Commands Run
-
-Two read-only probes in the Cowork bash sandbox. **No** secret values echoed, only presence/length checks. **No** OpenAI call attempted.
-
-```bash
-# Probe 1: env-var presence (length-only readout; values never printed)
-for v in V2_STAGING_OPENAI_API_KEY V2_STAGING_DB_HOST V2_STAGING_DB_USER \
-         V2_STAGING_DB_PASSWORD V2_STAGING_SUPABASE_URL V2_STAGING_OPENAI_TEST_MODE; do
-  [ -n "${!v}" ] && echo "  $v: present (length=${#})" || echo "  $v: MISSING"
-done
-# Result: ALL MISSING
-
-# Probe 2: branch state carried over from prior session
-cd /tmp/repo && git log --oneline -5
-# d0a43bf S4 Phase 2 live-accuracy follow-up
-# 1ec49e2 tests: cross-platform path comparison in phase2 corpus runner spies
-# 516b1c3 S4 Phase 2 follow-up: cassette replay wired, cost reporting, accuracy fixes
-# b325e92 S4 Phase 2 readiness: full JSON schema in response_format + on-demand corpus runner
-# 39bcf53 S4 wire-in: orchestrator triggers extract_fees_on_demand; fix N1 confidence bump
+```
+v2/scraper/document_parser_provider.py    | 335 +++  (NEW — provider interface + mock + 3 fail-closed stubs)
+v2/scraper/benchmark_providers.py         | 295 +++  (NEW — benchmark_providers() + format_benchmark_markdown)
+v2/scraper/run_fee_pipeline.py            |  50 +    (modified — new --benchmark-providers flag)
+v2/tests/test_document_parser_provider.py | 330 +++  (NEW — 26 tests across 7 classes)
+4 files changed, 1010 insertions(+)
 ```
 
----
+**Also written outside the repo (this report + status JSON exist in BOTH places):**
+- `docs/tasks/DEV_REPORT_CURRENT.md` ← this file (in repo AND workspace folder).
+- `docs/tasks/AGENT_STATUS.json` ← updated.
 
-## 5. Estimated / Actual Cost
-
-| Item | Amount |
-|------|------:|
-| **Actual OpenAI spend this session** | **$0.00** (no API call attempted) |
-| Live tokens consumed | 0 |
-| Cassettes written | 0 |
-| Budget cap (per task spec + Tiw approval) | $5.00 — intact |
-| Projected Phase 2 live-run cost on `d0a43bf` if Tiw re-runs locally | ~$0.40 for 5 PDFs × 4 asked_fields (vision-cache fires after first asked_field per PDF). This is the corrected estimate from the L1 pricing fix in `d0a43bf`. |
+**NOT changed:** any V1 path, any prompt, any migration, any production env, any secret store, any Make.com module, any Meta webhook code, any deploy setting, `fee_answer_policy.py`, the orchestrator runtime path, `extract_fees_on_demand`, the existing on-demand cache. Verified by pre-commit grep and `git diff --name-only`.
 
 ---
 
-## 6. Accuracy Results
+## 3. Root Cause Analysis — why low money-critical accuracy on Phase 2
 
-**Not produced this session** — no live run occurred.
+The first Phase 2 live recording on `1ec49e2` reported:
+- tip 50% · deposit 70% · single_supplement 50% · hardest-required avg 56.7%
 
-The most recent measurement remains the first Phase 2 live run on `1ec49e2` (per Codex's hand-off report):
-- Avg overall: 73.8% · Avg hardest-required: 56.7%
-- tip 50% · deposit 70% · single_supplement 50% · visa 100%
+Investigation (from the PDF text, ground truth, and `extraction_accuracy._grade_numeric` scoring):
 
-The `d0a43bf` patch (the most recent Dev work, currently `READY_FOR_QA`) added vision-cap + duplicate-value safeguards designed to reduce false-positive wrong-answers on tip/deposit/single_supplement. **That patch's effect on real-corpus numbers is unmeasured** — it requires Tiw to re-run on `d0a43bf` with `V2_STAGING_OPENAI_API_KEY` exported in his shell, which is exactly what the current Dev task is trying to do, and exactly what's blocked here.
+| Field | Failure mode |
+|-------|--------------|
+| `tip_amount` | WS01+WS02 ground truth = 2000 — regex catches WS01 (`ค่าทิป … 2,000 บาท`) but layout variations or vision hallucination on WS02/03/04/05 push the score to 50%. |
+| `deposit_amount` | Similar to tip: regex catches the `บาท`-anchored cases on WS01; other PDFs ambiguous. |
+| `single_supplement` | The hardest: real WS01 value `6,000` is the LAST COLUMN of a price-rate table (`ห้องพักเดี่ยว ท่าน 19 – 23 มิถุนายน 2569 19,990 19,990 15,990 6,000`). Neither regex (no `บาท` suffix on the value) nor general vision can be trusted to pick the correct column without table-aware parsing. |
+| `visa_fee` | 100% — the rule-based visa_status='exempt' detection works for Japan/Korea/Taiwan PDFs. |
 
----
+The earlier `d0a43bf` safeguards (vision-only cap 0.84, duplicate-value penalty 0.50) made the bot SAFER (more handoffs, fewer wrong answers) but did NOT change the source signal. To actually LIFT the numbers, we need a higher-fidelity parser for the table-heavy and image-heavy pages.
 
-## 7. Redaction Scan Result
-
-**Not run** — no new cassettes were produced. The redaction-scan procedure documented in `docs/tasks/S4_READINESS_NOTES.md § 2` is unchanged and remains the gate for any future live recording.
-
-Sanity sweep on the two files this report touches: zero `sk-…`, zero `ghp_…`, zero `EAA…`, zero raw PSID shapes, zero wholesale brand names (`GS travel`, `TTN`, `ZEGO`, `Formosa`, `i-travel`).
-
----
-
-## 8. Blockers
-
-| # | Blocker | Owner | Effect |
-|---|---------|-------|--------|
-| **B1** | `V2_STAGING_OPENAI_API_KEY` not in the Cowork sandbox shell env | Cowork architecture | Hard task rule + STATUS_PROTOCOL stop rule both fire — BLOCKED. Cowork bash runs in an isolated Linux container and does not inherit the user's local shell env. |
-| **B2** | This session's hard rules explicitly forbid live paid-provider calls | User | Even if the key were available, I am instructed not to spend tokens this session. |
-| **B3** | `docs/tasks/CURRENT_DEV_TASK.md` still names a task that has been superseded five times | Codex | The actual "current Dev work" — the Phase 2 live-accuracy patch on `d0a43bf` — is already READY_FOR_QA with verdict GO_WITH_NOTES (see `AGENT_STATUS.json`). `CURRENT_DEV_TASK.md` was not updated by Codex after `S4-LIVE-DEV` was first blocked. QA has flagged this documentation drift twice ("N4") with no Codex action yet. |
+That's the design intent behind today's task: prepare the runway for a **table-aware paid OCR layer** without committing to one specific vendor yet, and without weakening any safety surface today. The benchmark harness is the next decision tool: implement `MistralOCRParser.parse()` (or `GoogleDocumentAIParser.parse()`), re-run on the corpus, compare against regex+vision side-by-side, choose the winner.
 
 ---
 
-## 9. Risks / Assumptions
+## 4. Summary of Changes
+
+### `v2/scraper/document_parser_provider.py` (NEW)
+Defines:
+- `DocumentParserProvider` Protocol — every provider exposes `name`, `is_available()` (returns `(ok, reason)` — never touches network), and `parse(pdf_path, asked_field=None)` (returns `DocumentParseResult`).
+- `DocumentParseResult` dataclass — provider-agnostic structured output (raw_text, tables, per-field values + per-field confidences, visa_status, source_page, latency, cost estimate, error).
+- `ProviderNotAvailableError` (raised by stubs when creds/SDK missing) and `ProviderNotImplementedError` (raised when stubs reach `parse` despite having creds — safety net for unit tests).
+- `MockDocumentParser` — in-process, deterministic, no network. Returns canned data keyed by PDF basename so tests + the benchmark grader get predictable accuracy numbers. Confidences capped at 0.85 so mock alone cannot answer single_supplement (policy 0.90) — the anti-guess invariant is preserved by design.
+- Three stub paid providers: `MistralOCRParser`, `GoogleDocumentAIParser`, `AWSTextractParser`. Each carries its required `V2_STAGING_*` env vars + SDK import name + activation hint. `is_available()` returns `(False, "missing_credentials:…")` or `(False, "missing_sdk:…")`; `parse()` raises `ProviderNotAvailableError` before any network attempt.
+- `make_document_parser(name)` factory + `available_providers()` list — used by the benchmark CLI.
+
+### `v2/scraper/benchmark_providers.py` (NEW)
+`benchmark_providers(pdfs, providers, *, ground_truth_dir) → BenchmarkReport`:
+- For each requested provider, calls `is_available()` first. Unavailable providers are **skipped with a clear `skip_reason`** — no `parse()` invoked, no network reached.
+- For available providers, iterates the PDF list, calls `parse()`, converts the result to an `ExtractionResult`, hands it to the existing `extraction_accuracy.grade_extraction()`, records per-PDF and aggregate scores (overall, hardest-required, per-field, source-page match, latency, estimated cost in USD with `unpriced_calls` tracking).
+- `ProviderNotImplementedError` (stub providers) is caught **per-row** so a benchmark run with `mock,mistral_ocr` still produces the mock side.
+- `format_benchmark_markdown(report)` renders the comparison table.
+
+### `v2/scraper/run_fee_pipeline.py` (modified)
+- New CLI flag `--benchmark-providers PROVIDER_NAMES` (comma-separated).
+- Dispatch route: when set, calls `_run_benchmark_providers(args)`, which fans out across `v2/tests/fixtures/pdfs/{text_based,scanned,mixed}/*.pdf` against `v2/tests/fixtures/ground_truth/`, optionally writes the markdown report to `--output-report`.
+- Default invocation `--benchmark-providers mock` runs entirely without credentials. Mixing in paid providers (`--benchmark-providers mock,mistral_ocr,google_document_ai,aws_textract`) is safe — paid providers are skipped at the `is_available()` gate.
+
+### `v2/tests/test_document_parser_provider.py` (NEW — 26 tests across 7 classes)
+| Class | Cases | Required category |
+|-------|------:|-------------------|
+| `TestProviderInterfaceContract` | 4 | 1 — interface contract |
+| `TestMockProvider` | 4 | 2 — mock output |
+| `TestPaidStubsFailClosed` | 8 (3 × 2 parametrized + 2) | 3 — missing creds fail closed; parse raises before network; SDK-only path; defensive "all creds, no SDK" |
+| `TestBenchmarkRunnerMockOnly` | 3 | 4 — mock-only run; paid skipped no-network; markdown formatter renders skipped rows |
+| `TestFeePolicyUnchanged` | 3 | 5 — thresholds unchanged; mock conf 0.85 cannot answer single_supplement (still handsoff) |
+| `TestNoWholesaleLeakage` | 2 | 6 — grep blacklist regex on both production new files (scoped to runtime, not the test that contains the regex itself) |
+| `TestPricingUnchanged` | 2 | 7 — d0a43bf 1000× fix still in place; format_cost_with_disclaimer surfaces "estimate" word |
+
+All 7 task-spec test categories addressed.
+
+---
+
+## 5. Tests Run
+
+```
+PYTHONPATH=. pytest v2/tests/test_document_parser_provider.py -x
+# 26 passed in 0.16s
+
+PYTHONPATH=. pytest v2/tests --ignore=v2/tests/test_integration_staging.py \
+                              --ignore=v2/tests/test_live_openai_health.py -q
+# 495 passed in 2.81s — 0 failures, 0 regressions
+
+# Safety scans on staged diff:
+git diff | grep '^+' | grep -E 'sk-...|ghp_...|EAA...'              # 0 hits
+git diff --name-only | grep V1-paths                                  # 0 hits
+brand-leak regex on document_parser_provider.py + benchmark_providers.py  # CLEAN
+```
+
+The `test_integration_staging.py` (real staging DB) and `test_live_openai_health.py` (real OpenAI key) suites remain correctly ignored — neither is needed for this task, and the task's hard rules forbid live paid-provider calls.
+
+---
+
+## 6. Risks / Assumptions
 
 ### Assumptions
-1. The user's chat-issued hard rule "Do not make live paid-provider calls" overrides any implicit permission in the older `CURRENT_DEV_TASK.md` for this session. The two are in direct conflict; per `AI_COMMAND_CENTER.md` Hard Safety Rules item "Do not rotate or print secrets" and the spirit of the new rule, the safer interpretation is "no live calls."
-2. The five follow-up Dev branches (`16fdd86` → `39bcf53` → `b325e92` → `1ec49e2` → `516b1c3` → `d0a43bf`) all targeted the same overall workstream and are pushed to `github.com/tiwsoonkyu/tourfiremai-bot` on branch `v2/s4-followup-vision-ondemand`. None of them required the live key (all used mocks). The live key is needed only for the *measurement* step that this task wraps.
-3. Migration 019 is applied to V2 staging Supabase per Tiw's prior confirmation (in QA notes).
+1. Codex's intent is to keep paid OCR **opt-in**, not the default. This commit reflects that: `extract_fees_on_demand` is unchanged; the orchestrator does NOT call any paid provider; the runtime fee-answer behavior is byte-identical to `d0a43bf`.
+2. The `mock` provider's canned outputs are designed to score reasonably well against the existing ground-truth fixtures for benchmark plumbing tests, not to claim accuracy on real PDFs.
+3. The pricing table in `v2/lib/llm_pricing.py` is OpenAI-only. When a real paid OCR provider is wired in, a new pricing dimension (per-page) will be added. Out of scope here.
 
-### Risks (carried forward, not introduced today)
-- **R1.** Stale `CURRENT_DEV_TASK.md` will keep producing BL
+### Carried-forward risks (not new)
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Phase 2 real-corpus accuracy on `d68a4be` is still unmeasured | Medium | Medium | This is operational, not code-side. Tiw still has to re-run on his dev machine if/when wanted. The provider abstraction is here so the *next* live attempt has more levers to pull. |
+| A stub provider's `is_available()` could miss an SDK that's installed but renamed | Low | Low | `_sdk_import_name` is per-provider and easy to update when a real implementation lands. |
+| Adding a paid OCR call later may interact with the on-demand cache (which is keyed by `pdf_hash + extraction_version`) | Low | Medium | When wiring is done, bump `EXTRACTION_VERSION` so the cache invalidates correctly. The current version constant is in `ondemand_vision.EXTRACTION_VERSION="1.0"`. |
+
+### Hard rules — all respected
+- ✅ V1 untouched.
+- ✅ Make.com untouched.
+- ✅ No deploy.
+- ✅ No production webhook touched.
+- ✅ No secret printed, written, or committed (pre-commit grep clean; PAT only in transient push URL; `.git/config` token-free after push).
+- ✅ No live paid-provider call (stubs raise `ProviderNotAvailableError` before any network attempt; explicit unit tests verify this).
+- ✅ No live OpenAI in unit tests (mock-mode default; spied paid-stub paths).
+- ✅ No wholesale partner names introduced.
+- ✅ Fee thresholds in `fee_answer_policy.py` UNCHANGED.
+- ✅ Anti-guess invariant preserved (`TestFeePolicyUnchanged` proves it: mock conf 0.85 < policy 0.90 ⇒ handoff).
+- ✅ No claim of exact OpenAI billing (estimator language only; `format_cost_with_disclaimer` surfaces "estimate, not exact OpenAI billing").
+
+---
+
+## 7. What QA Should Verify
+
+| # | QA check (from `CURRENT_QA_TASK.md`) | How to verify |
+|---|--------------------------------------|---------------|
+| 1 | Dev stayed on V2 scope only | `git diff ff28807..d68a4be --name-only` → only `v2/` files |
+| 2 | V1 production code unchanged | Same diff list contains no V1 paths (`app.py`, `fee_extractor.py`, `scraper.py`, `tourfiremai_dashboard.html`, etc.) |
+| 3 | No Make.com / Cloudflare / Meta production webhook touched | Same diff; no `make_blueprint*`, no `cloudflare*`, no Meta webhook files |
+| 4 | No secrets written to files | `git diff ff28807..d68a4be \| grep -E 'sk-[A-Za-z0-9_-]{20,}\|ghp_[A-Za-z0-9]{20,}\|EAA[A-Za-z0-9]{20,}'` → 0 hits |
+| 5 | No live paid-provider call required by tests | `TestPaidStubsFailClosed` (8 cases) explicitly patches env to ensure stubs refuse to execute |
+| 6 | No live OpenAI required by unit tests | Suite runs without `V2_STAGING_OPENAI_API_KEY`; `test_integration_staging` + `test_live_openai_health` ignored |
+| 7 | Provider abstraction fails closed when creds/provider missing | `TestPaidStubsFailClosed::test_no_creds_is_not_available` and `…test_parse_without_creds_raises_provider_not_available` (parametrized over all 3 paid stubs) |
+| 8 | Benchmark path runs with a mock provider | `TestBenchmarkRunnerMockOnly::test_default_mock_only_runs_without_credentials` |
+| 9 | Fee thresholds were not weakened | `TestFeePolicyUnchanged::test_thresholds_unchanged` asserts `DEFAULT_THRESHOLD == 0.80` and `SINGLE_SUPPLEMENT_THRESHOLD == 0.90` |
+| 10 | Fee policy still handsoff below threshold | `TestFeePolicyUnchanged::test_low_confidence_single_supplement_still_handsoff` + the d0a43bf wire-in anti-guess test (still passing) |
+| 11 | No wholesale partner names in new prompts/reports/cassettes | `TestNoWholesaleLeakage::test_no_brand_leak` parametrized over `document_parser_provider.py` and `benchmark_providers.py` (test file scoped out — it contains the blacklist regex by necessity) |
+| 12 | Dev report clearly explains accuracy/cost tradeoff and next step | §3 (RCA), §8 (next step) |
+
+### How QA should run the suite
+
+```bash
+git fetch origin v2/s4-followup-vision-ondemand
+git checkout d68a4be
+source .venv/bin/activate
+pip install -r v2/requirements-dev.txt reportlab pdf2image Pillow
+PYTHONPATH=. pytest v2/tests --ignore=v2/tests/test_integration_staging.py \
+                              --ignore=v2/tests/test_live_openai_health.py
+```
+
+Expected: **495 passed**.
+
+---
+
+## 8. Next Recommended Step
+
+**For Codex (Controller):**
+
+1. Accept this `GO` verdict (or `GO_WITH_NOTES` if QA wants to flag that real-corpus accuracy lift is still unmeasured — operational, not Dev-correctable).
+2. Decide whether to implement a paid OCR provider next. Suggested order (cheapest-to-experiment first):
+   - **Mistral OCR** (low latency, strong Thai support). Task scope:
+     a. Get a `V2_STAGING_MISTRAL_API_KEY` from Mistral.
+     b. `pip install mistralai`.
+     c. Implement `MistralOCRParser.parse()` using `mistralai.Mistral(api_key=…).ocr.process(document_url=…)` — uploads the PDF or passes a signed URL; parses the structured response into `DocumentParseResult`.
+     d. Add Mistral OCR pricing to `v2/lib/llm_pricing.py` (per-page basis; check Mistral's quote).
+     e. Re-run `--benchmark-providers mock,mistral_ocr --output-report docs/SPRINT_4_BENCHMARK_REPORT.md` on the 5-PDF corpus.
+   - If Mistral underperforms, try Google Document AI form parser (excellent for tables) or AWS Textract.
+3. After choosing a winner, write a small wiring task that adds the call site in `extract_fees_on_demand` (e.g. when regex+vision returns low-confidence on a money-critical field for a locked tour). Cache key still `pdf_hash + extraction_version`; bump `EXTRACTION_VERSION` to invalidate.
+4. Re-measure on the real 5-PDF corpus and close Sprint 4 against `SPRINT_4_PLAN.md § 5` gates.
+
+**For Tiw:**
+
+- No action required for this commit (pure infrastructure).
+- When Codex assigns the Mistral OCR wiring task, Tiw provisions the API key in his password manager (NOT chat) and runs the benchmark.
+
+---
+
+**Stopped.** Awaiting QA / Codex review per `AI_COMMAND_CENTER.md § "Handoff Rule"`.
