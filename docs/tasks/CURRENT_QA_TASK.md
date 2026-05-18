@@ -1,26 +1,25 @@
 # Current QA Task
 
-Task ID: `QA-2026-05-19-003`
+Task ID: `QA-2026-05-19-004`
 Status: `PENDING`
 Assigned role: Claude Cowork QA
 Controller: Codex
 
 ## Task
 
-Review Dev task `DEV-2026-05-19-003`.
+Review Dev task `DEV-2026-05-19-004`.
 
 This QA task is read-only. Do not patch code unless Codex explicitly asks for a QA patch.
 
 ## Context
 
-Tiw approved adding a paid OCR / document parser helper, but only as an optional on-demand layer to improve PDF fee extraction accuracy.
+The current business priority is Sales Agent operational reliability before wider automation.
 
-The bot must remain safety-first:
+This Dev task should add an Admin Handoff + Memory Control foundation so a future dashboard can safely show customer cases and allow humans to pause/resume bot handling.
 
-- answer fee values only when reliable
-- handoff when confidence is low
-- never invent tip, deposit, single supplement, or visa values
-- never lower thresholds just to make the bot answer more often
+The most important product invariant:
+
+When a human/admin is handling a customer, the bot must not interrupt.
 
 ## Review Scope
 
@@ -42,14 +41,16 @@ Verify:
 2. V1 production code was not changed.
 3. Make.com / Cloudflare / Meta production webhook behavior was not changed.
 4. No secrets were written to files.
-5. No live paid-provider calls are required by tests.
-6. No live OpenAI calls are required by unit tests.
-7. Document parser provider abstraction fails closed when credentials/provider are missing.
-8. Benchmark path can run with a mock provider.
-9. Fee thresholds were not weakened.
-10. Fee answer policy still handoffs below threshold.
-11. No wholesale partner names are introduced into prompts, logs, reports, cassettes, or customer-facing output.
-12. Dev report clearly explains the accuracy/cost tradeoff and next step.
+5. No live OpenAI or paid-provider calls are required by tests.
+6. No PDF extraction behavior or fee thresholds were changed.
+7. Admin pause creates or updates the expected pause/conversation state.
+8. A paused customer is silent / does not proceed through normal bot response flow.
+9. Admin resume clears the pause safely and leaves an auditable event.
+10. Admin case summary includes customer name when available.
+11. Admin case summary includes selected tour / latest offer / open handoff context when available.
+12. Open handoff queue listing is deterministic and safe for dashboard use.
+13. No wholesale partner names are introduced into prompts, logs, reports, cassettes, or customer-facing output.
+14. Tests cover the main pause/resume/case-summary paths.
 
 ## Deliverable
 

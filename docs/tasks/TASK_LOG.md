@@ -24,11 +24,39 @@ Codex issues a fresh non-live Dev task for optional OCR provider abstraction and
 
 ### `DEV-2026-05-19-003`
 
-Status: `PENDING`
+Status: `QA_GO`
 
 Goal:
 
 Add optional paid OCR / Document parser provider abstraction and benchmark harness for PDF fee accuracy, without live paid-provider calls.
+
+Result:
+
+- Provider abstraction and benchmark harness implemented.
+- Cleanup notes L1/L2 closed.
+- QA verdict: `GO`.
+- Latest QA status commit observed by Codex: `4154172`.
+
+### `QA-2026-05-19-003`
+
+Status: `QA_GO`
+
+Goal:
+
+Review Dev output for OCR provider abstraction, benchmark readiness, safety thresholds, no live paid calls, and scope discipline.
+
+Result:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+### `DEV-2026-05-19-004`
+
+Status: `PENDING`
+
+Goal:
+
+Build the V2 Admin Handoff + Memory Control foundation so admin/dashboard tools can inspect cases, pause bot handling, resume bot handling, and preserve selected-tour context.
 
 Expected deliverables:
 
@@ -36,13 +64,13 @@ Expected deliverables:
 - `docs/tasks/DEV_REPORT_CURRENT.md`
 - `docs/tasks/AGENT_STATUS.json`
 
-### `QA-2026-05-19-003`
+### `QA-2026-05-19-004`
 
 Status: `PENDING`
 
 Goal:
 
-Review Dev output for OCR provider abstraction, benchmark readiness, safety thresholds, no live paid calls, and scope discipline.
+Review Dev output for admin handoff, bot pause/resume, memory continuity, dashboard-safe case summaries, and scope discipline.
 
 Expected deliverables:
 

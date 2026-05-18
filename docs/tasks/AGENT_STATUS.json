@@ -1,16 +1,19 @@
 {
   "controller": "Codex",
-  "current_dev_task": "DEV-2026-05-19-003",
-  "current_qa_task": "QA-2026-05-19-003-cleanup",
-  "role": "QA",
-  "status": "QA_GO",
-  "verdict": "GO",
-  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T07:00:00+07:00",
-  "next_action": "WAITING_FOR_CODEX",
+  "current_dev_task": "DEV-2026-05-19-004",
+  "current_qa_task": "QA-2026-05-19-004",
+  "role": "CONTROLLER",
+  "status": "PENDING_DEV",
+  "verdict": null,
+  "report_path": null,
+  "updated_at": "2026-05-19T08:00:00+07:00",
+  "next_action": "CLAUDE_DEV_TO_RUN_CURRENT_DEV_TASK",
   "blocked_reason": null,
   "files_changed": [
-    "docs/tasks/QA_REPORT_CURRENT.md (overwritten with this QA verdict on the L1+L2 cleanup)",
-    "docs/tasks/AGENT_STATUS.json (this file — flipped to QA_GO)"
+    "docs/tasks/CURRENT_DEV_TASK.md",
+    "docs/tasks/CURRENT_QA_TASK.md",
+    "docs/tasks/TASK_LOG.md",
+    "docs/tasks/AGENT_STATUS.json"
   ],
-  "notes": "Reviewed v2/s4-followup-vision-ondemand @ 9ccf7ec (docs companion) and code cleanup at e473a26 against parent bd4784e. Both prior QA informational notes are closed cleanly: L1 — MockDocumentParser now uses explicit _CONF_COL dict mapping single_supplement→single_supplement_confidence (was broken via f-string split shorthand); locked in by TestQACleanupL1ConfidenceKeys (4 tests) including end-to-end benchmark grader assertion that extraction.single_supplement_confidence == 0.85 (was None). L2 — new needs_supabase predicate skips make_supabase_from_config for --benchmark-providers, --pdf-corpus, --pdf-corpus-ondemand; locked in by TestQACleanupL2NoSupabaseInBenchmarkMode (2 tests) with spy asserting called == []. Tests: 32 module-scoped pass (26 prior + 6 new), full non-live suite 494 + 7 Flask-skipped + 0 failed = 501 (matches Dev's count), 0 regressions vs bd4784e baseline of 495. Hard rules: fee_answer_policy.py thresholds UNCHANGED (DEFAULT_THRESHOLD=0.80, SINGLE_SUPPLEMENT_THRESHOLD=0.90); runtime path UNTOUCHED (git diff bd4784e..e473a26 -- v2/lib v2/scraper/ondemand_vision.py v2/scraper/extract_fees.py → empty); no V1 / Make.com / Cloudflare / Railway / Meta webhook / production webhook / secret / live paid call / live OpenAI in tests. Anti-guess invariant preserved: mock 0.85 cap < single_supplement strict 0.90 → handoff (asserted by TestFeePolicyUnchanged). Wholesale brand strings appear only in test self-test regex. Two cleanup-side informational notes: L_cleanup_1 — Dev report's deposit-broken claim is slightly inaccurate (deposit was correct by coincidence; only single_supplement was actually broken; the test corre
+  "notes": "Codex accepted QA_GO for DEV-2026-05-19-003 cleanup and opened DEV-2026-05-19-004 / QA-2026-05-19-004 for Admin Handoff + Memory Control foundation. Priority is sales-agent operational reliability: admin case visibility, bot pause/resume, and no AI interruption while a human is handling the customer. No runtime code changed by Codex in this controller update."
+}
