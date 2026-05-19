@@ -7,6 +7,7 @@ Source of truth read at task start:
 - Repo: `github.com/tiwsoonkyu/tourfiremai-bot`
 - Branch: `v2/s4-followup-vision-ondemand`
 - Base commit: `a9ed2ea` (`docs(tasks): open detail price table parser task`)
+- Implementation commit: `938f5ef` (`feat(v2): add detail departure price parser`)
 - Task spec: `docs/tasks/CURRENT_DEV_TASK.md`
 - Controller config: `docs/AI_COMMAND_CENTER.md`
 

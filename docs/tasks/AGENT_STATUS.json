@@ -7,6 +7,7 @@
   "current_qa_task": "QA-2026-05-20-012",
   "branch": "v2/s4-followup-vision-ondemand",
   "base_commit": "a9ed2ea",
+  "commit": "938f5ef",
   "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
   "updated_at": "2026-05-20T02:25:00+07:00",
   "next_action": "CLAUDE_QA_REVIEW_CURRENT_DEV_TASK",
