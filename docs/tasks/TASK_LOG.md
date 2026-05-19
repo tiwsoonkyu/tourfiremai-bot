@@ -232,7 +232,7 @@ Codex operational follow-up:
 
 ### `DEV-2026-05-19-008`
 
-Status: `PENDING`
+Status: `READY_FOR_QA`
 
 Goal:
 
@@ -248,6 +248,17 @@ Expected deliverables:
 - V2-only code/tests.
 - `docs/tasks/DEV_REPORT_CURRENT.md`
 - `docs/tasks/AGENT_STATUS.json`
+
+Result:
+
+- Dev verdict: `READY_FOR_QA`
+- GitHub branch: `v2/s4-followup-vision-ondemand`
+- Dev commit: `0803dce`
+- Codex cleanup commit: `546efa5`
+- Implemented V2-only source attribution adapter, LINE admin allow-list adapter, and dashboard-safe read API service.
+- Targeted tests: `46 passed`
+- Broad non-live V2 suite: `638 passed`
+- No V1 / Make.com / production webhook / deploy / secrets / live provider changes.
 
 Hard rules:
 
