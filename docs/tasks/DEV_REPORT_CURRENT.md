@@ -228,4 +228,3 @@ Codex should:
      `AdminDashboardAPI` as a guarded endpoint to the future admin
      dashboard.
 3. Author QA-2026-05-19-008 task content to direct the QA pass.
-
