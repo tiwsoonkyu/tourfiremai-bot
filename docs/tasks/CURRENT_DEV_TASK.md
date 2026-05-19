@@ -1,10 +1,10 @@
 # CURRENT DEV TASK
 
 ## Task ID
-DEV-2026-05-19-008
+DEV-2026-05-19-009
 
 ## Title
-Sprint 5 Package B — Source Attribution + LINE Admin Safety + Dashboard Read API v0
+Sprint 5 Package C — Runtime Wiring for Source Attribution, LINE Admin, and Dashboard Read API
 
 ## Status
 PENDING
@@ -16,113 +16,143 @@ Claude Dev
 Codex
 
 ## Context
-The previous package is QA-cleared:
+Sprint 5 Package B is QA-cleared by owner-reported QA verdict `GO`.
 
-- DEV/QA-2026-05-19-006: page post intelligence foundation.
-- DEV/QA-2026-05-19-007: page post planning wired into response flow and admin command core.
-- Migration 020 has been applied and verified on V2 staging Supabase by Codex.
+Repository source of truth:
 
-Remaining Sprint 5 risks:
+- GitHub repo: `github.com/tiwsoonkyu/tourfiremai-bot`
+- Branch: `v2/s4-followup-vision-ondemand`
+- This task must be executed against the GitHub branch files, not a stale Cowork-only workspace snapshot.
+- If the task files or V2 source files are unavailable in the current workspace, stop and report `BLOCKED: source-of-truth repo unavailable`.
 
-- Source attribution is not yet wired from webhook/adapter into `Orchestrator.handle_turn(...)`.
-- LINE admin commands need an allow-list safety layer before they can be used by staff.
-- Admin dashboard needs a safe read surface for current cases and post/tour status.
+Already available:
+
+- `v2/lib/source_attribution.py`
+- `v2/lib/line_admin_adapter.py`
+- `v2/lib/admin_dashboard_api.py`
+- `Orchestrator.handle_turn(...)` already accepts `source_post_id`, `source_type`, and `source_platform`.
+- Migration `20260519_020_page_post_intelligence.sql` has already been applied and verified on V2 staging by Codex.
+
+Remaining practical gap:
+
+- The V2 webhook/runtime does not yet call `extract_source(...)`.
+- LINE admin messages do not yet have a safe webhook/service entrypoint.
+- Dashboard read service does not yet have a minimal guarded HTTP/API shim.
 
 ## Goal
-Implement the next integration package so V2 can understand whether a conversation came from page post / ad / organic, let allowed staff pause/resume or mark tours full, and expose compact admin-safe case/status data for a future dashboard.
+Wire the existing Sprint 5 adapters into V2 runtime surfaces in a staging-safe, test-first way so the system can be exercised end-to-end without touching V1 production, Make.com, production webhook settings, or live paid providers.
 
 ## Scope
-You may implement all subtasks in this package as one integrated Dev task. Do not stop after each small subtask unless you find a P0 risk.
+Implement all subtasks in this package as one integrated Dev task. Do not stop after each small subtask unless you find a P0 risk.
 
-### 1. Source Attribution Adapter
+### 1. Meta Webhook Source Attribution Wiring
 
-Inspect existing V2 webhook/tests and add a deterministic source-attribution layer.
-
-Requirements:
-
-- Support source types: `page_post`, `ad`, `organic`, `unknown`.
-- Extract only safe metadata from existing or test Meta-like payloads. Do not call Meta Graph API.
-- Pass source data into:
-  - `Orchestrator.handle_turn(..., source_post_id=..., source_type=..., source_platform=...)`
-- Unknown or absent source must preserve current behaviour.
-- Do not trust arbitrary user text as a post/ad id.
-- Keep the planning context compact. Do not inject full captions into LLM prompts.
-
-### 2. LINE Admin Allow-List Adapter Core
-
-Add a deterministic adapter/service layer for admin commands.
+Wire `v2.lib.source_attribution.extract_source(event, supabase)` into the V2 webhook processing path.
 
 Requirements:
 
-- No live LINE API calls.
-- Accept an admin sender id and text command.
-- Reject non-allowlisted sender ids before parsing/executing admin commands.
-- Authorized sender ids may execute existing admin command handler functions.
-- Cover at least:
-  - list/case read command if supported by existing handler.
-  - pause/resume customer.
-  - mark_full / clear_full or equivalent sold-out commands if supported.
-- Unauthorized commands must have no side effects and must not leak sensitive data.
-- Prefer injected allow-list config in tests. If environment variables are used, read only safe ids and never print secrets.
+- In `v2/webhook/app.py`, call `extract_source(...)` for each accepted messaging event.
+- Pass `attr.to_orchestrator_kwargs()` into `Orchestrator.handle_turn(...)` only if the current webhook path already calls or can safely instantiate the orchestrator.
+- If the current V2 webhook is still silent-ingest only, add a narrow integration seam that records source attribution without enabling outbound customer replies.
+- Unknown or absent source must preserve current behavior.
+- User message text must not spoof post/ad IDs.
+- Page-post sold-out/full signal must be able to reach planning logic through this path in tests.
+- Keep Meta POST ack fast; do not add live Graph API calls.
 
-### 3. Dashboard-Safe Read API v0 / Service
+### 2. LINE Admin Runtime Entry Point
 
-Expose a minimal safe read surface for future admin dashboard.
+Add a safe V2 admin entrypoint around `LineAdminAdapter`.
 
 Requirements:
 
-- Use existing `admin_ops` functions where possible.
-- Return compact current-case summaries and case detail suitable for dashboard.
-- Must require an explicit admin/auth guard or injected admin context in tests.
-- Avoid raw PSID as the primary display if customer display name exists.
-- Do not return full raw conversation history, full raw captions, secrets, tokens, or wholesale partner names.
-- If no web framework exists naturally in V2, implement a service/API boundary with tests instead of forcing a Flask app.
+- No live LINE API calls in this task.
+- Add a minimal route/service boundary suitable for a future LINE webhook.
+- Enforce allow-list before command parsing/execution.
+- Unauthorized sender must have no side effects and must not receive sensitive data.
+- Authorized sender can execute supported commands via existing admin command core:
+  - list/cases if supported
+  - pause/resume customer if supported
+  - mark_full / clear_full or equivalent sold-out commands if supported
+- Return an `admin_text` payload from the route/service. Do not send to LINE yet.
+
+### 3. Dashboard Read HTTP/API Shim v0
+
+Expose `AdminDashboardAPI` through a minimal guarded runtime surface.
+
+Requirements:
+
+- If Flask is already used in `v2/webhook/app.py`, add guarded endpoints there or in a small blueprint/module imported by the app.
+- Require explicit admin/auth guard. For now, a staging-only header/token check is acceptable if tests inject it safely.
+- Endpoints should be read-only and compact:
+  - list current cases
+  - get one case
+  - list recent page posts/status
+  - list open handoffs
+- Do not return full raw conversation history, raw captions, secrets, tokens, wholesale partner names, or raw PSID as the primary display when display name exists.
+- No dashboard frontend in this task.
 
 ### 4. Tests
 
-Add tests covering:
+Add focused tests for:
 
-- Source attribution: page_post, ad, organic, unknown.
-- Source post id reaches orchestrator planning.
-- A post/tour marked full blocks recommendation through the adapter/orchestrator path.
-- LINE non-allowlisted admin is denied with no side effects.
-- LINE allowlisted admin can pause/resume and mark/clear full through safe handlers.
-- Dashboard-safe read returns compact summaries and requires admin context.
-- No raw caption, secret shape, wholesale partner name, or full PSID leaks from new public/admin surfaces.
+- Webhook event with page-post source reaches orchestrator/planning kwargs or source-record seam.
+- Unknown/organic event preserves old behavior.
+- Spoofed post/ad id in user text is ignored.
+- Sold-out post/tour can block response through runtime path where applicable.
+- Unauthorized LINE admin sender cannot execute commands and causes no side effects.
+- Authorized LINE admin sender can execute supported commands.
+- Dashboard API guard denies unauthenticated reads.
+- Dashboard API returns masked/scrubbed/capped payloads.
+- Broad non-live V2 suite passes.
 
-Run targeted tests and broad non-live V2 suite.
+## Allowed Files
+Prefer touching only:
 
-## Hard Rules
+- `v2/webhook/app.py`
+- `v2/webhook/*.py` new small helper modules if needed
+- `v2/lib/source_attribution.py` only if a runtime bug is found
+- `v2/lib/line_admin_adapter.py` only if a runtime bug is found
+- `v2/lib/admin_dashboard_api.py` only if a runtime bug is found
+- `v2/tests/test_webhook*.py`
+- `v2/tests/test_line_admin_runtime*.py`
+- `v2/tests/test_admin_dashboard_runtime*.py`
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
 
-- Do not modify V1.
+## Out of Scope
+
+- Do not touch V1 production files.
 - Do not touch Make.com.
-- Do not deploy anything.
 - Do not change production webhook settings.
-- Do not call live Meta/FB/LINE/OpenAI/OCR/paid providers.
-- Do not write secrets into files, logs, reports, or tests.
-- Do not apply migrations to Supabase from Claude Dev.
-- Avoid broad refactors. Keep changes V2-scoped.
+- Do not deploy.
+- Do not call Meta Graph API.
+- Do not call live LINE API.
+- Do not call OpenAI / OCR / paid providers.
+- Do not apply Supabase migrations.
+- Do not build dashboard frontend UI.
+- Do not enable live customer replies if the current V2 webhook is still silent-ingest only unless the existing V2 architecture explicitly supports it in tests.
 
-## Expected Deliverables
+## Required Tests
 
-1. Code and tests for the package above.
-2. `docs/tasks/DEV_REPORT_CURRENT.md`
-3. `docs/tasks/AGENT_STATUS.json`
-4. If git is available, commit and push to `v2/s4-followup-vision-ondemand`. If not, state that clearly in the report and stop.
+Run at minimum:
 
-## Required Dev Report Sections
+```bash
+pytest v2/tests/test_webhook.py v2/tests/test_source_attribution*.py v2/tests/test_line_admin_adapter.py v2/tests/test_admin_dashboard_api.py -q
+pytest v2/tests --ignore=v2/tests/test_integration_staging.py --ignore=v2/tests/test_live_openai_health.py --ignore=v2/tests/test_phase2_live_followup.py -p no:cacheprovider -q
+```
+
+If Windows temp permission blocks pytest, rerun with a repo-local `--basetemp`.
+
+## Required Dev Report
 
 Write `docs/tasks/DEV_REPORT_CURRENT.md` with:
 
-1. Summary
-2. Files Changed
-3. Implementation Details
-4. Tests Run
-5. Scope/Safety Verification
-6. Risks / Notes
-7. QA Checklist
-8. Next Step
+1. Status
+2. Scope implemented
+3. Files changed
+4. Runtime wiring design
+5. Tests run and results
+6. Safety checks
+7. Known gaps / next recommended action
 
-## Stop Condition
-
-After writing the Dev report and status JSON, stop and wait for QA/Codex review.
+Then update `docs/tasks/AGENT_STATUS.json` and stop for QA.

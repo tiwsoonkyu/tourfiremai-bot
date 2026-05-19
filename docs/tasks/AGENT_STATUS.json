@@ -1,13 +1,13 @@
 {
   "controller": "Codex",
-  "current_dev_task": "DEV-2026-05-19-008",
-  "current_qa_task": "QA-2026-05-19-008",
-  "role": "Dev",
-  "status": "READY_FOR_QA",
+  "current_dev_task": "DEV-2026-05-19-009",
+  "current_qa_task": "QA-2026-05-19-009",
+  "role": "Controller",
+  "status": "DEV_TASK_OPEN",
   "verdict": null,
-  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T22:30:00+07:00",
-  "next_action": "CLAUDE_QA_RUN_CURRENT_QA_TASK",
+  "report_path": "docs/tasks/CURRENT_DEV_TASK.md",
+  "updated_at": "2026-05-19T22:55:00+07:00",
+  "next_action": "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
   "blocked_reason": null,
-  "notes": "Sprint 5 Package B implemented as one integration package. 7 new V2 files (3 lib + 4 tests). No existing files modified. No migrations. No V1 / Make.com touched. Targeted suite: 46 passed / 0 failed. Broad non-live V2 suite: 638 passed / 0 failed (was 608). Adapter modules: v2/lib/source_attribution.py (extract_source + SourceAttribution), v2/lib/line_admin_adapter.py (AdminAllowList + LineAdminAdapter), v2/lib/admin_dashboard_api.py (AdminContext + AdminDashboardAPI). Webhook NOT wired to call extract_source yet (kept out of scope; existing Sprint 2 webhook is silent-ingest only); orchestrator already accepts source_post_id/source_type/source_platform kwargs from DEV-007. LINE adapter does NOT make live LINE API calls — returns admin_text for a future LINE webhook to deliver. Dashboard API is a service layer only — no Flask blueprint, no HTTP shim. Hard rules respected: no V1; no Make.com; no deploy; no production webhook changes; no secrets; no live paid providers; no Supabase migrations from Dev."
+  "notes": "QA-2026-05-19-008 reported GO by Tiw. Opened DEV-2026-05-19-009 / QA-2026-05-19-009 for Sprint 5 Package C runtime wiring: source attribution into V2 webhook/runtime, LINE admin allow-list runtime entrypoint, and dashboard read HTTP/API shim. V2-only, staging-safe, no V1, no Make.com, no deploy, no production webhook settings, no secrets, no live paid providers."
 }

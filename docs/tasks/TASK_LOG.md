@@ -272,11 +272,66 @@ Hard rules:
 
 ### `QA-2026-05-19-008`
 
-Status: `PENDING`
+Status: `QA_GO`
 
 Goal:
 
 Review DEV-2026-05-19-008 as one integration unit after Dev report is ready.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`
+
+Result:
+
+- QA verdict: `GO`
+- Reported by Tiw from Claude QA session.
+- Codex note: QA report file was not pushed into this repo at the time of controller update, so this log records owner-reported QA status and the repository evidence from Dev/Codex verification.
+- Codex verification before QA handoff: targeted tests `46 passed`, broad non-live V2 suite `638 passed`.
+
+### `DEV-2026-05-19-009`
+
+Status: `PENDING`
+
+Goal:
+
+Implement Sprint 5 Package C as one runtime wiring package:
+
+- Wire source attribution into the V2 webhook/runtime path or an explicitly safe source-record seam.
+- Add a safe LINE admin runtime entrypoint around the existing allow-list adapter.
+- Add a minimal guarded dashboard read HTTP/API shim over `AdminDashboardAPI`.
+- Keep all work V2-only and staging-safe.
+
+Expected deliverables:
+
+- V2-only code/tests.
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No Supabase migration apply from Claude Dev.
+
+### `QA-2026-05-19-009`
+
+Status: `PENDING`
+
+Goal:
+
+Review DEV-2026-05-19-009 as one integration unit after Dev report is ready.
 
 Expected deliverables:
 
