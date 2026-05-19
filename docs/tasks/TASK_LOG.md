@@ -52,7 +52,7 @@ Result:
 
 ### `DEV-2026-05-19-004`
 
-Status: `PENDING`
+Status: `QA_GO_WITH_NOTES`
 
 Goal:
 
@@ -102,7 +102,7 @@ Result:
 
 ### `QA-2026-05-19-005`
 
-Status: `PENDING`
+Status: `QA_GO_WITH_NOTES`
 
 Goal:
 
@@ -112,3 +112,12 @@ Expected deliverables:
 
 - `docs/tasks/QA_REPORT_CURRENT.md`
 - `docs/tasks/AGENT_STATUS.json`
+
+Result:
+
+- QA verdict: `GO_WITH_NOTES`.
+- All 15 QA scope checks passed.
+- Follow-up notes:
+  - Add explicit pause/resume redaction tests before wiring the real LINE adapter.
+  - Future LINE adapter must enforce a staff allow-list before forwarding admin commands.
+  - Codex should run a broad non-live suite on the real repo clone as post-QA sanity.

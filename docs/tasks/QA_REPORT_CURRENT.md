@@ -1,201 +1,150 @@
-# QA Report — `QA-2026-05-19-004` Admin Handoff + Memory Control foundation
+# QA Report — `QA-2026-05-19-005`
 
-**Verdict:** `GO`
-**Author:** Claude Cowork QA
+**Verdict:** `GO_WITH_NOTES`
+**Author:** Claude Cowork QA (read-only review)
 **Date:** 2026-05-19
 **Controller:** Codex
-**Paired Dev Task:** `DEV-2026-05-19-004`
-**Branch reviewed:** `v2/s4-followup-vision-ondemand` @ `975b891` (docs companion to code commit `e152a07`)
-**Parent baseline:** `v2/s4-followup-vision-ondemand` @ `78da867` (Codex task-open)
+**Paired Dev task:** `DEV-2026-05-19-005` (LINE Admin Command Handler Core)
+**Branch named in control files:** `v2/s4-followup-vision-ondemand`
+**Parent commit (per Dev report):** `a072820`
 
 ---
 
 ## 1. Verdict
 
-**`GO`.** The Admin Handoff + Memory Control foundation lands as two new files and zero production-runtime diff. Every QA item in `CURRENT_QA_TASK.md` § "QA Checks" is independently verified. All 33 new tests pass; the full non-live suite is 527 passed / 0 failed / 7 Flask-skipped — exactly matching the Dev report's count. Fee thresholds, V1, Make.com, Cloudflare, Railway, Meta webhook, and the orchestrator pause-guard contract are byte-identical to the parent commit.
+**`GO_WITH_NOTES`.** The new `v2/lib/admin_command_handler.py` is a clean, deterministic command core wrapping the QA-cleared `admin_ops` foundation. The parser covers every command in the QA scope, every mutating command routes through `admin_ops` (not direct SQL or fake-mutates), and admin output is filtered through both the PSID redactor and the wholesale blacklist before being returned. The accompanying test file exercises parsing, listing, case-detail, pause, resume, missing-target, and two leakage-safety paths. All eleven test functions have plausible, on-target assertions.
 
-Two informational notes (N1, N2 below); neither blocks the verdict.
+I am voting `GO_WITH_NOTES` instead of `GO` because of three small post-merge follow-ups (all `🟡 Medium` or below) — none blocks the cleanup-task-style green light, but each is a follow-up Codex should track before the next ticket wires this core into a real LINE webhook adapter:
+
+1. The display-name `_safe_text` routing on the **pause** and **resume** admin_text paths was added post-pytest-run; no test asserts that a wholesale-named or secret-shaped display name is redacted in those two paths specifically (the existing redaction tests cover `cases` and `case <id>` only).
+2. `admin_user_id` is persisted to `bot_pauses.resumed_by` (and into the fallback `reason` string) raw — fine for admin-only fields, but worth tightening if `admin_user_id` could ever carry secret-like content.
+3. **There is no authorization check inside `handle_admin_command`.** This is correct for the *core* (Dev report acknowledges a future adapter will do auth), but the adapter ticket must enforce a staff allow-list before forwarding text to `handle_admin_command(...)`. Adding a one-liner "authorization happens at the adapter, not here" docstring to the module would lock that contract in.
+
+The product invariant — *"when a human/admin is handling a customer, the bot must not interrupt"* — is preserved: the handler itself sends nothing; pause routes through `admin_ops.pause_bot_for_customer` which sets `conversations.is_human_paused=True` and `state='human_paused'`, which the existing orchestrator pause-guard already short-circuits on.
 
 ---
 
 ## 2. Scope Reviewed
 
-| # | File / artifact | State on `975b891` (code at `e152a07`) | QA action |
-|---|-----------------|----------------------------------------|-----------|
-| 1 | `docs/AI_COMMAND_CENTER.md` | Unchanged in this task's scope | Read for safety rules |
-| 2 | `docs/tasks/CURRENT_DEV_TASK.md` | The task brief itself (added at `78da867`) | Read in full |
-| 3 | `docs/tasks/CURRENT_QA_TASK.md` | The QA brief itself | Read in full |
-| 4 | `docs/tasks/TASK_LOG.md` | DEV-/QA-2026-05-19-004 opened at `78da867`; both still `PENDING` per log | Read |
-| 5 | `docs/tasks/DEV_REPORT_CURRENT.md` | Rewritten by `975b891` — format-conformant, 8 required sections present | Read in full |
-| 6 | `docs/tasks/AGENT_STATUS.json` | `READY_FOR_QA` / `DEV-2026-05-19-004`, `files_changed` accurate vs the actual diff | Verified |
-| 7 | `v2/lib/admin_ops.py` (NEW, 833 lines) | Pause/resume + AdminCaseSummary + listings + record_handoff | Read in full + grep verified |
-| 8 | `v2/tests/test_admin_ops.py` (NEW, 603 lines) | 33 tests across 7 classes | Read in full + executed |
-| 9 | All production runtime modules (orchestrator, response_writer, fee_answer_policy, memory, state_machine, llm, ondemand_vision, extract_fees, fee_schema, llm_pricing, cache, cassette_redactor) | Not in diff — byte-identical to `78da867` | `git diff 78da867..HEAD -- <each>` returns 0 lines per file |
-| 10 | All V1 paths (`app.py`, `scraper.py`, `fee_extractor.py`, `tourfiremai-bot-dev/`, `Procfile`, `railway.json`, `cloudflare-worker*.js`, `webhook_proxy.py`) | Not in diff | `git diff 78da867..HEAD -- <V1 paths> \| wc -l` → 0 |
+| # | Required-reading file | Read? | Notes |
+|---|------------------------|-------|-------|
+| 1 | `docs/AI_COMMAND_CENTER.md` | ✅ | Hard-rules + handoff rule confirmed |
+| 2 | `docs/tasks/CURRENT_QA_TASK.md` | ✅ | Task ID `QA-2026-05-19-005`, paired with `DEV-2026-05-19-005`; 15-item check list |
+| 3 | `docs/tasks/TASK_LOG.md` | ✅ | `DEV-2026-05-19-005` `READY_FOR_QA`, `QA-2026-05-19-005` `PENDING` — control files aligned this session (drift from earlier today is fixed) |
+| 4 | `docs/tasks/DEV_REPORT_CURRENT.md` | ✅ | Dev recommends `GO`; spend $0.00; 538 passed / 11 skipped / 0 failed |
+| 5 | `docs/tasks/AGENT_STATUS.json` | ✅ | `current_dev_task=DEV-2026-05-19-005`, `current_qa_task=QA-2026-05-19-005`, status `READY_FOR_QA` |
+| 6 | `v2/lib/admin_ops.py` | ✅ | 833 lines; QA-cleared in `DEV-2026-05-19-004`; reused unchanged here |
+| 7 | `v2/lib/admin_command_handler.py` | ✅ | 357 lines; new module |
+| 8 | `v2/tests/test_admin_ops.py` | ✅ (head + counts) | 603 lines; not in this task's diff |
+| 9 | `v2/tests/test_admin_command_handler.py` | ✅ | 220 lines; new test module — 11 test functions |
 
-Code-only diff scope (verified by `git diff 78da867..HEAD --name-only | grep -v "^docs/"`):
-
-```
-v2/lib/admin_ops.py
-v2/tests/test_admin_ops.py
-```
-
-Branch checked out at `/tmp/repo` on `v2/s4-followup-vision-ondemand` @ `975b891`. Local repo confirmed in sync with `origin/v2/s4-followup-vision-ondemand`.
+**Files NOT readable in this workspace:** `v2/lib/redactor.py`, `v2/lib/response_writer.py`, `v2/lib/state_machine.py`, `v2/lib/memory.py`, `v2/tests/conftest.py`, `.git/**`. The mount only exposes the four files Codex listed plus `admin_ops.py`. Consequently, pytest cannot be executed from here (missing siblings and fixtures); Dev's test counts (11 / 44 / 538) are taken at face value but are consistent with the prior known baseline of 501 (501 + ~37 net new from `DEV-2026-05-19-004` + `DEV-2026-05-19-005` ≈ 538).
 
 ---
 
-## 3. Evidence Checked — Task QA Matrix
+## 3. Evidence Against the 15-Item QA Check List
 
-### 3.1 Scope discipline
-
-| # | CURRENT_QA_TASK.md check | Evidence | Result |
-|---|--------------------------|----------|--------|
-| 1 | Dev stayed on V2 scope only | Code diff touches only `v2/lib/admin_ops.py` + `v2/tests/test_admin_ops.py`. Docs diff touches only `docs/tasks/{DEV_REPORT_CURRENT,AGENT_STATUS}`. No file outside `v2/` or `docs/tasks/` modified. | PASS |
-| 2 | V1 production code was not changed | `git diff 78da867..HEAD -- app.py scraper.py fee_extractor.py tourfiremai-bot-dev/ Procfile railway.json cloudflare-worker.js cloudflare-worker-v2.js webhook_proxy.py` → 0 lines. | PASS |
-| 3 | Make.com / Cloudflare / Meta production webhook untouched | `git diff 78da867..HEAD \| grep -iE 'make\.com\|integromat\|cloudflare\|railway'` → only matches inside the Dev-report prose explicitly listing "not changed" assertions; no functional reference. `git diff 78da867..HEAD \| grep -iE 'webhook_proxy\|messenger\|graph\.facebook\|tourfiremai\.com/api'` → 0 hits. | PASS |
-| 4 | No secrets written to files | `grep -REn 'sk-[A-Za-z0-9_-]{20,}\|EAA[A-Za-z0-9_-]{20,}\|ghp_[A-Za-z0-9]{20,}\|AKIA[A-Z0-9]{16}' v2/lib/admin_ops.py v2/tests/test_admin_ops.py` → 0 hits. `TestNoSecretOrWholesaleLeakage::test_no_secret_pattern_appears_in_module` passes. | PASS |
-| 5 | No live OpenAI or paid-provider calls required by tests | `grep -nE 'openai\|anthropic\|mistral\|requests\.\|httpx' v2/lib/admin_ops.py` → 0 hits. Tests import only `v2.lib.admin_ops`, `v2.lib.memory`, `v2.lib.response_writer`, `pytest`, stdlib — no network SDKs. Module-scoped + full suite both run with no `V2_STAGING_OPENAI_API_KEY` and pass. | PASS |
-| 6 | No PDF extraction behavior or fee thresholds changed | `git diff 78da867..HEAD -- v2/lib/fee_answer_policy.py v2/scraper/extract_fees.py v2/scraper/ondemand_vision.py v2/scraper/fee_schema.py v2/lib/llm_pricing.py v2/lib/cassette_redactor.py` → 0 lines per file. `grep -nE '^[A-Z_]+_THRESHOLD\s*=' v2/lib/fee_answer_policy.py` → `DEFAULT_THRESHOLD = 0.80` / `SINGLE_SUPPLEMENT_THRESHOLD = 0.90`, both unchanged. | PASS |
-
-### 3.2 Admin pause / resume / silent path
-
-| # | CURRENT_QA_TASK.md check | Evidence | Result |
-|---|--------------------------|----------|--------|
-| 7 | Admin pause creates/updates expected pause/conversation state | `pause_bot_for_customer` inserts a fresh `bot_pauses` row (id, paused_at, pause_until, paused_by ∈ {admin,system,rule} per migration 012 CHECK) AND, when an active conversation exists, updates `conversations` with `is_human_paused=True`, `paused_until`, `paused_reason`, `state='human_paused'`, `last_activity_at`. Locked in by `TestPause::test_pause_creates_bot_pauses_row_and_updates_conversation` (verified by re-running). | PASS |
-| 8 | Paused customer is silent / does not proceed through normal bot response flow | The orchestrator pause-guard at `v2/lib/orchestrator.py:98` (`if conv.get("is_human_paused"): return TurnResult(... decision="silent_paused", silent=True)`) is byte-identical to `78da867`. `pause_bot_for_customer` writes exactly that flag. `TestSilentPath::test_orchestrator_compatible_flag_is_set` asserts the flag is True after pause; `test_is_bot_paused_for_true_after_pause` validates the defense-in-depth predicate. | PASS |
-| 9 | Admin resume clears pause safely + auditable event | `resume_bot_for_customer` (a) sets `bot_pauses.resumed_at` + `resumed_by`, (b) clears `conversations.is_human_paused`/`paused_until`/`paused_reason` and sets `state=new_state` (default `collecting_preferences`), (c) refuses to land in a silent state (raises `ValueError`), (d) closes any open `handoffs` with `resolution='bot_resumed'` + `admin_responder` recorded for audit. `TestResume::test_resume_closes_active_pause_and_clears_conversation_flag`, `test_resume_into_silent_state_rejected`, `test_resume_closes_open_handoffs` all PASS. | PASS |
-
-### 3.3 Case summary content
-
-| # | CURRENT_QA_TASK.md check | Evidence | Result |
-|---|--------------------------|----------|--------|
-| 10 | Case summary includes customer name when available | `_display_name(memory_view, customer_row, psid)` resolves in priority order: `customer_memory.customer_name` → `customers.fb_name` → `"Customer <masked-PSID>"`. Wholesale-scrubbed at each step. `TestCaseSummary::test_summary_resolves_display_name_from_customer_memory_first` + `test_summary_falls_back_to_fb_name_when_no_memory_name` PASS. | PASS |
-| 11 | Case summary includes selected tour / latest offer / open handoff when available | `_selected_tour_brief` joins `selected_tours` (unlocked_at IS NULL) ⨝ `tours_canonical`; `_latest_offer_brief` reads newest `offer_snapshots`; `_open_handoff_brief` reads most recent unresolved `handoffs`. All three wired into `AdminCaseSummary`. `TestCaseSummary` 10/10 PASS, covering each field individually plus the lookup-by-conversation-id path. | PASS |
-| 12 | Open handoff queue listing is deterministic and safe for dashboard use | `list_open_handoffs` filters on `resolution IS NULL`, sorts by `triggered_at DESC`, caps at `limit` (default 50). Each row → `OpenHandoffBrief` with `psid_masked` (via `redactor.mask_psid`) and `trigger_detail_summary` (only `reason`/`missing_field`/`note` keys; wholesale-scrubbed; PII-redacted). Raw JSON never exposed. `TestListings::test_list_open_handoffs_masks_psid_and_redacts_wholesale` PASS. | PASS |
-
-### 3.4 Brand / secret defense
-
-| # | CURRENT_QA_TASK.md check | Evidence | Result |
-|---|--------------------------|----------|--------|
-| 13 | No wholesale partner names introduced into prompts/logs/reports/cassettes/customer-facing output | `grep -nwE '(TTN\|ZEGO\|FORMOSA\|i-travel\|rich\.tour\|best\.tour\|GS\.travel)' v2/lib/admin_ops.py` → 0 hits. The only TTN/ZEGO occurrences in `v2/tests/test_admin_ops.py` are in **hostile-input fixtures** asserting redaction (`"ทัวร์โตเกียว by TTN partner"` + `"Alice via ZEGO promo"`), with matching `assert "TTN" not in summary.selected_tour.name` and `assert "ZEGO" not in summary.display_name`. The shared `_WHOLESALE_BLACKLIST` regex from `response_writer.py` is reused (single source of truth). `TestNoSecretOrWholesaleLeakage` (4 tests) PASS. | PASS |
-| 14 | Tests cover the main pause/resume/case-summary paths | 33 new tests across 7 classes — `TestPause` (6), `TestSilentPath` (2), `TestResume` (4), `TestCaseSummary` (10), `TestListings` (4), `TestNoSecretOrWholesaleLeakage` (4), `TestRecordHandoff` (3). Coverage matches the explicit "Required Tests" list in `CURRENT_DEV_TASK.md` 1:1. | PASS |
-
-### 3.5 Tests verified (re-run by QA)
-
-| # | Test surface | Result |
-|---|--------------|--------|
-| T1 | `PYTHONPATH=. pytest v2/tests/test_admin_ops.py -v` | **33 passed in 0.11s** — all 33 named tests cited in Dev report § 5 ran and passed. |
-| T2 | Full non-live suite: `pytest v2/tests --ignore=test_integration_staging.py --ignore=test_live_openai_health.py -q` | **527 passed, 7 skipped, 0 failed in 1.48s.** Matches Dev's reported 527/7/0 exactly. The 7 skips are Flask-not-installed in `test_webhook.py`. |
-| T3 | Implicit baseline delta | 527 − 33 = 494 → matches Dev's reported baseline of 494+7=501 at `78da867`. Direct re-run at `78da867` blocked by sandbox permissions on `.git/index.lock` (read-only workspace), but the delta arithmetic + the all-new-file diff (no edits to existing tests) is structurally sufficient. **0 regressions.** |
-| T4 | Pre-existing safety tests still pass | Full-suite run includes `TestFeePolicyUnchanged`, `TestPaidStubsFailClosed`, `TestNoWholesaleLeakage`, `TestPricingUnchanged`, `TestQACleanupL1ConfidenceKeys`, `TestQACleanupL2NoSupabaseInBenchmarkMode` from prior cycles — all present in the 527 and all pass. |
-| T5 | Tests NOT run | `test_integration_staging.py` (requires `V2_STAGING_DB_*`; out of scope) and `test_live_openai_health.py` (opt-in only). Neither modified. |
+| # | QA check | Verdict | Evidence |
+|---|----------|:------:|----------|
+| 1 | Dev stayed on V2 scope only | ✅ PASS | `admin_command_handler.py` imports only `v2.lib.redactor`, `v2.lib.admin_ops`, `v2.lib.response_writer` (`_WHOLESALE_BLACKLIST` only). Test imports `v2.lib.admin_command_handler`, `v2.lib.admin_ops`. No V1 paths. |
+| 2 | V1 production code not changed | ✅ PASS (circumstantial) | Two new files under `v2/lib/` and `v2/tests/`. No `app.py` / `scraper.py` / `tourfiremai-bot-dev/` / `cloudflare-worker.js` / `Procfile` / `railway.json` touched. Cannot run `git diff` from this workspace, but the Dev report's file-list (2 code + 2 docs) is self-consistent. |
+| 3 | Make.com / Cloudflare / Meta webhook untouched | ✅ PASS | Zero references to `make.com`, `integromat`, `cloudflare`, `railway`, `webhook_proxy`, `messenger`, `graph.facebook`, or `tourfiremai.com/api` in either new file. The module's own docstring (lines 1-8) is explicit: "no LINE API calls, no customer replies, no env reads, and no network." |
+| 4 | No secrets written | ✅ PASS | `grep -nE 'sk-\|EAA\|ghp_'` finds zero literal secret-shaped strings in either file. The two `s{'k'}-…` patterns in the handler (line 68) and test (line 182) are deliberate anti-grep splits used to *describe* / *strip* the prefix — the literal `sk-` never appears in source. |
+| 5 | No live LINE / OpenAI / paid-provider calls in tests | ✅ PASS | Test imports `v2.lib.admin_command_handler` + `v2.lib.admin_ops` only. No `openai`, no `requests`, no `httpx`, no `line_*` client. The supabase fixture is an in-memory fake. |
+| 6 | No PDF / fee threshold change | ✅ PASS | Zero references to `fee_answer_policy`, `extract_fees`, `ondemand_vision`, `tour_fees`, `MODEL_PRICING`, `DEFAULT_THRESHOLD`, `SINGLE_SUPPLEMENT_THRESHOLD` in either new file. |
+| 7 | Parser recognizes all required commands | ✅ PASS | `parse_admin_command` (lines 75-121): `help`/`?`/`commands` → help; `cases`/`case-list` → cases (or `cases_paused` if 2nd token in `{paused,pause,human_paused}`); `handoffs`/`handoff` → handoffs; `case <id>` (len≥2); `pause <id> [reason]` (len≥2); `resume <id> [reason]` (len≥2). All seven scope items present. `test_parse_supported_commands` (line 65) covers all seven explicitly. |
+| 8 | Unknown/ambiguous commands return safe help, no state mutation | ✅ PASS | Unknown → `AdminCommand(action="unknown")` (line 121). Handler returns `ok=False, error="unknown_command", admin_text="ไม่เข้าใจคำสั่งนี้\n\n" + _help_text()`, default `mutated=False`. `test_unknown_command_returns_help_and_does_not_mutate` (line 172) asserts `result.mutated is False` and `bot_pauses.select_all == []`. |
+| 9 | `pause <id>` uses `admin_ops.pause_bot_for_customer(...)` | ✅ PASS | Line 297-302: `pause_bot_for_customer(supabase, psid=case.psid, paused_by="admin", reason=command.reason or f"admin command by {admin_user_id}")`. `test_pause_calls_admin_ops_and_marks_paused` (line 131) asserts `conv["is_human_paused"] is True` and `conv["state"] == "human_paused"` — exactly the side-effects `admin_ops.pause_bot_for_customer` produces. |
+| 10 | `resume <id>` uses `admin_ops.resume_bot_for_customer(...)` | ✅ PASS | Line 325-330: `resume_bot_for_customer(supabase, psid=case.psid, resumed_by=admin_user_id, reason=command.reason)`. `test_resume_calls_admin_ops_and_clears_paused` (line 145) asserts `conv["is_human_paused"] is False` and `conv["state"] == "collecting_preferences"`. |
+| 11 | `case <id>` uses `admin_ops.get_admin_case(...)` | ✅ PASS | `_resolve_case` (line 197): tries `get_admin_case(supabase, psid=target, …)` then falls back to `get_admin_case(supabase, conversation_id=target, …)`. `test_case_detail_includes_context` (line 116) verifies the test resolves a conversation_id correctly through this fallback. |
+| 12 | `cases` / `handoffs` use admin_ops listing functions | ✅ PASS | `cases` / `cases_paused` → `list_admin_cases(supabase, memory=memory, limit=_DEFAULT_LIMIT, only_open=True, only_paused=…)` (line 230). `handoffs` → `list_open_handoffs(supabase, limit=_DEFAULT_LIMIT)` (line 255). `_DEFAULT_LIMIT = 5` is documented in Dev report § 7 note 3 as intentional. |
+| 13 | Admin output safe for staff LINE group (no secrets, no wholesale, PSID masked, no auto-reply text) | ✅ PASS | `_safe_text` (line 65) chains `_scrub_wholesale` → `redactor.redact` → strip residual `sk-***REDACTED***` prefix. Every visible string in `_format_case_line` / `_format_case_detail` / `_format_handoff_line` / pause-success / resume-success / case-not-found is wrapped in `_safe_text` or uses pre-masked fields from `admin_ops.AdminCaseSummary.psid_masked`. The handler never returns customer-facing text — only `AdminCommandResult.admin_text`. `test_output_redacts_secret_patterns` (line 181) and `test_output_redacts_configured_provider_names` (line 191) verify directly. Multiple `assert PSID_A not in result.admin_text` assertions across read tests. |
+| 14 | Tests cover parsing / listing / case detail / pause / resume / missing target / leakage | ✅ PASS | 11 tests in 4 classes: `TestParseAdminCommand` (2), `TestReadCommands` (3: cases, handoffs, case-detail), `TestMutatingCommands` (3: pause, resume, missing-target), `TestLeakageSafety` (3: unknown→help, secret pattern, wholesale pattern). One small gap surfaced as `🟡 M1` below. |
+| 15 | Broad non-live V2 suite passes / skips justified | ⚠️ NOT INDEPENDENTLY VERIFIED | Dev claim: `538 passed, 11 skipped, 0 failed`. Cannot run pytest here — only 4 files are mounted; `conftest.py`, `redactor.py`, `response_writer.py`, `state_machine.py`, `memory.py` are missing. The 538 count is plausible: prior known baseline was 501 after `DEV-2026-05-19-003-cleanup`, plus 33 admin_ops tests from `DEV-2026-05-19-004` plus 11 here ≈ 545; minor cleanup easily explains the 538. Codex should run the full suite once on a real clone as a post-merge sanity check. |
 
 ---
 
 ## 4. Findings by Severity
 
-### Critical (blocks GO)
+### 🔴 Critical (blocks GO)
 None.
 
-### High
+### 🟠 High
 None.
 
-### Medium
-None.
+### 🟡 Medium (worth fixing before the next ticket wires this into a real adapter)
 
-### Low / informational
+- **M1 — Pause/resume admin_text redaction not explicitly tested.** Dev report § 5 admits: *"after the final display-name redaction tweak, the resumed Codex runtime no longer had `pytest` installed, so the last re-check was a syntax/compile pass. The code delta after the full pytest run was limited to routing pause/resume display names through `_safe_text()`."* The post-tweak code at lines 303 and 331 (`case_name = _safe_text(case.display_name or case.psid_masked)`) is correct on inspection, but no test asserts that a wholesale-shaped or secret-shaped display name is redacted in the **pause** admin_text or the **resume** admin_text specifically. The existing `test_output_redacts_secret_patterns` and `test_output_redacts_configured_provider_names` only exercise the `cases` and `case <id>` paths. Recommend two trivial follow-up tests, mirroring those, against pause and resume.
+- **M2 — No authorization layer; must be enforced at the adapter.** `handle_admin_command(...)` accepts any `admin_user_id` and performs the requested mutation. This is correct for a deterministic *core*, but a future LINE webhook adapter MUST verify the caller is on a staff allow-list before forwarding text to this function. Recommend adding a short docstring note at line 204 — something like: *"Authorization (e.g. LINE userId must be in the staff allow-list) is the caller's responsibility. This function will execute any well-formed command for any `admin_user_id`."* — to lock that contract in for the next implementer.
 
-**N1. Dev report line-count nit.** The Dev report's § 2 table says `v2/lib/admin_ops.py | +625 (new)`, but the actual file is 833 lines (`wc -l v2/lib/admin_ops.py` → 833). The diff is genuinely +833/-0 against `78da867`. Likely an early-draft figure that wasn't refreshed before commit. Documentation nit, not a functional issue. No impact on test count or behavior.
+### 🟢 Low / informational
 
-**N2. `list_admin_cases` is O(n) in Python.** Dev called this out themselves as R3 — the function reads all `conversations` rows via `select_all({})`, sorts in Python, then filters and projects. Fine for staging (≤ thousands of rows) and matches the in-memory test fake. Worth flagging for the dashboard read-API follow-up: when wiring to real Postgres, prefer a `ORDER BY ... LIMIT` server-side. Not in scope for this task; not a blocker.
-
-### Informational only
-
-- The defense-in-depth pattern (`is_bot_paused_for` checks both `bot_pauses` row AND `conversations.is_human_paused`) is good belt-and-suspenders engineering for a future admin command bot that wouldn't already hold the conversation row.
-- Migration-aligned validation: `pause_bot_for_customer` validates `paused_by ∈ {'admin','system','rule'}` matching migration 012 CHECK exactly; `record_handoff` validates `trigger_type` against the 8-value migration 011 CHECK list exactly. Caught early via `ValueError`, well before Postgres would reject the insert. Locked in by `TestPause::test_pause_validates_inputs` and `TestRecordHandoff::test_record_handoff_validates_trigger_type`.
-- The `_scrub_wholesale` helper reuses `response_writer._WHOLESALE_BLACKLIST` rather than redefining the regex set — single source of truth, so any future blacklist expansion propagates automatically to the admin surface.
-- `resume_bot_for_customer`'s `is_silent_state(target_state)` check is a small but important safety rail: it would catch a future bug where a caller passes `human_paused` (or any state that `state_machine.is_silent_state` returns True for) as the resume target.
-- Cumulative branch state vs `v2/foundation`: now 11 commits, all independently QA-cleared. `16fdd86` → `39bcf53` → `b325e92` → `516b1c3` → `1ec49e2` → `d0a43bf` → `ef4c0ae` → `ff28807` → `bd4784e`/`d68a4be` → `9ccf7ec`/`e473a26` → `78da867`/`e152a07`/`975b891`.
+- **L1 — `admin_user_id` is persisted raw to `bot_pauses.resumed_by` and into the fallback `reason` string.** Line 301 (`reason=command.reason or f"admin command by {admin_user_id}"`) and line 328 (`resumed_by=admin_user_id`). These columns are admin-only and never surfaced to customers, so raw values are acceptable. Worth a one-line audit if `admin_user_id` could carry sensitive content later (e.g., if it ever holds a session token instead of a stable user id).
+- **L2 — Asymmetric audit trail on `paused_by` vs `resumed_by`.** `pause_bot_for_customer` is called with `paused_by="admin"` (literal), and the actual admin identity is captured in `reason`. `resume_bot_for_customer` is called with `resumed_by=admin_user_id` directly. Functional consequence: queries against `bot_pauses.paused_by` won't distinguish admins, but queries against `bot_pauses.resumed_by` will. This is fine — `admin_ops.pause_bot_for_customer` constrains `paused_by ∈ {admin, system, rule}` (admin_ops.py line 370), so this asymmetry is by design — but worth noting in case dashboard work expects a single audit-trail field.
+- **L3 — `_safe_text` line 68 is format-coupled to `redactor.redact`.** The strip `out.replace(f"s{'k'}-***REDACTED***", "***REDACTED***")` assumes `redactor.redact` produces output of the form `sk-***REDACTED***` when it masks an API-key-shaped string. If `redactor.redact`'s replacement template ever changes, this strip silently becomes a no-op. A small test that asserts the post-strip text starts with `***REDACTED***` (rather than `sk-***REDACTED***`) would lock the format down.
+- **L4 — `_DEFAULT_LIMIT = 5` is hard-coded.** Dev report § 7 note 3 acknowledges this; pagination is intentionally out of scope. No action needed for this task.
+- **L5 — Help/admin_text is Thai-only.** Dev report § 7 note 2 acknowledges this; Thai aliases are deferred to a future task. No action needed.
+- **L6 — Cowork QA workspace is partially mounted.** Only the four files listed in the prompt + `admin_ops.py` are visible. `conftest.py`, `redactor.py`, `response_writer.py`, `state_machine.py`, `memory.py`, and the rest of `v2/tests/` are absent. This makes pytest unrunnable from here. The Codex / Tiw dev machine should run `PYTHONPATH=. pytest v2/tests -q` on the branch tip as a post-QA sanity check. (Same recurring environment limitation flagged in prior QA sessions today.)
 
 ---
 
 ## 5. Tests Verified
 
-QA ran the test suite locally on `v2/s4-followup-vision-ondemand` @ `975b891` after `pip install pytest --break-system-packages`.
+**Read but not executed.** Static review of `v2/tests/test_admin_command_handler.py`:
 
-### 5.1 Module-scoped run
+| Class | Test | Asserts | Verdict on assertion correctness |
+|-------|------|---------|----------------------------------|
+| TestParseAdminCommand | `test_parse_supported_commands` | All 7 commands parse with correct `(action, target, reason)` | ✅ correct mapping vs. parser |
+| TestParseAdminCommand | `test_parse_whitespace_and_unknown_safely` | Extra whitespace is stripped; Thai unknown returns `action="unknown"`, `target=None` | ✅ matches parser behavior |
+| TestReadCommands | `test_cases_lists_safe_admin_lines` | `cases` succeeds, contains `เคสล่าสุด`, contains display name, does NOT contain raw PSID, contains masked PSID prefix `1234` | ✅ exercises `list_admin_cases` + `_format_case_line` + `_safe_text` |
+| TestReadCommands | `test_handoffs_lists_open_handoffs` | `handoffs` succeeds, contains `Handoffs`, contains trigger type, does NOT contain raw PSID | ✅ exercises `list_open_handoffs` + `_format_handoff_line` |
+| TestReadCommands | `test_case_detail_includes_context` | `case <conv_id>` succeeds, shows display name, tour name, tour_code_real, does NOT contain raw PSID | ✅ exercises `_resolve_case` fallback + `_format_case_detail` |
+| TestMutatingCommands | `test_pause_calls_admin_ops_and_marks_paused` | `pause` succeeds, `mutated=True`, conversation row flips `is_human_paused=True`, state → `human_paused` | ✅ exercises `pause_bot_for_customer` and orchestrator pause-guard side-effects |
+| TestMutatingCommands | `test_resume_calls_admin_ops_and_clears_paused` | `resume` succeeds, `mutated=True`, conversation row flips `is_human_paused=False`, state → `collecting_preferences` | ✅ exercises `resume_bot_for_customer` |
+| TestMutatingCommands | `test_missing_target_does_not_create_pause` | `pause <unseen_psid>` → `ok=False`, `error=case_not_found`, `bot_pauses.select_all == []` | ✅ verifies the missing-target safety invariant |
+| TestLeakageSafety | `test_unknown_command_returns_help_and_does_not_mutate` | Unknown Thai → `error=unknown_command`, `mutated=False`, `bot_pauses` empty | ✅ |
+| TestLeakageSafety | `test_output_redacts_secret_patterns` | Seeds a customer with an `sk-...`-shaped name; `cases` admin_text contains neither the key nor the `sk-` prefix | ✅ note `test_..._redacts_secret_patterns` only covers the `cases` path; pause/resume paths not directly tested — see `🟡 M1` |
+| TestLeakageSafety | `test_output_redacts_configured_provider_names` | Monkeypatches a wholesale-blacklist token; `case <conv_id>` admin_text replaces the token with `***WHOLESALE-REDACTED***` | ✅ note only `case <id>` is exercised — see `🟡 M1` |
 
-```bash
-PYTHONPATH=. python3 -m pytest v2/tests/test_admin_ops.py -v --no-header
-# 33 passed, 1 warning in 0.11s
-```
-
-All 33 tests pass:
-
-- `TestPause` (6/6): `test_pause_creates_bot_pauses_row_and_updates_conversation`, `test_pause_records_handoff_when_none_open`, `test_pause_reuses_existing_open_handoff`, `test_pause_validates_inputs`, `test_pause_without_active_conversation_still_inserts_pause`, `test_paused_default_ttl_uses_120_minutes`
-- `TestSilentPath` (2/2): `test_is_bot_paused_for_true_after_pause`, `test_orchestrator_compatible_flag_is_set`
-- `TestResume` (4/4): `test_resume_closes_active_pause_and_clears_conversation_flag`, `test_resume_closes_open_handoffs`, `test_resume_into_silent_state_rejected`, `test_resume_when_not_paused_is_safe_noop_on_pause_row`
-- `TestCaseSummary` (10/10): display name resolution (memory → fb_name → masked PSID), masked PSID in visible fields, selected tour, latest offer, open handoff, paused→silent, unknown→None, by conversation_id, validation of required identifiers
-- `TestListings` (4/4): newest-first; `only_paused`; `only_open` excludes closed; open handoffs mask PSID + redact wholesale
-- `TestNoSecretOrWholesaleLeakage` (4/4): no secret-shape in source, no wholesale token in source, tour-name and display-name wholesale scrubbing (hostile-string fixtures)
-- `TestRecordHandoff` (3/3): requires conversation, validates trigger_type, happy-path insert
-
-### 5.2 Full non-live suite
-
-```bash
-PYTHONPATH=. python3 -m pytest v2/tests \
-  --ignore=v2/tests/test_integration_staging.py \
-  --ignore=v2/tests/test_live_openai_health.py -q --no-header
-# 527 passed, 7 skipped, 1 warning in 1.48s
-```
-
-**527 hard-passes + 7 Flask-skipped + 0 failed.** Matches Dev's reported 527 exactly. The 7 skips are all in `v2/tests/test_webhook.py` due to Flask not being installed in the sandbox — same as every prior cycle and not a regression.
-
-Delta vs Dev-reported baseline (494 at `78da867`): +33, exactly accounting for the 33 new tests. Zero changes to any pre-existing test file.
-
-### 5.3 Tests NOT run (correctly out of scope)
-
-- `v2/tests/test_integration_staging.py` — requires `V2_STAGING_DB_*` env; explicitly out of scope per `CURRENT_QA_TASK.md` "No live OpenAI or paid-provider calls" and Sprint protocol.
-- `v2/tests/test_live_openai_health.py` — opt-in only; not relevant to this task.
-
-Neither was modified in this diff (confirmed via `git diff 78da867..HEAD --name-only`).
+Dev's reported counts:
+- `pytest v2/tests/test_admin_command_handler.py` → **11 passed** — matches the 11 tests I counted.
+- `pytest v2/tests/test_admin_ops.py v2/tests/test_admin_command_handler.py` → **44 passed** — implies 33 admin_ops tests, which is consistent with the 603-line `test_admin_ops.py` and the prior `QA-2026-05-19-004` `GO` verdict.
+- Broad non-live V2 suite → **538 passed, 11 skipped, 0 failed**. Cannot run from this workspace; plausible against the 501 baseline. ⚠️ Recommend Codex run the full suite once on a real clone after this report lands.
 
 ---
 
 ## 6. Remaining Risks
 
-### Resolved by this task
-- Admin cannot take over cleanly → **addressed**. `pause_bot_for_customer` + `resume_bot_for_customer` provide a deterministic backend layer.
-- Bot may continue chatting while admin is active → **addressed**. The orchestrator's existing pause-guard reads `conv.is_human_paused`; `pause_bot_for_customer` writes exactly that flag.
-- Admin cannot see customer name/intent/selected tour/why-handoff → **addressed**. `AdminCaseSummary` carries all four (display name, latest memory, selected tour, open handoff).
+### New risks surfaced by this report
+- **R-new-1.** `M1` — Two trivial test gaps on pause/resume redaction. Risk class: regression-only. Mitigation: add two short tests mirroring `test_output_redacts_secret_patterns` against pause and resume admin_text.
+- **R-new-2.** `M2` — The future LINE webhook adapter MUST enforce a staff allow-list before calling `handle_admin_command(...)`. The core does no auth on purpose; this is a contract that needs to be locked in at the adapter layer or someone could pause/resume any case via the adapter.
 
 ### Carried forward (not introduced by this task)
-- **R1.** Wholesale-token redaction is best-effort regex; new partner names that don't match the existing `_WHOLESALE_BLACKLIST` could surface. Same surface as `response_writer._has_brand_leak`, deliberately shared. Future polish: periodic scan of `customer_memory.customer_name` and `tours_canonical.name`.
-- **R2.** `is_bot_paused_for` parses ISO timestamps in Python; if the staging DB clock and the app clock drift > a few seconds, edge cases are possible. Acceptable for an admin tool.
-- **R3.** `list_admin_cases` does an O(n) scan in Python (Dev's R3, also QA's N2). Fine for staging; needs a server-side `ORDER BY ... LIMIT` when wiring to a real dashboard.
-- **R4.** No production UI yet — by design per task scope. Sprint 5 wires this through a LINE admin command handler or a minimal dashboard read-API.
-
-None blocks this verdict.
+- **R-prior-1.** Phase 2 real-corpus accuracy on `d0a43bf+` still unmeasured. Unrelated to this PR; tracked under the separate `S4-LIVE-QA-2026-05-18-001` `NO-GO` (still in force pending a documented live re-run).
+- **R-prior-2.** Real paid OCR provider (Mistral) still a stub. Unrelated to this PR.
+- **R-prior-3.** Cowork QA workspace remains partially mounted (only files Codex lists are visible). Workable for targeted code QA like this one; not workable for broad-suite verification. See `L6`.
 
 ---
 
 ## 7. Next Recommended Step
 
-Since the verdict is `GO`:
+Since the verdict is `GO_WITH_NOTES`:
 
 **For Codex (Controller):**
 
-1. Accept this `GO` verdict. Flip `AGENT_STATUS.json` to `QA_GO`. Append `TASK_LOG.md` with `DEV-2026-05-19-004` / `QA-2026-05-19-004` outcome + commits `e152a07` + `975b891` + this QA report path.
-2. Decide next workstream per Dev report § 8:
-   - **Option A (recommended — operational reliability):** Wire `admin_ops` into a LINE admin command handler — Sprint 5 prerequisite. Admin sends `pause <psid_or_web_code>` / `resume <…>` / `cases` to the staff LINE group; handler calls `pause_bot_for_customer` / `resume_bot_for_customer` / `list_admin_cases`. No customer-facing change; pure admin-staff workflow.
-   - **Option B:** Wire `get_admin_case` into a minimal dashboard read-API (single JSON endpoint behind admin auth — `GET /v2/admin/cases?only_paused=1`). Needs an auth story before code.
-3. (Optional polish, non-blocking) When wiring the dashboard read-API, swap `list_admin_cases`' Python sort/filter for a server-side `ORDER BY last_activity_at DESC LIMIT n` Postgres query (closes N2).
-4. (Optional doc fix) Update Dev report § 2 line-count from `+625` to `+833` for `v2/lib/admin_ops.py` if Dev re-touches the report (closes N1; trivial).
+1. **Accept this verdict.** Flip `AGENT_STATUS.json` to `QA_GO_WITH_NOTES`, append `TASK_LOG.md` with `QA-2026-05-19-005` result (verdict, report path, latest QA status commit) per the existing append-only convention. Commit both QA artifacts + push to `v2/s4-followup-vision-ondemand` (workspace has no `.git`; Codex performs the push as agreed).
+2. **Run `PYTHONPATH=. pytest v2/tests --ignore=v2/tests/integration --ignore=v2/tests/live --ignore=v2/tests/test_live_openai_health.py -q`** once on a real clone of the branch tip. Dev's claimed 538/11/0 needs one out-of-Cowork confirmation since this QA session couldn't run pytest itself.
+3. **Schedule the two follow-up tests** under `M1` (pause-path redaction + resume-path redaction) — either bundle them with the next admin-adapter ticket or as a tiny grooming task. Each is 5-10 lines.
+4. **For the next ticket** (LINE admin adapter), make staff-allow-list authorization an explicit acceptance criterion (`M2`).
 
 **For Tiw:**
-- No code action required on this task.
-- When Codex approves Option A or B, no new secrets needed (admin_ops uses only the existing Supabase staging credentials already in your shell env contract).
+- No business or code action required for this task. The work is staging-only, V1 untouched, Make.com untouched, no deploy, $0 spend.
+
+**For QA (this session):**
+- Stopped. Read-only. No code modified, no runtime behavior changed, no V1 / Make.com / production webhook / deploy / secret touched, no live LINE / OpenAI / paid-provider call.
+- Files written: `docs/tasks/QA_REPORT_CURRENT.md` (this file) and `docs/tasks/AGENT_STATUS.json`.
+- No `git commit` / `git push` from this workspace per the explicit instruction; Codex will commit and push the QA artifacts.
 
 ---
 
-**Stopped.** Per QA handoff rule (`AI_COMMAND_CENTER.md` § "Handoff Rule Between Agents"): not continuing implementation. `AGENT_STATUS.json` flipped to `QA_GO`. Awaiting Codex direction.
+**Stopped.** Awaiting Codex to commit the QA artifacts and either approve the next ticket or address the two `🟡` follow-ups in a grooming pass.
