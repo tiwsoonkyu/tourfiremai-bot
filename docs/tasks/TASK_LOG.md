@@ -229,3 +229,51 @@ Codex operational follow-up:
 - Verified policies are service-role only plus explicit anon deny policies.
 - Verified anon role sees `0` rows for all three tables.
 - Remaining next-step risks: production webhook source attribution is not wired yet, LINE adapter staff allow-list is still pending, and planner latency should be checked once staging traffic exercises the new tables.
+
+### `DEV-2026-05-19-008`
+
+Status: `PENDING`
+
+Goal:
+
+Implement Sprint 5 Package B as one integration package:
+
+- Source attribution adapter for page post / ad / organic / unknown traffic.
+- LINE admin allow-list adapter core before admin commands can run.
+- Dashboard-safe read API/service v0 for current cases and post/tour status.
+- Integration tests for blocked tours, source context, admin pause/resume, and safe admin reads.
+
+Expected deliverables:
+
+- V2-only code/tests.
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook changes.
+- No secrets.
+- No live paid providers.
+- No Supabase migration apply from Claude Dev.
+
+### `QA-2026-05-19-008`
+
+Status: `PENDING`
+
+Goal:
+
+Review DEV-2026-05-19-008 as one integration unit after Dev report is ready.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`

@@ -1,13 +1,13 @@
 {
   "controller": "Codex",
-  "current_dev_task": "DEV-2026-05-19-007",
-  "current_qa_task": "QA-2026-05-19-007",
-  "role": "QA",
-  "status": "QA_GO",
-  "verdict": "GO",
-  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T23:30:00+07:00",
-  "next_action": "WAITING_FOR_CODEX_REVIEW",
+  "current_dev_task": "DEV-2026-05-19-008",
+  "current_qa_task": "QA-2026-05-19-008",
+  "role": "Dev",
+  "status": "PENDING_DEV",
+  "verdict": null,
+  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
+  "updated_at": "2026-05-19T20:14:16+07:00",
+  "next_action": "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
   "blocked_reason": null,
-  "notes": "QA-2026-05-19-007 verdict: GO. Read-only review of DEV-2026-05-19-007 second-pass wiring on branch v2/s4-followup-vision-ondemand (commit 3bf63a7). All 19 hard QA checks pass: V2-only scope, no V1/Make.com/production-webhook surface change, no secrets written, no live Meta/FB/LINE/OpenAI/OCR/Supabase calls in tests, admin command parsing deterministic and conservative, posts output compact (no raw captions), mark_full/mark_sold_out/clear_full/clear_sold_out behave correctly, ambiguous targets refused safely, response planning blocks tour-scope and post-scope overrides, allows unblocked candidates, response writer never recommends blocked tours, LLM does not decide sold-out semantics (deterministic Thai REASON_* constants), LLM payload compact (page_post_planning_note only, raw captions and wholesale names never leak), no wholesale brand names or secret patterns in new admin/bot text, 22 new tests across test_page_post_wiring.py (18) and test_orchestrator_planning.py (4), broad non-live V2 suite 601 passed / 7 skipped (flask-only, pre-existing) / 0 failed (matches Dev report). Three low-severity advisory notes: L1 fee-check state takes priority over page-post block when both apply (intentional — but suggest enriching fee handoff with admin-marked-full signal in a future task); L2 production webhook does not yet pass source_post_id/source_type so post-scope blocks only reachable from tests today; L3 migration 020 still not applied on staging per Codex operational note. Four remaining risks: R1 migration 020 unapplied, R2 webhook source-attribution not yet wired, R3 LINE adapter staff allow-list still pending from QA-2026-05-19-005 follow-up, R4 per-turn planner build adds a tiny cost path — verify latency post-migration. Recommended next steps in QA report. No code modified; stopping for Codex review."
+  "notes": "Controller opened Sprint 5 Package B. DEV-2026-05-19-008 should implement source attribution adapter, LINE admin allow-list adapter, dashboard-safe read API/service v0, and tests. Migration 020 is already applied and verified on V2 staging Supabase. Hard rules: V2 only; no V1; no Make.com; no deployment; no production webhook changes; no secrets; no live paid providers."
 }

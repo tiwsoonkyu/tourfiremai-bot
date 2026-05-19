@@ -1,146 +1,128 @@
-# Current Dev Task
+# CURRENT DEV TASK
 
-Task ID: `DEV-2026-05-19-007`
-Status: `PENDING`
-Assigned role: Claude Cowork Dev
-Controller: Codex
+## Task ID
+DEV-2026-05-19-008
 
-## Task
+## Title
+Sprint 5 Package B — Source Attribution + LINE Admin Safety + Dashboard Read API v0
 
-Wire the QA-cleared Page Post Intelligence foundation into the V2 sales-agent planning layer and deterministic admin command core.
+## Status
+PENDING
 
-This task is the next safe step after `DEV-2026-05-19-006` / `QA-2026-05-19-006`.
+## Assigned Role
+Claude Dev
 
-Important operational note:
+## Controller
+Codex
 
-- Migration `20260519_020_page_post_intelligence.sql` has QA GO, but Codex has not applied it to Supabase staging yet because the Supabase connector requires re-authentication and local staging DB credentials are not available in this Codex shell.
-- Dev must write code/tests so the work is locally testable with in-memory fakes and does not require live Supabase.
-- Do not attempt to connect to Supabase from Claude Cowork.
+## Context
+The previous package is QA-cleared:
 
-## Business Goal
+- DEV/QA-2026-05-19-006: page post intelligence foundation.
+- DEV/QA-2026-05-19-007: page post planning wired into response flow and admin command core.
+- Migration 020 has been applied and verified on V2 staging Supabase by Codex.
 
-TourFireMai admins post tours on the Facebook page daily. Customer chats can come from:
+Remaining Sprint 5 risks:
 
-- Recent page posts
-- Ads
-- Organic inbox messages
+- Source attribution is not yet wired from webhook/adapter into `Orchestrator.handle_turn(...)`.
+- LINE admin commands need an allow-list safety layer before they can be used by staff.
+- Admin dashboard needs a safe read surface for current cases and post/tour status.
 
-The AI must use source context before recommending tours. If a customer came from a post/ad tied to a tour that admin marked `full` or `sold_out`, the bot must not recommend that tour. It should explain safely and offer available alternatives.
-
-Admin also needs deterministic commands before the dashboard UI exists:
-
-- See recent page posts
-- Mark a tour/post/departure as full
-- Clear a full/sold-out override
+## Goal
+Implement the next integration package so V2 can understand whether a conversation came from page post / ad / organic, let allowed staff pause/resume or mark tours full, and expose compact admin-safe case/status data for a future dashboard.
 
 ## Scope
+You may implement all subtasks in this package as one integrated Dev task. Do not stop after each small subtask unless you find a P0 risk.
 
-You may modify V2 code, tests, and docs only.
+### 1. Source Attribution Adapter
 
-Allowed likely files:
+Inspect existing V2 webhook/tests and add a deterministic source-attribution layer.
 
-- `v2/lib/orchestrator.py`
-- `v2/lib/response_writer.py`
-- `v2/lib/admin_command_handler.py`
-- `v2/lib/page_post_context.py` only if a tiny helper is required
-- `v2/tests/*`
-- `docs/*`
+Requirements:
 
-Do not add a new migration in this task unless absolutely necessary. The storage layer was created in migration 020.
+- Support source types: `page_post`, `ad`, `organic`, `unknown`.
+- Extract only safe metadata from existing or test Meta-like payloads. Do not call Meta Graph API.
+- Pass source data into:
+  - `Orchestrator.handle_turn(..., source_post_id=..., source_type=..., source_platform=...)`
+- Unknown or absent source must preserve current behaviour.
+- Do not trust arbitrary user text as a post/ad id.
+- Keep the planning context compact. Do not inject full captions into LLM prompts.
 
-## Required Work
+### 2. LINE Admin Allow-List Adapter Core
 
-1. Inspect:
-   - `v2/lib/page_post_context.py`
-   - `v2/lib/admin_command_handler.py`
-   - `v2/lib/orchestrator.py`
-   - `v2/lib/response_writer.py`
-   - related tests
+Add a deterministic adapter/service layer for admin commands.
 
-2. Add deterministic admin command support for page-post/sold-out operations:
-   - `posts`
-   - `post <post_id>` or `post <short id>` if local patterns support it
-   - `mark_full <web_code|tour_code|post_id> [reason]`
-   - `mark_sold_out <web_code|tour_code|post_id> [reason]`
-   - `clear_full <web_code|tour_code|post_id>`
-   - `clear_sold_out <web_code|tour_code|post_id>`
+Requirements:
 
-   Keep command parsing conservative. If the target is ambiguous, return a safe message asking admin to specify `web_code`, real tour code, or post id.
+- No live LINE API calls.
+- Accept an admin sender id and text command.
+- Reject non-allowlisted sender ids before parsing/executing admin commands.
+- Authorized sender ids may execute existing admin command handler functions.
+- Cover at least:
+  - list/case read command if supported by existing handler.
+  - pause/resume customer.
+  - mark_full / clear_full or equivalent sold-out commands if supported.
+- Unauthorized commands must have no side effects and must not leak sensitive data.
+- Prefer injected allow-list config in tests. If environment variables are used, read only safe ids and never print secrets.
 
-3. Wire page-post planning context into the sales-agent response path:
-   - Before writing a recommendation, collect compact source context via the page-post service where available.
-   - If `replacement_needed` / blocked candidate is returned, do not recommend the blocked tour.
-   - Add a deterministic planning note for the response writer: source type, recent post title/code, blocked reason, and replacement requirement.
-   - Keep LLM context compact. Do not dump full post captions.
+### 3. Dashboard-Safe Read API v0 / Service
 
-4. Preserve core invariants:
-   - LLM must not decide sold-out/full semantics.
-   - Sold-out/full decisions must come from deterministic code.
-   - Do not mention wholesale partner names.
-   - Do not confirm seats or final price.
-   - Do not expose full post history to the LLM.
+Expose a minimal safe read surface for future admin dashboard.
 
-5. Add tests that prove the wiring works without live services.
+Requirements:
 
-## Required Tests
+- Use existing `admin_ops` functions where possible.
+- Return compact current-case summaries and case detail suitable for dashboard.
+- Must require an explicit admin/auth guard or injected admin context in tests.
+- Avoid raw PSID as the primary display if customer display name exists.
+- Do not return full raw conversation history, full raw captions, secrets, tokens, or wholesale partner names.
+- If no web framework exists naturally in V2, implement a service/API boundary with tests instead of forcing a Flask app.
 
-Add/update unit tests for:
+### 4. Tests
 
-1. Admin command `posts` returns recent-post summaries only, not full captions.
-2. Admin command `mark_full <web_code>` calls the page-post/sold-out service and returns a safe Thai/English admin-facing confirmation.
-3. Admin command `clear_full <web_code>` clears the override.
-4. Ambiguous admin command target returns a safe clarification message.
-5. Response planning blocks a candidate tour marked `full`.
-6. Response planning blocks a candidate from a marked-full page post.
-7. Response planning allows a candidate when no override exists.
-8. Response planning emits compact context only.
-9. The response writer does not recommend a blocked tour.
-10. No wholesale partner names or secrets leak in new admin/bot text.
+Add tests covering:
 
-Run targeted tests and the broad non-live V2 suite if feasible.
+- Source attribution: page_post, ad, organic, unknown.
+- Source post id reaches orchestrator planning.
+- A post/tour marked full blocks recommendation through the adapter/orchestrator path.
+- LINE non-allowlisted admin is denied with no side effects.
+- LINE allowlisted admin can pause/resume and mark/clear full through safe handlers.
+- Dashboard-safe read returns compact summaries and requires admin context.
+- No raw caption, secret shape, wholesale partner name, or full PSID leaks from new public/admin surfaces.
 
-## Out of Scope
+Run targeted tests and broad non-live V2 suite.
 
-Do not implement:
+## Hard Rules
 
-- Live Meta Graph API page-post ingestion
-- Live Facebook/Meta source-attribution webhook parsing
-- Visual dashboard UI
-- Real LINE Messaging API send/receive adapter
-- Production deploy
-- Supabase production access
-- V1 or Make.com changes
-- Live paid OpenAI/OCR/provider calls
+- Do not modify V1.
+- Do not touch Make.com.
+- Do not deploy anything.
+- Do not change production webhook settings.
+- Do not call live Meta/FB/LINE/OpenAI/OCR/paid providers.
+- Do not write secrets into files, logs, reports, or tests.
+- Do not apply migrations to Supabase from Claude Dev.
+- Avoid broad refactors. Keep changes V2-scoped.
 
-## Deliverable
+## Expected Deliverables
 
-Write:
+1. Code and tests for the package above.
+2. `docs/tasks/DEV_REPORT_CURRENT.md`
+3. `docs/tasks/AGENT_STATUS.json`
+4. If git is available, commit and push to `v2/s4-followup-vision-ondemand`. If not, state that clearly in the report and stop.
 
-`docs/tasks/DEV_REPORT_CURRENT.md`
+## Required Dev Report Sections
 
-Update:
+Write `docs/tasks/DEV_REPORT_CURRENT.md` with:
 
-`docs/tasks/AGENT_STATUS.json`
-
-Commit and push changes to:
-
-`v2/s4-followup-vision-ondemand`
-
-If Claude Cowork has no `.git` checkout, write the files in the shared workspace and stop. Codex will copy/commit/push.
-
-## Dev Report Format
-
-Include:
-
-1. Status
-2. Files changed
-3. Root cause / business need
-4. Summary of changes
-5. Tests run
-6. Risks / assumptions
-7. What QA should verify
-8. Next recommended step
+1. Summary
+2. Files Changed
+3. Implementation Details
+4. Tests Run
+5. Scope/Safety Verification
+6. Risks / Notes
+7. QA Checklist
+8. Next Step
 
 ## Stop Condition
 
-After writing the report/status and pushing if possible, stop. Do not proceed to QA yourself.
+After writing the Dev report and status JSON, stop and wait for QA/Codex review.

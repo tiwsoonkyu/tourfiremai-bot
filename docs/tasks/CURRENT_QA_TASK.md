@@ -1,91 +1,106 @@
-# Current QA Task
+# CURRENT QA TASK
 
-Task ID: `QA-2026-05-19-007`
-Status: `PENDING`
-Assigned role: Claude Cowork QA
-Controller: Codex
+## Task ID
+QA-2026-05-19-008
 
-## Task
+## Title
+QA Review — Sprint 5 Package B: Source Attribution + LINE Admin Safety + Dashboard Read API v0
 
-Review Dev task `DEV-2026-05-19-007`.
+## Status
+PENDING
 
-This QA task is read-only. Do not patch code unless Codex explicitly asks for a QA patch.
+## Assigned Role
+Claude QA
 
-## Context
+## Controller
+Codex
 
-`DEV-2026-05-19-007` should wire the QA-cleared Page Post Intelligence foundation into the V2 planning/admin-command layer.
+## Dev Task Under Review
+DEV-2026-05-19-008
 
-The business problem:
-
-- Admin posts tours on Facebook daily.
-- Customers may chat from page posts, ads, or organic inbox.
-- Admin needs a deterministic way to mark posted tours or tour codes as `full` / `sold_out`.
-- The bot must not recommend a tour that deterministic code says is full/sold out.
-
-Migration `20260519_020_page_post_intelligence.sql` has QA GO, but may not yet be applied to staging at the time of this QA. This QA reviews code and tests only; do not attempt live Supabase access.
-
-## Review Scope
+## Required Reading
 
 Read:
 
 1. `docs/AI_COMMAND_CENTER.md`
-2. `docs/V2_PAGE_POST_INTELLIGENCE_PLAN.md`
-3. `docs/tasks/CURRENT_DEV_TASK.md`
-4. `docs/tasks/CURRENT_QA_TASK.md`
-5. `docs/tasks/TASK_LOG.md`
-6. `docs/tasks/DEV_REPORT_CURRENT.md`
-7. `docs/tasks/AGENT_STATUS.json`
-8. Dev-changed V2 files
+2. `docs/tasks/CURRENT_QA_TASK.md`
+3. `docs/tasks/TASK_LOG.md`
+4. `docs/tasks/DEV_REPORT_CURRENT.md`
+5. `docs/tasks/AGENT_STATUS.json`
+6. All files changed by DEV-2026-05-19-008
 
-## QA Checks
+## QA Goal
+Review the whole package as one integration unit. Do not split into micro reviews unless a P0 risk appears.
 
-Verify:
+## Required Checks
 
-1. Dev stayed on V2 scope only.
-2. V1 production code was not changed.
-3. Make.com / Cloudflare / Meta production webhook behavior was not changed.
-4. No secrets were written to files.
-5. No live Meta/Facebook, LINE, OpenAI, OCR, Supabase production, or paid-provider calls are required by tests.
-6. Admin command parsing is conservative and deterministic.
-7. `posts` output is compact and does not dump full captions.
-8. `mark_full` / `mark_sold_out` can set the deterministic override.
-9. `clear_full` / `clear_sold_out` can clear the deterministic override.
-10. Ambiguous admin command targets ask for clarification instead of guessing.
-11. Response planning blocks a tour marked `full` or `sold_out`.
-12. Response planning blocks a candidate tied to a full/sold-out page post when source context is present.
-13. Response planning allows candidates when no active override exists.
-14. The response writer does not recommend blocked tours.
-15. LLM does not decide sold-out/full semantics.
-16. LLM context is compact and does not include full page-post history.
-17. New admin/bot text contains no wholesale partner names and no secrets.
-18. Tests cover all required behaviors.
-19. Broad non-live V2 suite passes or any skips/failures are clearly justified.
+1. Scope discipline:
+   - V2 only.
+   - No V1.
+   - No Make.com.
+   - No production webhook/deploy/secrets/live paid providers.
 
-## Deliverable
+2. Source attribution:
+   - Parser/adapter is conservative.
+   - Unknown/absent source preserves old behaviour.
+   - User message text cannot spoof a post/ad id.
+   - `source_post_id`, `source_type`, and `source_platform` reach `Orchestrator.handle_turn(...)`.
+   - Page-post sold-out signal can block the response through this path.
 
-Write:
+3. Prompt/data safety:
+   - No raw full page captions injected into LLM payloads.
+   - No wholesale partner names leak.
+   - Planning notes remain compact.
 
-`docs/tasks/QA_REPORT_CURRENT.md`
+4. LINE admin safety:
+   - Allow-list is enforced before command parsing/execution.
+   - Unauthorized sender has no side effects.
+   - Authorized sender can pause/resume and mark/clear full where implemented.
+   - No sensitive data is returned to unauthorized users.
 
-Update:
+5. Human handoff / pause:
+   - Pause state prevents AI from continuing to answer where the code path covers it.
+   - Resume returns control clearly.
 
-`docs/tasks/AGENT_STATUS.json`
+6. Dashboard-safe read surface:
+   - Requires explicit admin/auth context or equivalent guard.
+   - Returns compact summaries.
+   - Avoids full raw conversation history, raw captions, secrets, tokens, and raw PSID as primary display when a display name exists.
 
-Do not commit or push from Claude Cowork if the workspace has no `.git` checkout.
-Codex will commit and push the QA report/status after reading the files from the shared workspace.
+7. Tests:
+   - Targeted tests cover the required behaviours.
+   - Broad non-live suite passes or any skip is justified.
 
-## QA Report Format
+8. Migration:
+   - No new migration unless clearly justified.
+   - Migration 020 is assumed applied; do not apply migrations from QA.
 
-Include:
+## Verdict Options
 
-1. Verdict: `GO`, `GO_WITH_NOTES`, or `NO_GO`
-2. Scope reviewed
-3. Evidence checked
-4. Findings by severity
-5. Tests verified
-6. Remaining risks
-7. Next recommended step
+Use one:
 
-## Stop Condition
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`
 
-After writing the report/status, stop. Do not continue implementation.
+## Required QA Report Sections
+
+Write `docs/tasks/QA_REPORT_CURRENT.md` with:
+
+1. Verdict
+2. Scope Reviewed
+3. Checks Matrix
+4. Findings by Severity
+5. Tests Verified
+6. Residual Risks / Notes
+7. Recommendation / Next Action
+
+Then update `docs/tasks/AGENT_STATUS.json` and stop.
+
+## Hard Rules
+
+- Read-only review unless Codex explicitly assigns a QA fix task.
+- Do not modify runtime code.
+- Do not deploy.
+- Do not touch V1 / Make.com / production webhook / secrets.
+- Do not call live paid providers.
