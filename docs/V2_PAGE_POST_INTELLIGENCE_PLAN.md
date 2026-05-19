@@ -1,7 +1,8 @@
 # V2 Page Post Intelligence + Sold-Out Signal Plan
 
-Status: `PLANNED`
+Status: `FOUNDATION_IMPLEMENTED` (DEV-2026-05-19-006 — awaiting QA)
 Controller task: `DEV-2026-05-19-006`
+Implementation: `v2/lib/page_post_context.py`, `v2/supabase/migrations/20260519_020_page_post_intelligence.sql`, `v2/tests/test_page_post_context.py`
 
 ## Why This Matters
 
@@ -79,6 +80,44 @@ Out of scope for this task:
 
 1. Dashboard read/write API behind admin auth.
 2. Dashboard v0 UI for recent posts + full/sold-out buttons.
-3. Meta referral/ad/post source attribution wiring.
+3. Meta referral/ad/post source attribution wiring (Webhook side).
 4. Response writer policy wiring: sold-out post context -> alternative recommendations.
 5. Optional scheduled post ingestion from Meta Graph API after permissions are confirmed.
+6. Admin LINE command wiring (e.g. `mark_full <web_code> [reason]`, `clear_full <web_code>`,
+   `posts` for recent post list).
+
+## Foundation Layer Contract (DEV-2026-05-19-006)
+
+### New Supabase tables (migration `20260519_020_page_post_intelligence.sql`)
+
+| Table | Key columns | Purpose |
+|-------|-------------|---------|
+| `page_posts` | `(platform, post_id)` unique | Idempotent storage of recent FB/IG/LINE OA posts; default 3-day relevance via `posted_at`, overridable by `active_until`. |
+| `page_post_tour_links` | `(page_post_id, web_code | tour_code_real | tour_id)` partial unique | N:M between posts and tours. `tour_id` is NOT FK to `tours_canonical` (pre-canonical codes allowed). |
+| `tour_availability_overrides` | partial unique by (target, scope, departure_date) | Admin sold_out / full / unknown overrides. Audit-preserving: `cleared_at` flips instead of deleting. |
+
+All three tables have RLS enabled with `anon` denied and `service_role` full access, matching prior migrations.
+
+### Deterministic service module (`v2/lib/page_post_context.py`)
+
+Pure functions (no env reads, no live network) consumed by future dashboard / LINE adapter / response writer:
+
+| Function | Purpose |
+|----------|---------|
+| `upsert_page_post(...)` | Idempotent insert/update keyed by `(platform, post_id)`; computes sha256 `text_hash`. |
+| `list_recent_page_posts(days=3, ...)` | Returns active posts within the relevance window (newest first), with each post's compact title (<=80 chars), linked codes, and `is_post_blocked` flag. |
+| `extract_tour_references(text)` | Parses web codes / real tour codes / URLs. Reuses `v2.lib.tour_codes` normalisation so airline codes are never mis-classified as tour codes. |
+| `link_page_post_to_tour(...)` / `link_page_post_from_text(...)` | Idempotent N:M linkage, validated codes. |
+| `mark_availability_override(...)` | Admin marks tour / departure / post as sold_out / full / unknown / available. Auto-clears prior active row on same target. |
+| `clear_availability_override(...)` | Clears by `override_id` or by (scope, target). |
+| `is_candidate_blocked(...)` | Deterministic block decision with precedence `departure > post > tour`. Returns canned Thai reason text — never LLM-generated. |
+| `get_source_context(...)` | Compact, LLM-safe summary of where the customer came from (`page_post`, `ad`, `organic`, `unknown`). |
+| `build_response_planning_context(...)` | Single planner entrypoint: source summary + block decision + `replacement_needed` flag + safe Thai reason. |
+
+### Hard rules enforced by tests
+
+- No wholesale partner names ever appear in returned strings (`_WHOLESALE_BLACKLIST` reused).
+- Caption text is capped to `CONTEXT_TITLE_MAX_CHARS = 80` chars in any surface bundle.
+- Bot/admin reason text capped to `CONTEXT_REASON_MAX_CHARS = 160`.
+- No live Meta/FB, LINE, OpenAI, OCR, or paid-provider call in tests or in the module.
+- LLM never decides sold-out semantics — code does.
