@@ -2,18 +2,18 @@
   "controller": "Codex",
   "current_dev_task": "DEV-2026-05-19-005",
   "current_qa_task": "QA-2026-05-19-005",
-  "role": "CONTROLLER",
-  "status": "PENDING_DEV",
-  "verdict": null,
-  "report_path": null,
-  "updated_at": "2026-05-19T10:30:00+07:00",
-  "next_action": "CLAUDE_DEV_TO_RUN_CURRENT_DEV_TASK",
+  "role": "DEV",
+  "status": "READY_FOR_QA",
+  "verdict": "GO",
+  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
+  "updated_at": "2026-05-19T11:35:00+07:00",
+  "next_action": "CLAUDE_QA_TO_RUN_CURRENT_QA_TASK",
   "blocked_reason": null,
   "files_changed": [
-    "docs/tasks/CURRENT_DEV_TASK.md",
-    "docs/tasks/CURRENT_QA_TASK.md",
-    "docs/tasks/TASK_LOG.md",
+    "v2/lib/admin_command_handler.py",
+    "v2/tests/test_admin_command_handler.py",
+    "docs/tasks/DEV_REPORT_CURRENT.md",
     "docs/tasks/AGENT_STATUS.json"
   ],
-  "notes": "Codex accepted QA_GO for DEV-2026-05-19-004 and opened DEV-2026-05-19-005 / QA-2026-05-19-005 for a deterministic LINE admin command handler core. Priority is operational reliability: staff can list cases, inspect a case, pause the bot, and resume the bot from a future LINE adapter without live LINE calls in this task. No runtime code changed by Codex in this controller update."
+  "notes": "DEV-2026-05-19-005 complete. Added deterministic LINE admin command handler core with parser/result dataclasses and admin_ops wiring for cases, paused cases, handoffs, case detail, pause, resume, and help. No live LINE API, no customer-facing replies, no V1, no Make.com, no deploy, no secrets, no live OpenAI, no paid-provider calls, no PDF/fee changes. Tests: 11 new command-handler tests passed; admin_ops + command handler 44 passed; broad non-live V2 suite 538 passed, 11 skipped, 0 failed. Ready for QA-2026-05-19-005."
 }
