@@ -1,15 +1,42 @@
-﻿{
-    "controller":  "Codex",
-    "role":  "Controller",
-    "status":  "DEV_TASK_OPEN",
-    "verdict":  null,
-    "current_dev_task":  "DEV-2026-05-20-012",
-    "current_qa_task":  "QA-2026-05-20-012",
-    "branch":  "v2/s4-followup-vision-ondemand",
-    "commit":  "f50c97c",
-    "report_path":  "docs/tasks/CURRENT_DEV_TASK.md",
-    "updated_at":  "2026-05-20T01:30:00+07:00",
-    "next_action":  "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
-    "blocked_reason":  null,
-    "notes":  "QA-2026-05-19-011 owner-reported GO. Opened DEV/QA-2026-05-20-012 for deterministic detail-page departure price table parsing. No production/customer-wide traffic approved."
+{
+  "controller": "Codex",
+  "role": "Dev",
+  "status": "READY_FOR_QA",
+  "verdict": null,
+  "current_dev_task": "DEV-2026-05-20-012",
+  "current_qa_task": "QA-2026-05-20-012",
+  "branch": "v2/s4-followup-vision-ondemand",
+  "base_commit": "a9ed2ea",
+  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
+  "updated_at": "2026-05-20T02:25:00+07:00",
+  "next_action": "CLAUDE_QA_REVIEW_CURRENT_DEV_TASK",
+  "blocked_reason": null,
+  "files_changed": [
+    "v2/scraper/departure_price_table.py",
+    "v2/supabase/migrations/20260520_021_departure_price_rows.sql",
+    "v2/tools/live_detail_departure_smoke.py",
+    "v2/tests/test_departure_price_table.py",
+    "docs/tasks/DEV_REPORT_CURRENT.md",
+    "docs/tasks/AGENT_STATUS.json"
+  ],
+  "dev_evidence": {
+    "targeted_new_suite": "76 passed in 0.31s (v2/tests/test_departure_price_table.py)",
+    "scraper_regression": "20 passed in 0.06s (v2/tests/test_scraper.py)",
+    "broad_non_live_v2_suite": "747 passed / 0 failed in 12.48s (ignored env-gated live tests)",
+    "cli_smoke_live": "exit 0 for ap232919/ap242455/ap183598; parsed real tour_code_real values BT-NRT_S15_XJ, BCCKG27-HU, TFUEU0626 and full start/end date ranges",
+    "hard_rules_compliance": "No V1 / Make.com / deploy / production webhook / secrets / live Meta / live LINE / live OpenAI / OCR / paid provider / Supabase migration apply / customer-facing outbound change"
+  },
+  "dev_acceptance_checks": {
+    "parser_uses_tour_path_not_intertourdetail": true,
+    "web_code_tour_code_real_airline_kept_separate": true,
+    "dash_cells_parse_to_null_never_zero": true,
+    "contact_button_text_never_classified_sold_out": true,
+    "row_level_adult_and_single_supplement_captured": true,
+    "thai_be_year_suffix_resolves_to_gregorian": true,
+    "cross_month_and_cross_year_ranges_supported": true,
+    "migration_021_additive_no_drop_no_rename_no_truncate": true,
+    "adapter_legacy_mirrors_present_no_zero_coercion": true,
+    "cli_is_read_only_no_db_no_llm_no_secrets": true
+  },
+  "notes": "DEV-2026-05-20-012 Sprint 5 Package F implemented and Codex-synced into the real git checkout. Codex added regression coverage from live HTML smoke findings, fixed full two-sided date ranges and live b-codepg value parsing, and verified 3/3 read-only live detail-page smoke. Awaiting QA-2026-05-20-012."
 }
