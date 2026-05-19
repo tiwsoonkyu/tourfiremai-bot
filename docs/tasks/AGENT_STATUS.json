@@ -1,14 +1,13 @@
-﻿{
+{
   "controller": "Codex",
   "current_dev_task": "DEV-2026-05-19-007",
   "current_qa_task": "QA-2026-05-19-007",
-  "role": "Dev",
-  "status": "READY_FOR_QA",
+  "role": "QA",
+  "status": "QA_GO",
   "verdict": "GO",
-  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T22:30:00+07:00",
-  "next_action": "WAITING_FOR_CLAUDE_QA",
+  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
+  "updated_at": "2026-05-19T23:30:00+07:00",
+  "next_action": "WAITING_FOR_CODEX_REVIEW",
   "blocked_reason": null,
-  "notes": "DEV-2026-05-19-007 second pass: closed the orchestrator wire-up gap left by the first pass. v2/lib/orchestrator.py now builds a PlanningContext (via new _build_planning_context + _resolve_planning_candidate helpers) and passes planning=planning to write_response on every non-silent turn. handle_turn gained optional source_post_id / source_type / source_platform kwargs for future webhook source-attribution work. Added v2/tests/test_orchestrator_planning.py (4 tests) covering: tour-scope block returns deterministic Thai canned reply and LLM response-tier is not called; post-scope block via source_post_id returns deterministic canned reply and LLM is not called; unblocked path calls LLM with compact page_post_planning_note injected (raw caption never leaks); no-candidate/no-source greeting still replies via LLM. Targeted suite (test_orchestrator_planning): 4 passed. Combined targeted (page_post_wiring + page_post_context + admin_command_handler + orchestrator + orchestrator_planning + response_writer): 124 passed. Broad non-live V2 suite: 601 passed / 7 skipped (flask-only) / 0 failed (up from 597 by the +4 new tests). No V1, no Make.com, no live Meta/FB/LINE/OpenAI/OCR/Supabase calls, no production webhook, no migration applied, no secrets. Migration 020 remains unapplied on staging per Codex operational note. Git is not available inside the Cowork sandbox - commit/push to v2/s4-followup-vision-ondemand must be performed by Codex on the real repo clone."
+  "notes": "QA-2026-05-19-007 verdict: GO. Read-only review of DEV-2026-05-19-007 second-pass wiring on branch v2/s4-followup-vision-ondemand (commit 3bf63a7). All 19 hard QA checks pass: V2-only scope, no V1/Make.com/production-webhook surface change, no secrets written, no live Meta/FB/LINE/OpenAI/OCR/Supabase calls in tests, admin command parsing deterministic and conservative, posts output compact (no raw captions), mark_full/mark_sold_out/clear_full/clear_sold_out behave correctly, ambiguous targets refused safely, response planning blocks tour-scope and post-scope overrides, allows unblocked candidates, response writer never recommends blocked tours, LLM does not decide sold-out semantics (deterministic Thai REASON_* constants), LLM payload compact (page_post_planning_note only, raw captions and wholesale names never leak), no wholesale brand names or secret patterns in new admin/bot text, 22 new tests across test_page_post_wiring.py (18) and test_orchestrator_planning.py (4), broad non-live V2 suite 601 passed / 7 skipped (flask-only, pre-existing) / 0 failed (matches Dev report). Three low-severity advisory notes: L1 fee-check state takes priority over page-post block when both apply (intentional — but suggest enriching fee handoff with admin-marked-full signal in a future task); L2 production webhook does not yet pass source_post_id/source_type so post-scope blocks only reachable from tests today; L3 migration 020 still not applied on staging per Codex operational note. Four remaining risks: R1 migration 020 unapplied, R2 webhook source-attribution not yet wired, R3 LINE adapter staff allow-list still pending from QA-2026-05-19-005 follow-up, R4 per-turn planner build adds a tiny cost path — verify latency post-migration. Recommended next steps in QA report. No code modified; stopping for Codex review."
 }
-
