@@ -362,3 +362,54 @@ Result:
 - QA verdict: `GO`
 - Reported by Tiw from Claude QA session.
 - Codex note: QA report file was not pushed into this repo at the time of controller update, so this log records owner-reported QA status and the repository evidence from Dev/Codex verification.
+
+### `DEV-2026-05-19-010`
+
+Status: `PENDING`
+
+Goal:
+
+Implement Sprint 5 Package D as one admin-only real-chat readiness package:
+
+- Runtime smoke tests for webhook, source attribution, LINE admin route, and dashboard read API.
+- Admin-only test-mode gate so only allowlisted admin/test PSIDs can pass during real-chat testing.
+- Runtime config validator that reports readiness without printing secrets.
+- Source-attribution smoke evidence for page-post / organic / unknown traffic.
+- Admin handoff / pause smoke evidence.
+- Short operator runbook for Tiw/admin staff.
+
+Expected deliverables:
+
+- V2-only code/tests/docs.
+- `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No Supabase migration apply from Claude Dev.
+
+### `QA-2026-05-19-010`
+
+Status: `PENDING`
+
+Goal:
+
+Review DEV-2026-05-19-010 as one integration readiness package and decide whether Tiw can proceed toward admin-only real-chat testing.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`

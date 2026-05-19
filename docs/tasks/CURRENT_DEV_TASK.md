@@ -1,10 +1,10 @@
 # CURRENT DEV TASK
 
 ## Task ID
-DEV-2026-05-19-009
+DEV-2026-05-19-010
 
 ## Title
-Sprint 5 Package C — Runtime Wiring for Source Attribution, LINE Admin, and Dashboard Read API
+Sprint 5 Package D — Admin-Only Real Chat Readiness, Runtime Smoke Tests, and Operator Runbook
 
 ## Status
 PENDING
@@ -15,109 +15,180 @@ Claude Dev
 ## Controller
 Codex
 
-## Context
-Sprint 5 Package B is QA-cleared by owner-reported QA verdict `GO`.
+## Source of Truth
 
-Repository source of truth:
+Use GitHub repo as source of truth:
 
-- GitHub repo: `github.com/tiwsoonkyu/tourfiremai-bot`
+- Repo: `github.com/tiwsoonkyu/tourfiremai-bot`
 - Branch: `v2/s4-followup-vision-ondemand`
-- This task must be executed against the GitHub branch files, not a stale Cowork-only workspace snapshot.
-- If the task files or V2 source files are unavailable in the current workspace, stop and report `BLOCKED: source-of-truth repo unavailable`.
 
-Already available:
+If your local Cowork workspace lacks git/source files, differs from the GitHub branch, or cannot inspect the changed files, stop and report:
 
-- `v2/lib/source_attribution.py`
-- `v2/lib/line_admin_adapter.py`
-- `v2/lib/admin_dashboard_api.py`
-- `Orchestrator.handle_turn(...)` already accepts `source_post_id`, `source_type`, and `source_platform`.
-- Migration `20260519_020_page_post_intelligence.sql` has already been applied and verified on V2 staging by Codex.
+`BLOCKED: source-of-truth repo unavailable`
 
-Remaining practical gap:
+Do not invent scope from chat memory. This file is the approved scope.
 
-- The V2 webhook/runtime does not yet call `extract_source(...)`.
-- LINE admin messages do not yet have a safe webhook/service entrypoint.
-- Dashboard read service does not yet have a minimal guarded HTTP/API shim.
+## Context
+
+Sprint 5 Package C is controller-accepted and QA-cleared:
+
+- Source attribution is wired into the V2 webhook as a safe source-record seam.
+- `POST /admin/line` exists behind a LINE admin allow-list adapter and does not call live LINE send.
+- Guarded dashboard read API routes exist for cases, posts, and handoffs.
+- V2 webhook still preserves silent ingest; live customer replies are not enabled yet.
+
+Tiw's next business goal is to reach safe testing with a real admin chat before customer-wide go-live.
+
+The system must prove that:
+
+1. Admin-only testing can be enabled without affecting normal customers.
+2. Bot/customer outbound behavior cannot accidentally activate.
+3. Admin pause/handoff controls are observable and testable.
+4. Source context from page posts / ads / organic traffic is captured for future response planning.
+5. Operators have a short runbook for how to test and what to watch.
 
 ## Goal
-Wire the existing Sprint 5 adapters into V2 runtime surfaces in a staging-safe, test-first way so the system can be exercised end-to-end without touching V1 production, Make.com, production webhook settings, or live paid providers.
+
+Prepare V2 for an admin-only real-chat test by adding runtime smoke coverage, configuration validation, safety gates, and an operator runbook.
+
+This task is not a production launch. It is a readiness package.
 
 ## Scope
-Implement all subtasks in this package as one integrated Dev task. Do not stop after each small subtask unless you find a P0 risk.
 
-### 1. Meta Webhook Source Attribution Wiring
+Implement all subtasks below as one integrated Dev package. Do not stop after each small subtask unless a P0 risk appears.
 
-Wire `v2.lib.source_attribution.extract_source(event, supabase)` into the V2 webhook processing path.
+### 1. Runtime Smoke Test Harness
 
-Requirements:
+Add a lightweight smoke-test entrypoint or test module that exercises V2 runtime surfaces without live external calls.
 
-- In `v2/webhook/app.py`, call `extract_source(...)` for each accepted messaging event.
-- Pass `attr.to_orchestrator_kwargs()` into `Orchestrator.handle_turn(...)` only if the current webhook path already calls or can safely instantiate the orchestrator.
-- If the current V2 webhook is still silent-ingest only, add a narrow integration seam that records source attribution without enabling outbound customer replies.
-- Unknown or absent source must preserve current behavior.
-- User message text must not spoof post/ad IDs.
-- Page-post sold-out/full signal must be able to reach planning logic through this path in tests.
-- Keep Meta POST ack fast; do not add live Graph API calls.
+It must cover:
 
-### 2. LINE Admin Runtime Entry Point
+- V2 webhook health path if present.
+- Meta webhook verification path if present.
+- Meta message ingest path with page-post source payload.
+- Meta message ingest path with organic/unknown source payload.
+- `POST /admin/line` unauthorized sender.
+- `POST /admin/line` authorized sender.
+- Dashboard API unauthorized request.
+- Dashboard API authorized request.
 
-Add a safe V2 admin entrypoint around `LineAdminAdapter`.
+The smoke harness must not call:
 
-Requirements:
+- Meta Graph API
+- LINE API
+- OpenAI
+- OCR/document providers
+- production webhook endpoints
 
-- No live LINE API calls in this task.
-- Add a minimal route/service boundary suitable for a future LINE webhook.
-- Enforce allow-list before command parsing/execution.
-- Unauthorized sender must have no side effects and must not receive sensitive data.
-- Authorized sender can execute supported commands via existing admin command core:
-  - list/cases if supported
-  - pause/resume customer if supported
-  - mark_full / clear_full or equivalent sold-out commands if supported
-- Return an `admin_text` payload from the route/service. Do not send to LINE yet.
+### 2. Admin-Only Real Chat Gate Specification
 
-### 3. Dashboard Read HTTP/API Shim v0
+Add a deterministic config validation layer or documented runtime guard for future admin-only testing.
 
-Expose `AdminDashboardAPI` through a minimal guarded runtime surface.
+Required behavior:
 
-Requirements:
+- If `V2_ADMIN_ONLY_TEST_MODE=true`, only allow inbound messages from configured admin/test PSIDs.
+- Non-allowlisted customer messages must be safely ignored or recorded only, with no outbound reply.
+- Missing allow-list while admin-only mode is enabled must fail closed.
+- The rule must be test-covered, even if it is implemented as a small helper before full webhook deployment.
 
-- If Flask is already used in `v2/webhook/app.py`, add guarded endpoints there or in a small blueprint/module imported by the app.
-- Require explicit admin/auth guard. For now, a staging-only header/token check is acceptable if tests inject it safely.
-- Endpoints should be read-only and compact:
-  - list current cases
-  - get one case
-  - list recent page posts/status
-  - list open handoffs
-- Do not return full raw conversation history, raw captions, secrets, tokens, wholesale partner names, or raw PSID as the primary display when display name exists.
-- No dashboard frontend in this task.
+Acceptable implementation:
 
-### 4. Tests
+- A helper module such as `v2/webhook/test_mode_gate.py`, or
+- A narrow function in `v2/webhook/app.py`, if simpler and well tested.
 
-Add focused tests for:
+Do not enable live outbound replies in this task.
 
-- Webhook event with page-post source reaches orchestrator/planning kwargs or source-record seam.
-- Unknown/organic event preserves old behavior.
-- Spoofed post/ad id in user text is ignored.
-- Sold-out post/tour can block response through runtime path where applicable.
-- Unauthorized LINE admin sender cannot execute commands and causes no side effects.
-- Authorized LINE admin sender can execute supported commands.
-- Dashboard API guard denies unauthenticated reads.
-- Dashboard API returns masked/scrubbed/capped payloads.
-- Broad non-live V2 suite passes.
+### 3. Runtime Configuration Validator
+
+Add a small validator that can report whether staging runtime config is ready for admin-only test.
+
+It should check presence/shape only, never print secret values.
+
+Suggested checks:
+
+- dashboard admin token present
+- LINE admin allow-list present
+- admin-only test mode status
+- admin/test PSID allow-list present when admin-only mode is true
+- Supabase staging URL/config presence if already required by runtime
+
+Output should be safe for logs and runbooks:
+
+- `ok`
+- `missing`
+- `configured`
+- `disabled`
+
+Never echo tokens, keys, raw secrets, or full PSIDs.
+
+### 4. Source Attribution Smoke Evidence
+
+Add tests proving that a page-post source payload produces a source attribution event or a source attribution object through the runtime seam.
+
+Also prove:
+
+- user text cannot spoof post/ad IDs
+- unknown source preserves old behavior
+- page-post source can be carried toward orchestrator planning kwargs or source-record seam
+
+### 5. Admin Handoff / Pause Smoke Evidence
+
+Add tests or smoke coverage proving:
+
+- unauthorized admin command causes no state mutation
+- authorized pause command reaches the admin command core
+- authorized resume command reaches the admin command core
+- admin command output is safe and does not expose raw PSID when a display name/masked id is available
+
+Do not mark paid. Do not confirm booking. Do not send live LINE messages.
+
+### 6. Operator Runbook
+
+Create:
+
+- `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`
+
+The runbook must be short and practical for Tiw/admin staff.
+
+Include:
+
+1. Purpose of admin-only test.
+2. Required environment variables, names only, no values.
+3. How to run local/staging smoke tests.
+4. How to enable admin-only mode safely.
+5. How to test with Tiw/admin PSID.
+6. What must be watched during the first 30 minutes.
+7. Pause criteria.
+8. Rollback/disable steps.
+9. What is still not live yet.
+
+### 7. Task Reports
+
+Write:
+
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Then stop for QA.
 
 ## Allowed Files
+
 Prefer touching only:
 
 - `v2/webhook/app.py`
-- `v2/webhook/*.py` new small helper modules if needed
+- `v2/webhook/*.py`
 - `v2/lib/source_attribution.py` only if a runtime bug is found
 - `v2/lib/line_admin_adapter.py` only if a runtime bug is found
 - `v2/lib/admin_dashboard_api.py` only if a runtime bug is found
+- `v2/tests/test_*smoke*.py`
 - `v2/tests/test_webhook*.py`
 - `v2/tests/test_line_admin_runtime*.py`
 - `v2/tests/test_admin_dashboard_runtime*.py`
+- `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`
 - `docs/tasks/DEV_REPORT_CURRENT.md`
 - `docs/tasks/AGENT_STATUS.json`
+
+If you need to touch any file outside this list, explain why in the Dev report.
 
 ## Out of Scope
 
@@ -130,14 +201,17 @@ Prefer touching only:
 - Do not call OpenAI / OCR / paid providers.
 - Do not apply Supabase migrations.
 - Do not build dashboard frontend UI.
-- Do not enable live customer replies if the current V2 webhook is still silent-ingest only unless the existing V2 architecture explicitly supports it in tests.
+- Do not enable live customer replies.
+- Do not rotate or print secrets.
+- Do not mark bookings as paid.
+- Do not confirm seats or final price.
 
 ## Required Tests
 
 Run at minimum:
 
 ```bash
-pytest v2/tests/test_webhook.py v2/tests/test_source_attribution*.py v2/tests/test_line_admin_adapter.py v2/tests/test_admin_dashboard_api.py -q
+pytest v2/tests/test_webhook.py v2/tests/test_webhook_source_attribution.py v2/tests/test_line_admin_runtime.py v2/tests/test_admin_dashboard_runtime.py -q
 pytest v2/tests --ignore=v2/tests/test_integration_staging.py --ignore=v2/tests/test_live_openai_health.py --ignore=v2/tests/test_phase2_live_followup.py -p no:cacheprovider -q
 ```
 
@@ -150,9 +224,17 @@ Write `docs/tasks/DEV_REPORT_CURRENT.md` with:
 1. Status
 2. Scope implemented
 3. Files changed
-4. Runtime wiring design
-5. Tests run and results
-6. Safety checks
-7. Known gaps / next recommended action
+4. Admin-only safety gate design
+5. Runtime smoke coverage
+6. Config validator behavior
+7. Tests run and results
+8. Safety checks
+9. Known gaps / next recommended action
 
-Then update `docs/tasks/AGENT_STATUS.json` and stop for QA.
+Then update `docs/tasks/AGENT_STATUS.json` with:
+
+- `status`: `READY_FOR_QA` or `BLOCKED`
+- `current_dev_task`: `DEV-2026-05-19-010`
+- `next_action`: `CLAUDE_QA_RUN_CURRENT_QA_TASK` if ready
+
+Stop after writing the report.
