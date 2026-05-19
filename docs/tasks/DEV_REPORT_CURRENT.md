@@ -1,224 +1,180 @@
-# DEV REPORT — DEV-2026-05-19-009
+# DEV REPORT - DEV-2026-05-19-010
 
-## Status
+## 1. Status
+
 READY_FOR_QA
 
-## Task
-Sprint 5 Package C — Runtime wiring for source attribution, LINE admin, and dashboard read API.
+Dev recommendation: GO
 
-## Scope Implemented
+Branch: `v2/s4-followup-vision-ondemand`
 
-1. **Meta webhook source-attribution seam** — `v2/webhook/app.py` now
-   calls `extract_source(event, supabase)` for every accepted messaging
-   event and persists the result as a `conversation_events` row with
-   `event_type='source_attribution'`. Webhook stays silent-ingest (no
-   outbound reply). Unverified attacker post ids are dropped at the
-   boundary (validated DB-side against `page_posts`). The recorded
-   attribution can be replayed into the orchestrator by a future caller —
-   a test in `test_webhook_source_attribution.py` proves this end-to-end
-   path blocks a sold-out post.
+Task: Sprint 5 Package D - Admin-Only Real Chat Readiness, Runtime Smoke Tests, and Operator Runbook
 
-2. **LINE admin runtime entrypoint** — new `v2/webhook/admin_routes.py`
-   adds `POST /admin/line`. Accepts JSON `{sender_id, text}`, dispatches
-   through `LineAdminAdapter` (allow-list gated), returns the
-   `AdminCommandResult` as JSON. No live LINE Messaging API call. Raw
-   PSIDs scrubbed from every response via `_strip_raw_psid`. Oversize
-   body rejected with 413.
+## 2. Scope Implemented
 
-3. **Dashboard read HTTP shim v0** — same module adds:
-   - `GET /admin/dashboard/cases` (with `?only_paused=1`, `?limit=N`)
-   - `GET /admin/dashboard/cases/<id>` (with `?by=psid|conversation_id`)
-   - `GET /admin/dashboard/posts`
-   - `GET /admin/dashboard/handoffs`
-   - `GET /admin/healthz`
+This task makes the V2 staging webhook safer to test with real Messenger traffic from admin accounts only.
 
-   Gated by `X-Admin-Token` header compared in constant time
-   (`hmac.compare_digest`) against `app.config["V2_ADMIN_TOKEN"]`. Token
-   is test-injected; in production it reads
-   `V2_STAGING_DASHBOARD_TOKEN` via `_admin_token_from_config`. All
-   payloads pass through `_strip_raw_psid` as a defensive top-level
-   safety net.
+Implemented:
 
-## Files Changed
+1. Admin-only inbound gate for `POST /webhook`.
+2. Safe runtime config/readiness endpoint for admin-only testing.
+3. Runtime smoke tests covering admin-only ingestion, source attribution, dashboard auth/masking, and LINE admin pause/resume.
+4. Operator runbook for the first admin-only real chat test.
 
-```
-v2/webhook/app.py                              (modified, +82 lines)
-v2/webhook/admin_routes.py                     (new, ~260 lines)
-v2/tests/test_webhook_source_attribution.py    (new, ~270 lines)
-v2/tests/test_line_admin_runtime.py            (new, ~220 lines)
-v2/tests/test_admin_dashboard_runtime.py       (new, ~250 lines)
-docs/tasks/DEV_REPORT_CURRENT.md               (this report)
-docs/tasks/AGENT_STATUS.json                   (status flip to READY_FOR_QA)
-```
+No production webhook was changed. No V1 code was touched. No live Meta, LINE, OpenAI, OCR, or paid-provider calls were made.
 
-No V1 files touched. No migrations added. No production webhook
-settings changed (the new `/admin/*` routes are additive and read-only
-modulo `LineAdminAdapter`'s own admin-gated mutations, which already
-existed in DEV-008 and run against the same Supabase as before).
+## 3. Files Changed
 
-## Runtime Wiring Design
+Runtime:
 
-### Source attribution seam (silent-ingest)
+- `v2/webhook/app.py`
+- `v2/webhook/admin_routes.py`
+- `v2/webhook/test_mode_gate.py` (new)
 
-```
-Meta POST /webhook
-    │
-    ├── signature verify
-    ├── per-event idempotency
-    └── background thread → _process_event(event, full_message_id, trace_id)
-            │
-            ├── (existing) per-PSID lock + customer + conversation rows
-            ├── (existing) intent classify + state-machine transition
-            ├── (existing) inbound conversation_turns insert
-            ├── (existing) state_change conversation_events row
-            └── (new)   _record_source_attribution(event, ...)
-                        │
-                        ├── extract_source(event, supabase)
-                        │   → validates `post_id` against page_posts
-                        └── conversation_events.insert({
-                              event_type='source_attribution',
-                              event_data={source_type, source_post_id,
-                                         source_platform, page_post_id,
-                                         page_post_validated, raw_ref},
-                              triggered_by='system',
-                              meta_message_id=None  # avoid unique index
-                                                   # collision with the
-                                                   # state_change row
-                            })
-```
+Tests:
 
-The orchestrator is **not** invoked from the webhook in this sprint.
-The seam exists so that a future task can flip on orchestrator
-invocation by reading the recorded source attribution and passing
-`kwargs` through to `Orchestrator.handle_turn(..., source_post_id=...,
-source_type=..., source_platform=...)`. The
-`test_recorded_attribution_blocks_via_orchestrator` test proves this
-replay works.
+- `v2/tests/test_admin_only_runtime_smoke.py` (new)
 
-### LINE admin route
+Docs:
 
-```
-POST /admin/line
-  body: {"sender_id": "<line_uid>", "text": "<command>"}
-    │
-    ├── size cap 4 KB → 413 body_too_large
-    ├── JSON parse  → 400 invalid_json on failure
-    ├── LineAdminAdapter.handle(sender_id, text)
-    │     ├── normalise sender, reject whitespace / oversize
-    │     ├── allow-list membership check (constant-time-ish via
-    │     │   frozenset O(1))
-    │     ├── on denial: return AdminCommandResult(ok=False,
-    │     │   action='denied', error='missing_sender'|'empty_allow_list'
-    │     │   |'not_allowed')  — NO side effects, NO command parse
-    │     └── on allow: dispatch via existing admin_command_handler
-    └── _strip_raw_psid(result.to_dict()) → JSON 200
+- `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md` (new)
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+## 4. Admin-Only Safety Gate
+
+New helper module: `v2/webhook/test_mode_gate.py`
+
+Key behavior:
+
+- If `V2_ADMIN_ONLY_TEST_MODE` is disabled, existing webhook ingestion behavior is preserved.
+- If `V2_ADMIN_ONLY_TEST_MODE` is enabled and no admin PSID allow-list is configured, the webhook fails closed and filters all inbound events.
+- If enabled with an allow-list, only matching PSIDs are scheduled for processing.
+- Filtered events return HTTP 200 to Meta but are not scheduled, avoiding retries while preventing bot replies to non-admin customers.
+- Raw PSIDs are never returned in runtime readiness output.
+
+Webhook response now includes:
+
+- `scheduled`
+- `filtered`
+
+This gives operators a quick signal during staging tests without exposing customer identifiers.
+
+## 5. Runtime Config Validator
+
+New guarded endpoint:
+
+`GET /admin/runtime-config`
+
+Auth:
+
+- Requires existing `X-Admin-Token` header.
+
+Returned values are statuses/counts only:
+
+- admin-only mode enabled/disabled
+- admin test PSID allow-list status/count
+- dashboard token configured/missing
+- LINE admin allow-list configured/missing
+- Supabase staging URL configured/missing
+- FB app secret configured/missing
+- FB verify token configured/missing
+
+The endpoint does not echo tokens, secrets, raw PSIDs, or raw allow-list values.
+
+## 6. Runtime Smoke Coverage
+
+New test file: `v2/tests/test_admin_only_runtime_smoke.py`
+
+Coverage:
+
+1. Admin-only disabled still allows normal webhook ingestion.
+2. Admin-only enabled allows only allowlisted PSID.
+3. Admin-only enabled without PSID allow-list fails closed.
+4. Meta post referral records validated page post source.
+5. User text cannot spoof page post source.
+6. Runtime config endpoint is guarded and redacted.
+7. Runtime config marks empty LINE admin allow-list as missing.
+8. Dashboard cases endpoint requires auth and masks PSIDs.
+9. LINE admin pause/resume works only for allowed admin sender and does not echo raw PSIDs.
+
+All tests use in-memory fakes. They do not call Meta, LINE, OpenAI, OCR providers, Supabase, Redis, or any production endpoint.
+
+## 7. Tests Run
+
+Targeted smoke:
+
+```bash
+.\.venv_codex\Scripts\python.exe -m pytest v2/tests/test_admin_only_runtime_smoke.py -q
 ```
 
-### Dashboard shim
+Result:
 
-```
-GET /admin/dashboard/*
-  header X-Admin-Token: <token>
-    │
-    ├── _admin_token_from_config(app)  → 500 admin_token_not_configured
-    │                                     when token absent
-    ├── hmac.compare_digest(token, expected)
-    │   → 401 missing_admin_token | invalid_admin_token
-    ├── AdminContext(allowed=True, source='web')
-    ├── AdminDashboardAPI.<list_cases|get_case|list_recent_posts|
-    │                     list_open_handoffs>(...)
-    │   (re-scrubs wholesale tokens, caps title, masks PSID)
-    └── _strip_raw_psid(payload) → JSON 200
+```text
+9 passed
 ```
 
-## Tests Run
+Targeted runtime package:
 
-- Targeted suite (the 8 files most likely to touch new code):
+```bash
+.\.venv_codex\Scripts\python.exe -m pytest v2/tests/test_webhook.py v2/tests/test_webhook_source_attribution.py v2/tests/test_line_admin_runtime.py v2/tests/test_admin_dashboard_runtime.py v2/tests/test_admin_only_runtime_smoke.py -q -p no:cacheprovider --basetemp=.pytest_tmp_target
+```
 
-  ```
-  pytest v2/tests/test_webhook.py
-         v2/tests/test_source_attribution.py
-         v2/tests/test_source_attribution_integration.py
-         v2/tests/test_line_admin_adapter.py
-         v2/tests/test_admin_dashboard_api.py
-         v2/tests/test_webhook_source_attribution.py
-         v2/tests/test_line_admin_runtime.py
-         v2/tests/test_admin_dashboard_runtime.py
-  ```
-  → **77 passed / 0 failed**.
+Result:
 
-- Broad non-live V2 suite:
+```text
+40 passed
+```
 
-  ```
-  pytest v2/tests/ \
-    --ignore=v2/tests/test_integration_staging.py \
-    --ignore=v2/tests/test_live_openai_health.py \
-    --ignore=v2/tests/test_phase2_live_followup.py \
-    -p no:cacheprovider -q
-  ```
-  → **662 passed / 0 failed** (was 638 pre-change; +24 new test
-  cases).
+Broad non-live V2 suite:
 
-- Live staging Supabase / OpenAI / Phase 2 live followup intentionally
-  NOT exercised per task hard rules.
+```bash
+.\.venv_codex\Scripts\python.exe -m pytest v2/tests --ignore=v2/tests/test_integration_staging.py --ignore=v2/tests/test_live_openai_health.py --ignore=v2/tests/test_phase2_live_followup.py -q -p no:cacheprovider --basetemp=.pytest_tmp
+```
 
-## Safety Checks
+Result:
 
-- **V1**: untouched (`grep -L` over `app.py`, `app_patched_*`,
-  `webhook_proxy.py`, V1 paths).
-- **Make.com**: no blueprint changes.
-- **Production webhook settings**: no change. Meta verification handshake
-  + signature behaviour identical.
-- **Migrations**: none added.
-- **Secrets**: no `sk-`, `ghp_`, `EAAB`, `ya29`, `AKIA` patterns in any
-  new file. Admin token is injected at test time and read at runtime
-  from `V2_STAGING_DASHBOARD_TOKEN` via `os.environ.get` — never logged
-  and never returned in any response body.
-- **Live API calls**: no `requests.post`, `openai.*`, `line_bot_api`,
-  or any other paid-provider import in new code or tests.
-- **Raw PSID leakage**: every JSON response from `/admin/*` is walked
-  by `_strip_raw_psid` to drop any top-level `psid` key. The masked
-  variant `psid_masked` is preserved. Verified by
-  `test_authorized_cases_command`, `test_get_case_by_psid`,
-  `test_list_open_handoffs_masks_psid`.
-- **Wholesale partner names**: still scrubbed by
-  `_WHOLESALE_BLACKLIST` via `admin_ops` / `page_post_context` upstream;
-  the shim does not introduce a new free-text concatenation path.
-- **Caption text**: never returned by `/admin/dashboard/posts` (verified
-  by `test_list_recent_posts_caps_title_and_drops_caption`).
-- **Body size**: `POST /admin/line` rejects >4 KB at the boundary.
-- **Constant-time auth**: dashboard token compared via
-  `hmac.compare_digest`.
-- **Idempotency**: source-attribution conversation_events row inserted
-  with `meta_message_id=None` so the unique partial index
-  `(platform, meta_message_id) WHERE meta_message_id IS NOT NULL` does
-  NOT collide with the existing state_change row that owns
-  the inbound message id.
+```text
+671 passed
+```
 
-## Known Gaps / Next Recommended Action
+Note: the first broad-suite attempt without `--basetemp=.pytest_tmp` hit a Windows temp permission issue under `AppData\Local\Temp\pytest-of-supak`. The repo-local basetemp rerun passed cleanly and is the canonical command for this Windows workspace.
 
-1. **Orchestrator-from-webhook invocation is NOT yet enabled.** The
-   recorded source attribution is the seam; a future task can flip a
-   feature flag (or replace `_process_event`'s body) to call
-   `Orchestrator.handle_turn(**kwargs)` from the inbound path. Test
-   `test_recorded_attribution_blocks_via_orchestrator` proves the
-   replay works end-to-end.
-2. **LINE webhook signature verification not wired here.** The
-   `/admin/line` route accepts a plain JSON body for now. A future task
-   should wrap it with LINE's `X-Line-Signature` HMAC check before
-   exposing the route to the public LINE webhook.
-3. **Dashboard auth is a static token.** Acceptable for staging. A
-   future task can swap to OAuth / Supabase RLS without changing the
-   service contract `AdminDashboardAPI` exposes.
-4. **Per-route logging** redacts sender ids via `_mask_sender`; admin
-   token never appears in logs. Worth a separate observability sweep
-   if needed.
-5. **DLQ behaviour** is unchanged. The new source-attribution row is
-   inside the same `try` block as the rest of `_process_event`; if its
-   insert fails it logs and continues without re-raising, so it cannot
-   itself escalate to DLQ.
+## 8. Safety Checks
 
-## Stop Condition
+Confirmed:
 
-Dev work complete. Awaiting QA / Codex review.
+- No V1 files changed.
+- No Make.com changes.
+- No Cloudflare changes.
+- No Railway deploy.
+- No production Meta webhook change.
+- No secrets added.
+- No live external provider calls.
+- No migrations applied in this task.
+- New readiness endpoint is admin-token guarded.
+- Admin-only test mode fails closed when allow-list is missing.
+- PSIDs are masked/redacted in runtime outputs.
 
+## 9. Known Gaps / Next Recommended Action
+
+Not implemented in this task:
+
+- Real Meta staging webhook deployment.
+- Real LINE delivery.
+- Real dashboard frontend.
+- Production customer rollout.
+
+Recommended next step:
+
+QA should review this package as an integration unit. If QA returns GO, the controller can prepare a controlled admin-only staging test:
+
+1. Set staging env vars.
+2. Verify `/admin/runtime-config`.
+3. Route only admin PSID traffic.
+4. Test one real admin Messenger conversation.
+5. Watch `scheduled` vs `filtered` counts and dashboard/LINE admin controls.
+
+Stop condition if any issue appears:
+
+- Disable `V2_ADMIN_ONLY_TEST_MODE` or remove the staging webhook route before allowing real customer traffic.

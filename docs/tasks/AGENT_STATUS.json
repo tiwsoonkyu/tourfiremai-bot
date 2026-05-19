@@ -1,13 +1,15 @@
 {
   "controller": "Codex",
+  "role": "Dev",
+  "status": "READY_FOR_QA",
+  "verdict": "GO",
   "current_dev_task": "DEV-2026-05-19-010",
   "current_qa_task": "QA-2026-05-19-010",
-  "role": "Controller",
-  "status": "DEV_TASK_OPEN",
-  "verdict": null,
-  "report_path": "docs/tasks/CURRENT_DEV_TASK.md",
-  "updated_at": "2026-05-19T23:59:00+07:00",
-  "next_action": "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
+  "branch": "v2/s4-followup-vision-ondemand",
+  "commit": "pending",
+  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
+  "updated_at": "2026-05-19T23:09:42+07:00",
+  "next_action": "CLAUDE_QA_RUN_CURRENT_QA_TASK",
   "blocked_reason": null,
-  "notes": "Sprint 5 Package D opened as a larger integration package: admin-only real-chat readiness, runtime smoke tests, admin-only PSID gate, config validator, source-attribution smoke evidence, admin handoff smoke evidence, and operator runbook. Claude Dev must use GitHub branch v2/s4-followup-vision-ondemand as source of truth."
+  "notes": "Admin-only real chat readiness package implemented by Codex in the real git checkout. QA should review runtime gate, /admin/runtime-config, source-attribution smoke, dashboard masking, LINE admin pause/resume smoke, and the operator runbook."
 }

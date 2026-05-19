@@ -39,6 +39,7 @@ from flask import Flask, jsonify, request
 
 from ..lib.admin_dashboard_api import AdminContext, AdminDashboardAPI
 from ..lib.line_admin_adapter import AdminAllowList, LineAdminAdapter
+from .test_mode_gate import runtime_config_status
 
 logger = logging.getLogger("v2.webhook.admin_routes")
 
@@ -137,6 +138,17 @@ def register_admin_routes(app: Flask) -> None:
             "admin_allow_list_count": len(allow.ids),
             "admin_dashboard_token_configured": has_token,
         })
+
+    @app.route("/admin/runtime-config", methods=["GET"])
+    def admin_runtime_config():
+        denied = _check_admin_token(app)
+        if denied:
+            return denied
+        payload = runtime_config_status(
+            app_config=app.config,
+            runtime_config=app.config.get("V2_CONFIG"),
+        )
+        return jsonify(_strip_raw_psid(payload)), 200
 
     # -----------------------------------------------------------------
     # LINE admin entrypoint

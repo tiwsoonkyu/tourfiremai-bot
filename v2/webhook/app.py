@@ -38,6 +38,7 @@ from ..lib.cache import make_redis
 from ..lib.db import make_supabase_from_config
 from ..lib.intent import classify
 from ..lib.source_attribution import extract_source
+from .test_mode_gate import should_process_inbound
 from ..lib.state_machine import (
     State, StateContext, transition, allowed_tools, is_silent_state,
 )
@@ -49,7 +50,8 @@ logger = logging.getLogger("v2.webhook")
 
 def create_app(*, test_config=None, test_supabase=None, test_redis=None,
                 test_admin_allow_list=None, test_admin_token=None,
-                test_memory=None) -> Flask:
+                test_memory=None, test_admin_only_mode=None,
+                test_admin_test_psids=None) -> Flask:
     """
     Flask app factory. test_config + injected dependencies for unit tests.
 
@@ -58,6 +60,10 @@ def create_app(*, test_config=None, test_supabase=None, test_redis=None,
     setting environment variables. In production these read from
     `V2_STAGING_LINE_ADMIN_ALLOW_LIST` and `V2_STAGING_DASHBOARD_TOKEN`
     via the helper functions in `v2.webhook.admin_routes`.
+
+    test_admin_only_mode / test_admin_test_psids are Sprint 5 Package D
+    hooks for admin-only real-chat readiness. They are intentionally
+    config-only and never enable outbound customer replies.
     """
     app = Flask(__name__)
     app.url_map.strict_slashes = False
@@ -79,6 +85,10 @@ def create_app(*, test_config=None, test_supabase=None, test_redis=None,
     app.config["V2_MEMORY"] = test_memory
     app.config["V2_ADMIN_ALLOW_LIST"] = test_admin_allow_list
     app.config["V2_ADMIN_TOKEN"] = test_admin_token
+    if test_admin_only_mode is not None:
+        app.config["V2_ADMIN_ONLY_TEST_MODE"] = test_admin_only_mode
+    if test_admin_test_psids is not None:
+        app.config["V2_ADMIN_TEST_PSID_ALLOW_LIST"] = test_admin_test_psids
 
     _register_routes(app)
 
@@ -424,9 +434,20 @@ def _register_routes(app: Flask) -> None:
         # 3) For each entry → each messaging event
         redis_ = app.config["V2_REDIS"]
         scheduled = 0
+        filtered = 0
 
         for entry in body.get("entry", []):
             for ev in entry.get("messaging", []):
+                psid = ((ev.get("sender") or {}).get("id"))
+                gate = should_process_inbound(psid, config=app.config)
+                if not gate.allowed:
+                    filtered += 1
+                    logger.info(
+                        "admin-only gate filtered inbound psid=%s reason=%s",
+                        gate.psid_masked, gate.reason,
+                    )
+                    continue
+
                 identity = idempotency.build_meta_message_id(ev, platform="fb")
                 dup_result = idempotency.check_duplicate_event(redis_, identity.full_id)
                 if dup_result.is_duplicate:
@@ -443,7 +464,11 @@ def _register_routes(app: Flask) -> None:
                 thread.start()
                 scheduled += 1
 
-        return jsonify({"status": "accepted", "scheduled": scheduled}), 200
+        return jsonify({
+            "status": "accepted",
+            "scheduled": scheduled,
+            "filtered": filtered,
+        }), 200
 
     @app.errorhandler(Exception)
     def _on_error(e):
