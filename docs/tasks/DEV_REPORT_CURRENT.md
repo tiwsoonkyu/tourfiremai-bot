@@ -1,230 +1,224 @@
-# DEV REPORT — DEV-2026-05-19-008
+# DEV REPORT — DEV-2026-05-19-009
 
 ## Status
 READY_FOR_QA
 
 ## Task
-Sprint 5 Package B — Source Attribution + LINE Admin Safety + Dashboard Read API v0.
+Sprint 5 Package C — Runtime wiring for source attribution, LINE admin, and dashboard read API.
 
-## Summary
+## Scope Implemented
 
-Implemented the three pieces of Sprint 5 Package B as one integration package:
+1. **Meta webhook source-attribution seam** — `v2/webhook/app.py` now
+   calls `extract_source(event, supabase)` for every accepted messaging
+   event and persists the result as a `conversation_events` row with
+   `event_type='source_attribution'`. Webhook stays silent-ingest (no
+   outbound reply). Unverified attacker post ids are dropped at the
+   boundary (validated DB-side against `page_posts`). The recorded
+   attribution can be replayed into the orchestrator by a future caller —
+   a test in `test_webhook_source_attribution.py` proves this end-to-end
+   path blocks a sold-out post.
 
-1. **Source Attribution Adapter** (`v2/lib/source_attribution.py`) — a
-   deterministic, no-Graph-API layer that inspects a Messenger / IG / LINE
-   webhook event and decides whether the conversation came from
-   `page_post`, `ad`, `organic`, or `unknown`. Validation of `post_id`
-   happens DB-side via `page_post_context._page_post_row`, so an attacker-
-   typed string cannot become a trusted page-post reference.
-   `SourceAttribution.to_orchestrator_kwargs()` returns the exact kwargs
-   `Orchestrator.handle_turn(..., source_post_id=..., source_type=...,
-   source_platform=...)` already accepts (added in DEV-007).
+2. **LINE admin runtime entrypoint** — new `v2/webhook/admin_routes.py`
+   adds `POST /admin/line`. Accepts JSON `{sender_id, text}`, dispatches
+   through `LineAdminAdapter` (allow-list gated), returns the
+   `AdminCommandResult` as JSON. No live LINE Messaging API call. Raw
+   PSIDs scrubbed from every response via `_strip_raw_psid`. Oversize
+   body rejected with 413.
 
-2. **LINE Admin Allow-List Adapter** (`v2/lib/line_admin_adapter.py`) — a
-   sender-id allow-list gate placed BEFORE `admin_command_handler`. Empty
-   / missing / non-allowlisted senders never reach the parser, so denied
-   commands have zero side effects. Supports
-   `V2_STAGING_LINE_ADMIN_ALLOW_LIST` (comma / space / semicolon
-   separated) with `V2_STAGING_LINE_ADMIN_USER_OR_GROUP_ID` as a single-
-   admin fallback. Allow-list is injectable for tests
-   (`AdminAllowList.from_iterable([...])`).
+3. **Dashboard read HTTP shim v0** — same module adds:
+   - `GET /admin/dashboard/cases` (with `?only_paused=1`, `?limit=N`)
+   - `GET /admin/dashboard/cases/<id>` (with `?by=psid|conversation_id`)
+   - `GET /admin/dashboard/posts`
+   - `GET /admin/dashboard/handoffs`
+   - `GET /admin/healthz`
 
-3. **Dashboard-Safe Read API v0** (`v2/lib/admin_dashboard_api.py`) — a
-   service layer (not a Flask app) that exposes `list_cases`,
-   `get_case`, `list_recent_posts`, `list_open_handoffs`. Every call
-   requires an `AdminContext(allowed=True)` or is denied. All payloads
-   are re-scrubbed for wholesale brand names, masked PSIDs, and capped
-   titles (no raw captions, no raw conversation history, no secrets).
+   Gated by `X-Admin-Token` header compared in constant time
+   (`hmac.compare_digest`) against `app.config["V2_ADMIN_TOKEN"]`. Token
+   is test-injected; in production it reads
+   `V2_STAGING_DASHBOARD_TOKEN` via `_admin_token_from_config`. All
+   payloads pass through `_strip_raw_psid` as a defensive top-level
+   safety net.
 
 ## Files Changed
 
 ```
-v2/lib/source_attribution.py          (new)  367 lines
-v2/lib/line_admin_adapter.py          (new)  276 lines
-v2/lib/admin_dashboard_api.py         (new)  319 lines
-v2/tests/test_source_attribution.py             (new)  213 lines
-v2/tests/test_source_attribution_integration.py (new)  167 lines
-v2/tests/test_line_admin_adapter.py             (new)  225 lines
-v2/tests/test_admin_dashboard_api.py            (new)  239 lines
+v2/webhook/app.py                              (modified, +82 lines)
+v2/webhook/admin_routes.py                     (new, ~260 lines)
+v2/tests/test_webhook_source_attribution.py    (new, ~270 lines)
+v2/tests/test_line_admin_runtime.py            (new, ~220 lines)
+v2/tests/test_admin_dashboard_runtime.py       (new, ~250 lines)
+docs/tasks/DEV_REPORT_CURRENT.md               (this report)
+docs/tasks/AGENT_STATUS.json                   (status flip to READY_FOR_QA)
 ```
 
-No existing files modified.
-No migrations added.
-No V1 files touched.
-No `Make.com` blueprints touched.
-No production webhook code modified.
+No V1 files touched. No migrations added. No production webhook
+settings changed (the new `/admin/*` routes are additive and read-only
+modulo `LineAdminAdapter`'s own admin-gated mutations, which already
+existed in DEV-008 and run against the same Supabase as before).
 
-## Implementation Details
+## Runtime Wiring Design
 
-### Source attribution adapter
+### Source attribution seam (silent-ingest)
 
-Resolution order inside `extract_source(event, supabase)`:
+```
+Meta POST /webhook
+    │
+    ├── signature verify
+    ├── per-event idempotency
+    └── background thread → _process_event(event, full_message_id, trace_id)
+            │
+            ├── (existing) per-PSID lock + customer + conversation rows
+            ├── (existing) intent classify + state-machine transition
+            ├── (existing) inbound conversation_turns insert
+            ├── (existing) state_change conversation_events row
+            └── (new)   _record_source_attribution(event, ...)
+                        │
+                        ├── extract_source(event, supabase)
+                        │   → validates `post_id` against page_posts
+                        └── conversation_events.insert({
+                              event_type='source_attribution',
+                              event_data={source_type, source_post_id,
+                                         source_platform, page_post_id,
+                                         page_post_validated, raw_ref},
+                              triggered_by='system',
+                              meta_message_id=None  # avoid unique index
+                                                   # collision with the
+                                                   # state_change row
+                            })
+```
 
-1. Explicit caller `source_type` wins if it is one of
-   `{page_post, ad, organic, unknown}`. If caller said `page_post` but the
-   post id cannot be validated against `page_posts`, downgrade to
-   `unknown` so we never claim provenance we did not earn.
-2. If a candidate `post_id` is extracted from
-   `message.reply_to.story.id` / `.story_id`,
-   `postback.payload` starting `POST:`,
-   `referral.ref` starting `POST:`,
-   `entry.changes.value.post_id`, or top-level `source_post_id`, look it
-   up in `page_posts`. A match → `page_post`. A miss → fall through.
-3. Ad signals (`referral.source IN {ADS, CTM_ADS, IG_CTM_ADS,
-   FACEBOOK_ADS}`, `referral.ad_id`, `postback.payload` starting `AD:`)
-   → `ad`.
-4. Any other normal messaging shape (sender / message / postback /
-   referral present) → `organic`.
-5. Otherwise → `unknown`.
+The orchestrator is **not** invoked from the webhook in this sprint.
+The seam exists so that a future task can flip on orchestrator
+invocation by reading the recorded source attribution and passing
+`kwargs` through to `Orchestrator.handle_turn(..., source_post_id=...,
+source_type=..., source_platform=...)`. The
+`test_recorded_attribution_blocks_via_orchestrator` test proves this
+replay works.
 
-`SourceAttribution.to_orchestrator_kwargs()` drops the `source_post_id`
-at the boundary unless `page_post_validated=True`, which is the
-invariant the orchestrator's planner relies on (the
-`page_post_context.is_candidate_blocked` post-scope check trusts the
-`source_post_id` it is given).
+### LINE admin route
 
-Platform inference: `facebook` (default) / `instagram` / `line` from
-event `platform` / `object` / `source` fields. Caption text is never
-read by this adapter — only ids and source tokens.
+```
+POST /admin/line
+  body: {"sender_id": "<line_uid>", "text": "<command>"}
+    │
+    ├── size cap 4 KB → 413 body_too_large
+    ├── JSON parse  → 400 invalid_json on failure
+    ├── LineAdminAdapter.handle(sender_id, text)
+    │     ├── normalise sender, reject whitespace / oversize
+    │     ├── allow-list membership check (constant-time-ish via
+    │     │   frozenset O(1))
+    │     ├── on denial: return AdminCommandResult(ok=False,
+    │     │   action='denied', error='missing_sender'|'empty_allow_list'
+    │     │   |'not_allowed')  — NO side effects, NO command parse
+    │     └── on allow: dispatch via existing admin_command_handler
+    └── _strip_raw_psid(result.to_dict()) → JSON 200
+```
 
-Hard caps: `MAX_REF_ID_LEN=200`; whitespace/control-chars rejected;
-never raises (returns `unknown` on any internal error).
+### Dashboard shim
 
-### LINE admin allow-list adapter
-
-`AdminAllowList` is a frozen dataclass wrapping a `frozenset` of sender
-ids. Construction normalises and rejects empty / whitespace-bearing /
-oversize ids. `from_env` reads `V2_STAGING_LINE_ADMIN_ALLOW_LIST` first
-(comma / space / semicolon separated), then falls back to
-`V2_STAGING_LINE_ADMIN_USER_OR_GROUP_ID`. `to_dict()` only returns the
-allowed count — never the raw ids.
-
-`LineAdminAdapter.handle(sender_id, text, memory=None)`:
-
-- Missing / malformed sender → `AdminCommandResult(ok=False, action='denied',
-  error='missing_sender', mutated=False)`.
-- Empty allow-list → `error='empty_allow_list'`.
-- Sender not in allow-list → `error='not_allowed'`.
-- Authorised → forwards to `admin_command_handler.handle_admin_command`
-  with `admin_user_id = normalised_sender_id` so audit logs in
-  `admin_ops.pause_bot_for_customer` record the actual caller.
-
-Denials do NOT echo the original command text (no reflection of attacker
-content) and do NOT leak allow-list membership.
-
-### Dashboard-safe read API v0
-
-`AdminContext(admin_user_id, allowed, source)` is the auth carrier.
-`to_dict()` never includes the raw `admin_user_id` — only its
-truthiness.
-
-`AdminDashboardAPI`:
-
-- `_gate(context)` denies missing or `allowed=False` contexts before any
-  work is done.
-- `list_cases`: caps `limit` at `_HARD_LIST_LIMIT=100`; defaults 20;
-  delegates to `admin_ops.list_admin_cases` and re-projects each
-  `AdminCaseSummary` via `_serialise_case` which re-scrubs wholesale
-  brand names defensively.
-- `get_case`: psid OR conversation_id; returns case_not_found cleanly.
-- `list_recent_posts`: never returns `caption_text`; titles capped at
-  `page_post_context.CONTEXT_TITLE_MAX_CHARS`.
-- `list_open_handoffs`: masked PSIDs only; trigger detail summarised.
+```
+GET /admin/dashboard/*
+  header X-Admin-Token: <token>
+    │
+    ├── _admin_token_from_config(app)  → 500 admin_token_not_configured
+    │                                     when token absent
+    ├── hmac.compare_digest(token, expected)
+    │   → 401 missing_admin_token | invalid_admin_token
+    ├── AdminContext(allowed=True, source='web')
+    ├── AdminDashboardAPI.<list_cases|get_case|list_recent_posts|
+    │                     list_open_handoffs>(...)
+    │   (re-scrubs wholesale tokens, caps title, masks PSID)
+    └── _strip_raw_psid(payload) → JSON 200
+```
 
 ## Tests Run
 
-- Targeted: `pytest v2/tests/test_source_attribution.py
-  v2/tests/test_line_admin_adapter.py
-  v2/tests/test_admin_dashboard_api.py
-  v2/tests/test_source_attribution_integration.py` —
-  **46 passed / 0 failed**.
+- Targeted suite (the 8 files most likely to touch new code):
+
+  ```
+  pytest v2/tests/test_webhook.py
+         v2/tests/test_source_attribution.py
+         v2/tests/test_source_attribution_integration.py
+         v2/tests/test_line_admin_adapter.py
+         v2/tests/test_admin_dashboard_api.py
+         v2/tests/test_webhook_source_attribution.py
+         v2/tests/test_line_admin_runtime.py
+         v2/tests/test_admin_dashboard_runtime.py
+  ```
+  → **77 passed / 0 failed**.
 
 - Broad non-live V2 suite:
-  `pytest v2/tests/ --ignore=v2/tests/test_integration_staging.py
-  --ignore=v2/tests/test_live_openai_health.py
-  --ignore=v2/tests/test_phase2_live_followup.py` —
-  **638 passed / 0 failed** (was 608 pre-change; +30 unique test files
-  collected, 46 net new test cases including subtests).
 
-- Live tests intentionally NOT exercised (staging Supabase /
-  OpenAI / Phase 2 live followup) per task hard rules and per current
-  shell lacking staging credentials.
+  ```
+  pytest v2/tests/ \
+    --ignore=v2/tests/test_integration_staging.py \
+    --ignore=v2/tests/test_live_openai_health.py \
+    --ignore=v2/tests/test_phase2_live_followup.py \
+    -p no:cacheprovider -q
+  ```
+  → **662 passed / 0 failed** (was 638 pre-change; +24 new test
+  cases).
 
-## Scope/Safety Verification
+- Live staging Supabase / OpenAI / Phase 2 live followup intentionally
+  NOT exercised per task hard rules.
 
-- No V1 files modified (`grep -L` over `app.py`,
-  `app_patched_*`, V1 paths). No Make.com blueprint changes.
-- No migrations added under `v2/supabase/migrations/`.
-- No production webhook code modified.
-- No live Meta / FB / Instagram / LINE / OpenAI / OCR / paid-provider
-  calls anywhere in new code or tests — verified by inspection (no
-  `requests.post`, no `openai.*`, no `line_bot_sdk` usage).
-- No secret patterns in new files (grep for
-  `sk-|ghp_|EAAB|ya29|AKIA|password|secret_key`).
-- No raw PSID strings, captions, tokens, or wholesale partner names in
-  any returned payload from `AdminDashboardAPI` or
-  `LineAdminAdapter` — covered by tests
-  `test_returns_compact_summary_with_masked_psid`,
-  `test_no_raw_caption_only_title`,
-  `test_non_allowlisted_is_denied_with_no_side_effects`.
-- `SourceAttribution.to_orchestrator_kwargs()` drops `source_post_id`
-  unless validated — covered by
-  `test_unverified_post_id_downgraded_to_unknown` and
-  `test_orchestrator_kwargs_drops_unverified`.
+## Safety Checks
 
-## Risks / Notes
+- **V1**: untouched (`grep -L` over `app.py`, `app_patched_*`,
+  `webhook_proxy.py`, V1 paths).
+- **Make.com**: no blueprint changes.
+- **Production webhook settings**: no change. Meta verification handshake
+  + signature behaviour identical.
+- **Migrations**: none added.
+- **Secrets**: no `sk-`, `ghp_`, `EAAB`, `ya29`, `AKIA` patterns in any
+  new file. Admin token is injected at test time and read at runtime
+  from `V2_STAGING_DASHBOARD_TOKEN` via `os.environ.get` — never logged
+  and never returned in any response body.
+- **Live API calls**: no `requests.post`, `openai.*`, `line_bot_api`,
+  or any other paid-provider import in new code or tests.
+- **Raw PSID leakage**: every JSON response from `/admin/*` is walked
+  by `_strip_raw_psid` to drop any top-level `psid` key. The masked
+  variant `psid_masked` is preserved. Verified by
+  `test_authorized_cases_command`, `test_get_case_by_psid`,
+  `test_list_open_handoffs_masks_psid`.
+- **Wholesale partner names**: still scrubbed by
+  `_WHOLESALE_BLACKLIST` via `admin_ops` / `page_post_context` upstream;
+  the shim does not introduce a new free-text concatenation path.
+- **Caption text**: never returned by `/admin/dashboard/posts` (verified
+  by `test_list_recent_posts_caps_title_and_drops_caption`).
+- **Body size**: `POST /admin/line` rejects >4 KB at the boundary.
+- **Constant-time auth**: dashboard token compared via
+  `hmac.compare_digest`.
+- **Idempotency**: source-attribution conversation_events row inserted
+  with `meta_message_id=None` so the unique partial index
+  `(platform, meta_message_id) WHERE meta_message_id IS NOT NULL` does
+  NOT collide with the existing state_change row that owns
+  the inbound message id.
 
-- The webhook (`v2/webhook/app.py`) does NOT yet call
-  `extract_source` or invoke the orchestrator — Sprint 2 webhook
-  remains the silent-ingest shape. Wiring the adapter into the live
-  webhook path is the natural next Codex/Tiw decision (see Next Step).
-  The orchestrator already accepts the kwargs, so the wiring is one
-  line at the right place.
-- `AdminAllowList.from_env` reads `V2_STAGING_*` env vars; it is safe
-  to call but must NOT be called inside test bodies (tests use
-  `AdminAllowList.from_iterable([...])` to avoid leaking real env).
-- The new `LineAdminAdapter` does NOT itself send a LINE reply. It
-  returns an `AdminCommandResult` whose `admin_text` is a Thai
-  admin-facing string. A future LINE-OA webhook will be responsible
-  for calling the LINE Messaging API to deliver `admin_text`.
-- The dashboard API is a service layer only — no HTTP shim is included.
-  A later sprint can add a Flask blueprint or another framework on top
-  without changing the safety contract here.
+## Known Gaps / Next Recommended Action
 
-## QA Checklist
+1. **Orchestrator-from-webhook invocation is NOT yet enabled.** The
+   recorded source attribution is the seam; a future task can flip a
+   feature flag (or replace `_process_event`'s body) to call
+   `Orchestrator.handle_turn(**kwargs)` from the inbound path. Test
+   `test_recorded_attribution_blocks_via_orchestrator` proves the
+   replay works end-to-end.
+2. **LINE webhook signature verification not wired here.** The
+   `/admin/line` route accepts a plain JSON body for now. A future task
+   should wrap it with LINE's `X-Line-Signature` HMAC check before
+   exposing the route to the public LINE webhook.
+3. **Dashboard auth is a static token.** Acceptable for staging. A
+   future task can swap to OAuth / Supabase RLS without changing the
+   service contract `AdminDashboardAPI` exposes.
+4. **Per-route logging** redacts sender ids via `_mask_sender`; admin
+   token never appears in logs. Worth a separate observability sweep
+   if needed.
+5. **DLQ behaviour** is unchanged. The new source-attribution row is
+   inside the same `try` block as the rest of `_process_event`; if its
+   insert fails it logs and continues without re-raising, so it cannot
+   itself escalate to DLQ.
 
-QA reviewer should confirm:
+## Stop Condition
 
-1. `extract_source(event, supabase)` returns deterministic
-   `SourceAttribution` for the four supported types and never returns a
-   page-post type for an unvalidated post id.
-2. `SourceAttribution.to_orchestrator_kwargs()` matches the kwarg
-   signature of `Orchestrator.handle_turn`.
-3. `LineAdminAdapter.handle(...)` rejects non-allowlisted senders with
-   no DB row inserted (check `bot_pauses`, `handoffs`,
-   `tour_availability_overrides`).
-4. `AdminDashboardAPI` methods all gate on `AdminContext.allowed`.
-5. Returned payloads never contain raw PSID, raw caption, wholesale
-   partner names, or secret patterns.
-6. Broad non-live V2 suite still 638 passed.
-7. No existing tests broken (run targeted set:
-   `test_orchestrator_planning.py`, `test_admin_command_handler.py`,
-   `test_page_post_wiring.py`).
+Dev work complete. Awaiting QA / Codex review.
 
-## Next Step
-
-Codex should:
-
-1. Review this Dev report + Diff for safety.
-2. Decide whether to:
-   - Open DEV-2026-05-19-009 to wire `extract_source` into the
-     production webhook (`v2/webhook/app.py`) and call
-     `Orchestrator.handle_turn(**attr.to_orchestrator_kwargs(), ...)`
-     from the inbound event path, OR
-   - Schedule the LINE-OA webhook adapter task that consumes
-     `LineAdminAdapter.handle(...)` and sends `admin_text` back to the
-     LINE Messaging API, OR
-   - Schedule the HTTP shim (Flask or similar) that exposes
-     `AdminDashboardAPI` as a guarded endpoint to the future admin
-     dashboard.
-3. Author QA-2026-05-19-008 task content to direct the QA pass.

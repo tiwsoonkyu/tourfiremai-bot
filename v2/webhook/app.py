@@ -37,6 +37,7 @@ from ..lib import idempotency, redactor
 from ..lib.cache import make_redis
 from ..lib.db import make_supabase_from_config
 from ..lib.intent import classify
+from ..lib.source_attribution import extract_source
 from ..lib.state_machine import (
     State, StateContext, transition, allowed_tools, is_silent_state,
 )
@@ -46,9 +47,17 @@ logger = logging.getLogger("v2.webhook")
 
 # --- App factory --------------------------------------------------------------
 
-def create_app(*, test_config=None, test_supabase=None, test_redis=None) -> Flask:
+def create_app(*, test_config=None, test_supabase=None, test_redis=None,
+                test_admin_allow_list=None, test_admin_token=None,
+                test_memory=None) -> Flask:
     """
     Flask app factory. test_config + injected dependencies for unit tests.
+
+    test_admin_allow_list / test_admin_token are Sprint 5 Package C hooks
+    so the admin runtime routes can be exercised under tests without
+    setting environment variables. In production these read from
+    `V2_STAGING_LINE_ADMIN_ALLOW_LIST` and `V2_STAGING_DASHBOARD_TOKEN`
+    via the helper functions in `v2.webhook.admin_routes`.
     """
     app = Flask(__name__)
     app.url_map.strict_slashes = False
@@ -67,8 +76,18 @@ def create_app(*, test_config=None, test_supabase=None, test_redis=None) -> Flas
     app.config["V2_CONFIG"] = config
     app.config["V2_REDIS"] = redis
     app.config["V2_SUPABASE"] = supabase
+    app.config["V2_MEMORY"] = test_memory
+    app.config["V2_ADMIN_ALLOW_LIST"] = test_admin_allow_list
+    app.config["V2_ADMIN_TOKEN"] = test_admin_token
 
     _register_routes(app)
+
+    # Sprint 5 Package C admin runtime — lazy import so the webhook module
+    # remains usable without the admin routes for callers that only want
+    # the Meta webhook surface.
+    from .admin_routes import register_admin_routes
+    register_admin_routes(app)
+
     return app
 
 
@@ -161,6 +180,57 @@ def _increment_turn_counter(supabase, conversation_id: str) -> int:
     return int(max_n) + 1
 
 
+def _record_source_attribution(supabase, *, conversation_id, psid, event,
+                                trace_id):
+    """
+    Record a deterministic source-attribution row on `conversation_events`
+    so a future orchestrator caller can read back what source this turn
+    came from. Silent-ingest by design — no outbound reply is produced
+    here. Returns the SourceAttribution that was recorded (or None on
+    parse failure / lookup error).
+
+    The row stores:
+        event_type      = "source_attribution"
+        event_data      = {source_type, source_post_id, source_platform,
+                           page_post_id, page_post_validated, raw_ref}
+        triggered_by    = "system"
+        meta_message_id = None     (avoid the (platform, meta_message_id)
+                                    unique index — the state_change row
+                                    already owns that key)
+    """
+    try:
+        attr = extract_source(event, supabase)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("[%s] source_attribution extract failed: %s", trace_id, e)
+        return None
+    try:
+        supabase.table("conversation_events").insert({
+            "id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "psid": psid,
+            "event_type": "source_attribution",
+            "event_data": {
+                "source_type": attr.source_type,
+                "source_post_id": (
+                    attr.source_post_id if attr.page_post_validated else None
+                ),
+                "source_platform": attr.source_platform,
+                "page_post_id": attr.page_post_id,
+                "page_post_validated": bool(attr.page_post_validated),
+                "raw_ref": attr.raw_ref,
+            },
+            "triggered_by": "system",
+            "meta_message_id": None,
+            "platform": (
+                "line" if attr.source_platform == "line"
+                else ("fb" if attr.source_platform == "facebook" else "fb")
+            ),
+        })
+    except Exception as e:
+        logger.warning("[%s] source_attribution persist failed: %s", trace_id, e)
+    return attr
+
+
 def _process_event(app, event: dict, full_message_id: str, trace_id: str) -> None:
     """Background work after webhook ack. Persists turn + computes state transition."""
     supabase = app.config["V2_SUPABASE"]
@@ -239,11 +309,21 @@ def _process_event(app, event: dict, full_message_id: str, trace_id: str) -> Non
                 "platform": "fb",
             })
 
+        # Sprint 5 Package C — source attribution seam (silent-ingest).
+        # Records what source this turn came from so a future orchestrator
+        # caller can read it back from `conversation_events`. Never raises.
+        attr = _record_source_attribution(
+            supabase, conversation_id=conv["id"], psid=psid,
+            event=event, trace_id=trace_id,
+        )
+
         logger.info(
-            "[%s] PSID=%s state=%s→%s intent=%s reason=%s tools=%s",
+            "[%s] PSID=%s state=%s→%s intent=%s reason=%s tools=%s src=%s post=%s",
             trace_id, redactor.mask_psid(psid),
             state_before.value, state_after.value,
             intent_obj.type, result.reason, result.tool_hints,
+            (attr.source_type if attr else "unknown"),
+            (attr.source_post_id if attr and attr.page_post_validated else None),
         )
 
     except Exception as e:
