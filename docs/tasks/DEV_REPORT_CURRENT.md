@@ -1,246 +1,231 @@
-# Dev Report — `DEV-2026-05-19-007` Page Post Intelligence Wiring into Admin Commands + Response Planning + Orchestrator
+# DEV REPORT — DEV-2026-05-19-008
 
-**Status:** `READY_FOR_QA`
-**Verdict recommendation to QA:** `GO`
-**Author:** Claude Cowork Dev (Sprint 4 follow-up; second pass — orchestrator wire-up)
-**Date:** 2026-05-19
-**Branch (intended):** `v2/s4-followup-vision-ondemand`
-**Spend this session:** `$0.00` — no live Meta/FB, no live LINE, no live OpenAI/OCR, no paid provider, no deploy, no Supabase access.
+## Status
+READY_FOR_QA
 
-## 1. Status
+## Task
+Sprint 5 Package B — Source Attribution + LINE Admin Safety + Dashboard Read API v0.
 
-`READY_FOR_QA`. Wiring of the Page Post Intelligence foundation
-(`DEV-2026-05-19-006`) into the deterministic admin command core, the
-response-writer planning layer, AND the orchestrator is complete and fully
-unit-tested with in-memory fakes. Every hard rule in
-`docs/tasks/CURRENT_DEV_TASK.md` and `docs/AI_COMMAND_CENTER.md` is
-respected:
+## Summary
 
-- No V1, no Make.com, no production webhook, no deploy.
-- No live Meta/FB, LINE, OpenAI, OCR, or Supabase paid-provider calls.
-- No secrets touched, no wholesale partner names leaked.
-- Migration 020 was **not** re-applied — Codex's operational note (Supabase
-  connector requires re-auth, no local staging creds) is honoured. All
-  testing uses the in-memory Supabase fake from `v2/tests/conftest.py`.
+Implemented the three pieces of Sprint 5 Package B as one integration package:
 
-The first pass of this task wired the admin command handler and the
-response_writer's optional `planning` kwarg (already reported above on
-2026-05-19, branch `v2/s4-followup-vision-ondemand`). It explicitly
-deferred the orchestrator wire-up. This second pass closes that gap so
-the planning bundle is now constructed inside `Orchestrator.handle_turn`
-and passed to `write_response` on every live turn.
+1. **Source Attribution Adapter** (`v2/lib/source_attribution.py`) — a
+   deterministic, no-Graph-API layer that inspects a Messenger / IG / LINE
+   webhook event and decides whether the conversation came from
+   `page_post`, `ad`, `organic`, or `unknown`. Validation of `post_id`
+   happens DB-side via `page_post_context._page_post_row`, so an attacker-
+   typed string cannot become a trusted page-post reference.
+   `SourceAttribution.to_orchestrator_kwargs()` returns the exact kwargs
+   `Orchestrator.handle_turn(..., source_post_id=..., source_type=...,
+   source_platform=...)` already accepts (added in DEV-007).
 
-## 2. Files Changed
+2. **LINE Admin Allow-List Adapter** (`v2/lib/line_admin_adapter.py`) — a
+   sender-id allow-list gate placed BEFORE `admin_command_handler`. Empty
+   / missing / non-allowlisted senders never reach the parser, so denied
+   commands have zero side effects. Supports
+   `V2_STAGING_LINE_ADMIN_ALLOW_LIST` (comma / space / semicolon
+   separated) with `V2_STAGING_LINE_ADMIN_USER_OR_GROUP_ID` as a single-
+   admin fallback. Allow-list is injectable for tests
+   (`AdminAllowList.from_iterable([...])`).
 
-Edited V2 code (this pass):
+3. **Dashboard-Safe Read API v0** (`v2/lib/admin_dashboard_api.py`) — a
+   service layer (not a Flask app) that exposes `list_cases`,
+   `get_case`, `list_recent_posts`, `list_open_handoffs`. Every call
+   requires an `AdminContext(allowed=True)` or is denied. All payloads
+   are re-scrubbed for wholesale brand names, masked PSIDs, and capped
+   titles (no raw captions, no raw conversation history, no secrets).
 
-- `v2/lib/orchestrator.py` — wired `_build_planning_context` and the
-  candidate resolver `_resolve_planning_candidate` into `handle_turn`.
-  `write_response(...)` is now called with `planning=planning` on every
-  non-silent turn. Added optional `source_post_id`, `source_type`, and
-  `source_platform` kwargs to `handle_turn` so future webhook source-
-  attribution work can pass them straight through.
-
-New test file (this pass):
-
-- `v2/tests/test_orchestrator_planning.py` — 4 orchestrator-level tests
-  (TestOrchestratorBlocksFullCandidate, TestOrchestratorAllowsUnblockedCandidate,
-  TestOrchestratorPlanningOptional) covering tour-scope block, post-scope
-  block via `source_post_id`, unblocked LLM path with compact note
-  injection, and graceful no-op when no candidate/source is in scope.
-
-Already in the first pass of this task (unchanged here):
-
-- `v2/lib/admin_command_handler.py` — `posts`, `post <post_id>`,
-  `mark_full`, `mark_sold_out`, `clear_full`, `clear_sold_out` commands +
-  the conservative `_resolve_page_post_target` classifier.
-- `v2/lib/response_writer.py` — optional `planning=None` kwarg,
-  deterministic short-circuit before the LLM when
-  `planning.replacement_needed=True`, compact `page_post_planning_note`
-  injected when not blocked, `CANNED_BLOCKED_REPLACEMENT` constant.
-- `v2/tests/test_page_post_wiring.py` — 18 unit tests covering the
-  admin commands and the response-writer planning layer.
-
-No new migration was added in this task — migration 020 from
-`DEV-2026-05-19-006` is the storage source of truth.
-
-`docs/tasks/DEV_REPORT_CURRENT.md` and `docs/tasks/AGENT_STATUS.json` are
-written/updated by this report.
-
-## 3. Root Cause / Business Need
-
-The Page Post Intelligence + Sold-Out Signal foundation existed only as a
-service module after `DEV-2026-05-19-006`. The first pass of this task
-wired the foundation into the admin command core and into
-`response_writer.write_response` via an optional `planning` kwarg, but
-the orchestrator (which is what actually drives every customer turn) was
-still calling `write_response(..., planning=None)`. That meant the
-deterministic block decision was implemented but never reached the
-live response path — a customer asking about a tour an admin had marked
-`full` would still get an LLM-written recommendation.
-
-This second pass closes that gap. The orchestrator now resolves the
-candidate tour (locked → fetched detail → memory → top-of-search), calls
-`build_response_planning_context(...)`, and passes the resulting bundle
-to `write_response(...)`. The response writer's existing short-circuit
-takes care of the rest: if `replacement_needed=True`, the LLM is bypassed
-entirely and a deterministic Thai safe reason is returned; otherwise a
-compact `page_post_planning_note` is injected into the LLM payload.
-
-The V2 design rule that "the LLM is never the source of truth" is
-preserved end-to-end now: the page-post block decision is made by Python
-code in the orchestrator → planner → response writer chain, and the LLM
-is bypassed when blocked.
-
-## 4. Summary of Changes
-
-### `v2/lib/orchestrator.py`
-
-- `handle_turn(...)` gains three optional kwargs:
-  `source_post_id`, `source_type`, `source_platform="facebook"`. None are
-  required; existing callers (tests, future webhook adapter) keep working
-  without changes.
-- New step 9.5 between state-commit and `write_response` builds the
-  `PlanningContext`. The build is wrapped in a try/except — any failure
-  logs a warning and falls back to `planning=None` so the orchestrator
-  keeps producing a reply.
-- `write_response(...)` is now called with `planning=planning`.
-- New helper `_resolve_planning_candidate(psid, conv, accumulated)` picks
-  the candidate tour in priority order:
-  1. Just-locked tour from `lock_selected_tour` tool output (most recent).
-  2. Just-fetched detail from `get_tour_detail` tool output.
-  3. Currently locked tour from memory (warm path).
-  4. Top-1 of fresh `search_tours` result.
-  Returns `(None, None, None)` if nothing applies — `build_response_planning_context`
-  still works and returns a no-op planner.
-- New helper `_build_planning_context(...)` wraps the lazy import of
-  `page_post_context.build_response_planning_context` and the try/except
-  so the public `handle_turn` body stays readable.
-
-### `v2/tests/test_orchestrator_planning.py`
-
-4 orchestrator-level tests across 3 classes:
-
-| Class | Coverage |
-|-------|----------|
-| `TestOrchestratorBlocksFullCandidate` | (a) Pre-seeded locked tour + admin `mark_full` → next turn returns deterministic `REASON_TOUR_FULL`; LLM `response` tier is **not** called. (b) Pre-seeded locked tour + admin `mark_full` on the source page post → next turn (with `source_post_id`) returns deterministic `REASON_POST_FULL`; LLM `response` tier is **not** called. |
-| `TestOrchestratorAllowsUnblockedCandidate` | No active override + seeded page post → next turn calls LLM `response` tier; compact `page_post_planning_note` is present in the user payload; the **long raw caption never leaks** into the payload. |
-| `TestOrchestratorPlanningOptional` | Greeting turn without candidate or source attribution → planner still builds successfully and orchestrator still replies via LLM. |
-
-The recording LLM (`_RecordingLLM`) only counts `tier="response"` calls,
-so any classification-tier inference made by the orchestrator does not
-interfere with the "LLM-was-not-called" assertion on the blocked path.
-
-## 5. Tests Run
-
-Targeted suite (this pass) — `pytest v2/tests/test_orchestrator_planning.py`:
+## Files Changed
 
 ```
-4 passed in 0.14s
+v2/lib/source_attribution.py          (new)  367 lines
+v2/lib/line_admin_adapter.py          (new)  276 lines
+v2/lib/admin_dashboard_api.py         (new)  319 lines
+v2/tests/test_source_attribution.py             (new)  213 lines
+v2/tests/test_source_attribution_integration.py (new)  167 lines
+v2/tests/test_line_admin_adapter.py             (new)  225 lines
+v2/tests/test_admin_dashboard_api.py            (new)  239 lines
 ```
 
-Combined targeted suite — `pytest v2/tests/test_page_post_wiring.py
-v2/tests/test_page_post_context.py v2/tests/test_admin_command_handler.py
-v2/tests/test_orchestrator.py v2/tests/test_orchestrator_planning.py
-v2/tests/test_response_writer.py`:
+No existing files modified.
+No migrations added.
+No V1 files touched.
+No `Make.com` blueprints touched.
+No production webhook code modified.
 
-```
-124 passed in 0.30s
-```
+## Implementation Details
 
-Broad non-live V2 suite — `pytest v2/tests/` excluding the two live
-suites (`test_integration_staging.py`, `test_live_openai_health.py`):
+### Source attribution adapter
 
-```
-601 passed, 7 skipped in 1.86s
-```
+Resolution order inside `extract_source(event, supabase)`:
 
-Total grew from 597 → 601 (+4 new orchestrator-planning tests). The 7
-skipped cases are the pre-existing `test_webhook.py` tests that require
-Flask (unrelated to this task). **No prior test broke.**
+1. Explicit caller `source_type` wins if it is one of
+   `{page_post, ad, organic, unknown}`. If caller said `page_post` but the
+   post id cannot be validated against `page_posts`, downgrade to
+   `unknown` so we never claim provenance we did not earn.
+2. If a candidate `post_id` is extracted from
+   `message.reply_to.story.id` / `.story_id`,
+   `postback.payload` starting `POST:`,
+   `referral.ref` starting `POST:`,
+   `entry.changes.value.post_id`, or top-level `source_post_id`, look it
+   up in `page_posts`. A match → `page_post`. A miss → fall through.
+3. Ad signals (`referral.source IN {ADS, CTM_ADS, IG_CTM_ADS,
+   FACEBOOK_ADS}`, `referral.ad_id`, `postback.payload` starting `AD:`)
+   → `ad`.
+4. Any other normal messaging shape (sender / message / postback /
+   referral present) → `organic`.
+5. Otherwise → `unknown`.
 
-## 6. Risks / Assumptions
+`SourceAttribution.to_orchestrator_kwargs()` drops the `source_post_id`
+at the boundary unless `page_post_validated=True`, which is the
+invariant the orchestrator's planner relies on (the
+`page_post_context.is_candidate_blocked` post-scope check trusts the
+`source_post_id` it is given).
 
-- The orchestrator now calls `build_response_planning_context` on every
-  non-silent turn. The function is cheap and deterministic (in-memory
-  filters over `page_posts`, `page_post_tour_links`,
-  `tour_availability_overrides`) so the per-turn cost is unchanged for
-  customers with no source attribution and trivially small in the common
-  case. The try/except wrapper guarantees a planner-build failure can
-  never break a turn — the bot falls back to the prior (pre-wired)
-  behaviour with `planning=None`.
-- `source_post_id` and `source_type` default to `None`. Until the future
-  webhook source-attribution task lands, the orchestrator only blocks
-  based on the candidate tour itself (tour-scope and departure-scope
-  overrides). Post-scope blocks only fire when a future caller passes
-  `source_post_id`. This is intentional and conservative.
-- `_resolve_planning_candidate` looks at the locked tour from memory
-  even when the current turn's tool list did not include
-  `lock_selected_tour`. This is the desired behaviour — once an admin
-  marks a previously-selected tour `full`, every subsequent customer
-  turn that references that tour is blocked, not just the turn that
-  re-locked it.
-- The Cowork sandbox's local Linux mount can lag OneDrive sync of edits
-  done via the Windows-path `Edit`/`Write` tools. During this pass the
-  orchestrator file was re-materialised through bash so the on-disk
-  content matches the Cowork file-tool view. The intended content is
-  what `Read` returns from
-  `C:\Users\supak\OneDrive\เอกสาร\Claude\Projects\สอนใช้งาน Claude Cowork\v2\lib\orchestrator.py`.
-  Python `ast.parse` on the on-disk file returns `OK`.
-- Git is not available inside the Cowork sandbox — the commit/push to
-  `v2/s4-followup-vision-ondemand` must be performed by Codex (or by Tiw
-  on the real repo clone). No secrets are present in any new/edited file.
+Platform inference: `facebook` (default) / `instagram` / `line` from
+event `platform` / `object` / `source` fields. Caption text is never
+read by this adapter — only ids and source tokens.
 
-## 7. What QA Should Verify
+Hard caps: `MAX_REF_ID_LEN=200`; whitespace/control-chars rejected;
+never raises (returns `unknown` on any internal error).
 
-1. `pytest v2/tests/test_orchestrator_planning.py` returns `4 passed`.
-2. `pytest v2/tests/test_page_post_wiring.py` returns `18 passed`.
-3. Broad `pytest v2/tests/` excluding the two live suites is
-   `601 passed, 7 skipped, 0 failed`. No previously-passing test
-   regressed.
-4. `v2/lib/orchestrator.py` — step 9.5 builds the planner BEFORE step 10
-   (`write_response`). Confirm that:
-   - On the blocked path, `tier="response"` LLM calls do not happen
-     (verified by `_RecordingLLM.response_calls == []`).
-   - On the unblocked path, the user payload sent to the LLM contains
-     `page_post_planning_note` (compact JSON) and never the raw caption.
-   - The try/except wrapper around the planner build keeps the
-     orchestrator alive on any planner failure.
-5. `v2/lib/response_writer.py` — default behaviour (`planning=None`)
-   remains identical to before. The step-2.5 short-circuit is unchanged
-   from the first pass.
-6. `v2/lib/admin_command_handler.py` — unchanged from the first pass.
-   The new admin commands (`posts`, `post`, `mark_full`, `mark_sold_out`,
-   `clear_full`, `clear_sold_out`) still parse and execute correctly
-   (covered by `test_page_post_wiring.py`).
-7. Leakage controls — no new env reads, no new HTTP calls, no wholesale
-   partner names anywhere in the new orchestrator code or in the new
-   test fixtures (grep
-   `(?i)\b(ttn|zego|formosa|i[-\s]?travel|rich\s+tour|best\s+tour)\b`
-   against `v2/lib/orchestrator.py` and
-   `v2/tests/test_orchestrator_planning.py` returns nothing).
-8. Operational safety: migration 020 is still NOT applied to staging.
-   QA should NOT attempt to apply it. The wiring is in code only.
+### LINE admin allow-list adapter
 
-## 8. Next Recommended Step
+`AdminAllowList` is a frozen dataclass wrapping a `frozenset` of sender
+ids. Construction normalises and rejects empty / whitespace-bearing /
+oversize ids. `from_env` reads `V2_STAGING_LINE_ADMIN_ALLOW_LIST` first
+(comma / space / semicolon separated), then falls back to
+`V2_STAGING_LINE_ADMIN_USER_OR_GROUP_ID`. `to_dict()` only returns the
+allowed count — never the raw ids.
 
-After QA `GO`:
+`LineAdminAdapter.handle(sender_id, text, memory=None)`:
 
-1. Apply migration 020 on staging once the Supabase connector is
-   re-authenticated and credentials are available in the Codex shell.
-2. Build the Meta webhook source-attribution layer so the webhook
-   adapter can call `Orchestrator.handle_turn(..., source_post_id=...,
-   source_type=...)`. The orchestrator already accepts those kwargs.
-3. Add a deterministic LINE adapter step that allow-lists admin user
-   IDs before forwarding any admin command, per the
-   `QA-2026-05-19-005` follow-up note.
-4. Once the dashboard auth story is decided, expose the same
-   `mark_/clear_/posts` operations behind admin auth.
+- Missing / malformed sender → `AdminCommandResult(ok=False, action='denied',
+  error='missing_sender', mutated=False)`.
+- Empty allow-list → `error='empty_allow_list'`.
+- Sender not in allow-list → `error='not_allowed'`.
+- Authorised → forwards to `admin_command_handler.handle_admin_command`
+  with `admin_user_id = normalised_sender_id` so audit logs in
+  `admin_ops.pause_bot_for_customer` record the actual caller.
 
-Each step above is intentionally scoped small to keep risk low and to
-let QA verify one behaviour change at a time, matching the
-`AGENT_WORKFLOW` gates.
+Denials do NOT echo the original command text (no reflection of attacker
+content) and do NOT leak allow-list membership.
 
----
+### Dashboard-safe read API v0
 
-Stopping here per `docs/AI_COMMAND_CENTER.md` Handoff Rule. Awaiting QA review.
+`AdminContext(admin_user_id, allowed, source)` is the auth carrier.
+`to_dict()` never includes the raw `admin_user_id` — only its
+truthiness.
+
+`AdminDashboardAPI`:
+
+- `_gate(context)` denies missing or `allowed=False` contexts before any
+  work is done.
+- `list_cases`: caps `limit` at `_HARD_LIST_LIMIT=100`; defaults 20;
+  delegates to `admin_ops.list_admin_cases` and re-projects each
+  `AdminCaseSummary` via `_serialise_case` which re-scrubs wholesale
+  brand names defensively.
+- `get_case`: psid OR conversation_id; returns case_not_found cleanly.
+- `list_recent_posts`: never returns `caption_text`; titles capped at
+  `page_post_context.CONTEXT_TITLE_MAX_CHARS`.
+- `list_open_handoffs`: masked PSIDs only; trigger detail summarised.
+
+## Tests Run
+
+- Targeted: `pytest v2/tests/test_source_attribution.py
+  v2/tests/test_line_admin_adapter.py
+  v2/tests/test_admin_dashboard_api.py
+  v2/tests/test_source_attribution_integration.py` —
+  **46 passed / 0 failed**.
+
+- Broad non-live V2 suite:
+  `pytest v2/tests/ --ignore=v2/tests/test_integration_staging.py
+  --ignore=v2/tests/test_live_openai_health.py
+  --ignore=v2/tests/test_phase2_live_followup.py` —
+  **638 passed / 0 failed** (was 608 pre-change; +30 unique test files
+  collected, 46 net new test cases including subtests).
+
+- Live tests intentionally NOT exercised (staging Supabase /
+  OpenAI / Phase 2 live followup) per task hard rules and per current
+  shell lacking staging credentials.
+
+## Scope/Safety Verification
+
+- No V1 files modified (`grep -L` over `app.py`,
+  `app_patched_*`, V1 paths). No Make.com blueprint changes.
+- No migrations added under `v2/supabase/migrations/`.
+- No production webhook code modified.
+- No live Meta / FB / Instagram / LINE / OpenAI / OCR / paid-provider
+  calls anywhere in new code or tests — verified by inspection (no
+  `requests.post`, no `openai.*`, no `line_bot_sdk` usage).
+- No secret patterns in new files (grep for
+  `sk-|ghp_|EAAB|ya29|AKIA|password|secret_key`).
+- No raw PSID strings, captions, tokens, or wholesale partner names in
+  any returned payload from `AdminDashboardAPI` or
+  `LineAdminAdapter` — covered by tests
+  `test_returns_compact_summary_with_masked_psid`,
+  `test_no_raw_caption_only_title`,
+  `test_non_allowlisted_is_denied_with_no_side_effects`.
+- `SourceAttribution.to_orchestrator_kwargs()` drops `source_post_id`
+  unless validated — covered by
+  `test_unverified_post_id_downgraded_to_unknown` and
+  `test_orchestrator_kwargs_drops_unverified`.
+
+## Risks / Notes
+
+- The webhook (`v2/webhook/app.py`) does NOT yet call
+  `extract_source` or invoke the orchestrator — Sprint 2 webhook
+  remains the silent-ingest shape. Wiring the adapter into the live
+  webhook path is the natural next Codex/Tiw decision (see Next Step).
+  The orchestrator already accepts the kwargs, so the wiring is one
+  line at the right place.
+- `AdminAllowList.from_env` reads `V2_STAGING_*` env vars; it is safe
+  to call but must NOT be called inside test bodies (tests use
+  `AdminAllowList.from_iterable([...])` to avoid leaking real env).
+- The new `LineAdminAdapter` does NOT itself send a LINE reply. It
+  returns an `AdminCommandResult` whose `admin_text` is a Thai
+  admin-facing string. A future LINE-OA webhook will be responsible
+  for calling the LINE Messaging API to deliver `admin_text`.
+- The dashboard API is a service layer only — no HTTP shim is included.
+  A later sprint can add a Flask blueprint or another framework on top
+  without changing the safety contract here.
+
+## QA Checklist
+
+QA reviewer should confirm:
+
+1. `extract_source(event, supabase)` returns deterministic
+   `SourceAttribution` for the four supported types and never returns a
+   page-post type for an unvalidated post id.
+2. `SourceAttribution.to_orchestrator_kwargs()` matches the kwarg
+   signature of `Orchestrator.handle_turn`.
+3. `LineAdminAdapter.handle(...)` rejects non-allowlisted senders with
+   no DB row inserted (check `bot_pauses`, `handoffs`,
+   `tour_availability_overrides`).
+4. `AdminDashboardAPI` methods all gate on `AdminContext.allowed`.
+5. Returned payloads never contain raw PSID, raw caption, wholesale
+   partner names, or secret patterns.
+6. Broad non-live V2 suite still 638 passed.
+7. No existing tests broken (run targeted set:
+   `test_orchestrator_planning.py`, `test_admin_command_handler.py`,
+   `test_page_post_wiring.py`).
+
+## Next Step
+
+Codex should:
+
+1. Review this Dev report + Diff for safety.
+2. Decide whether to:
+   - Open DEV-2026-05-19-009 to wire `extract_source` into the
+     production webhook (`v2/webhook/app.py`) and call
+     `Orchestrator.handle_turn(**attr.to_orchestrator_kwargs(), ...)`
+     from the inbound event path, OR
+   - Schedule the LINE-OA webhook adapter task that consumes
+     `LineAdminAdapter.handle(...)` and sends `admin_text` back to the
+     LINE Messaging API, OR
+   - Schedule the HTTP shim (Flask or similar) that exposes
+     `AdminDashboardAPI` as a guarded endpoint to the future admin
+     dashboard.
+3. Author QA-2026-05-19-008 task content to direct the QA pass.
+
