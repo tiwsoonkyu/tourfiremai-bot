@@ -2,12 +2,12 @@
   "controller": "Codex",
   "current_dev_task": "DEV-2026-05-19-006",
   "current_qa_task": "QA-2026-05-19-006",
-  "role": "Dev",
-  "status": "READY_FOR_QA",
+  "role": "QA",
+  "status": "QA_GO",
   "verdict": "GO",
-  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T19:15:00+07:00",
-  "next_action": "WAITING_FOR_CLAUDE_QA",
+  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
+  "updated_at": "2026-05-19T20:30:00+07:00",
+  "next_action": "WAITING_FOR_CODEX_REVIEW",
   "blocked_reason": null,
-  "notes": "DEV-2026-05-19-006 implemented V2 Page Post Intelligence + Sold-Out Signal foundation. Added migration 20260519_020_page_post_intelligence.sql (page_posts, page_post_tour_links, tour_availability_overrides), v2/lib/page_post_context.py (deterministic service layer), and v2/tests/test_page_post_context.py (41 unit tests, all pass). Broad non-live V2 suite: 563 passed / 7 skipped (flask-only) / 0 failed. No V1, no Make.com, no live Meta/FB/LINE/OpenAI/OCR/paid-provider calls, no production webhook change, no secrets touched. Git is not available inside the Cowork sandbox — commit/push to v2/s4-followup-vision-ondemand must be performed by Codex on the real repo clone."
+  "notes": "QA-2026-05-19-006 review of DEV-2026-05-19-006 (V2 Page Post Intelligence + Sold-Out Signal foundation). Verdict GO. Migration 20260519_020 is additive/idempotent with proper RLS, CHECK constraints, and partial unique indexes. v2/lib/page_post_context.py is pure deterministic Python — no env reads, no live network, no LLM, no secrets, no wholesale partner names; reuses _WHOLESALE_BLACKLIST from response_writer for single source of truth. 41 targeted tests pass (test_page_post_context.py) and broad non-live V2 suite passes 563 / skipped 7 (flask-only) / 0 failed — same totals Dev reported. All 12 required behaviors covered: upsert idempotency, 3-day window, web/real code extraction, idempotent N:M linking, mark/clear override at tour/departure/post scope, block precedence departure>post>tour, source-type inference, compact title cap (80 chars), reason cap (160 chars), wholesale + secret scrubbing. No V1 (app.py), no Make.com (make_blueprint*.json), no Cloudflare worker, no production webhook, no live Meta/FB/LINE/OpenAI/OCR/Supabase production call. Eight low-severity non-blocking notes captured in report (L1–L8). Five residual risks captured (R1–R5). Cowork sandbox has no .git working tree — Codex must commit/push to v2/s4-followup-vision-ondemand on the real repo clone."
 }
