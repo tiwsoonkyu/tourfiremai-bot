@@ -428,3 +428,56 @@ Controller outcome:
 - `DEV-2026-05-19-010` accepted.
 - `QA-2026-05-19-010` accepted.
 - Next stage: admin-only staging test preparation. V2 is still not approved for production customer-wide traffic.
+
+### `DEV-2026-05-19-011`
+
+Status: `PENDING`
+
+Goal:
+
+Implement Sprint 5 Package E as one admin-only staging preflight package:
+
+- Add a V2-only local preflight entrypoint for required staging configuration.
+- Verify admin-only mode, admin/test PSID allow-list, dashboard token, LINE admin allow-list, staging Supabase URL, staging Redis URL, Meta staging app secret, and verify token presence without printing values.
+- Treat OpenAI/OCR/live provider keys as not required for admin-only preflight.
+- Add a non-network migration 020 readiness check for page-post intelligence tables, RLS, anon-deny, and service_role policies.
+- Update the admin-only real chat runbook with a "Before Meta Webhook Change" checklist.
+- Add tests and run targeted + broad non-live V2 suite when feasible.
+
+Expected deliverables:
+
+- V2-only code/tests/docs.
+- Updated `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`.
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No Supabase migration apply from Claude Dev.
+- No customer-facing outbound replies.
+
+### `QA-2026-05-19-011`
+
+Status: `PENDING`
+
+Goal:
+
+Review DEV-2026-05-19-011 as one integrated admin-only staging preflight package.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`
+- `BLOCKED`

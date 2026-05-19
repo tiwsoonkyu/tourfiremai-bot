@@ -1,15 +1,15 @@
 {
   "controller": "Codex",
   "role": "Controller",
-  "status": "QA_GO",
-  "verdict": "GO",
-  "current_dev_task": "DEV-2026-05-19-010",
-  "current_qa_task": "QA-2026-05-19-010",
+  "status": "DEV_TASK_OPEN",
+  "verdict": null,
+  "current_dev_task": "DEV-2026-05-19-011",
+  "current_qa_task": "QA-2026-05-19-011",
   "branch": "v2/s4-followup-vision-ondemand",
-  "commit": "6ebe374",
-  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T23:24:00+07:00",
-  "next_action": "READY_FOR_ADMIN_ONLY_STAGING_TEST_PREP",
+  "commit": "79f27c8",
+  "report_path": "docs/tasks/CURRENT_DEV_TASK.md",
+  "updated_at": "2026-05-19T23:55:00+07:00",
+  "next_action": "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
   "blocked_reason": null,
-  "notes": "Tiw reported Claude QA verdict GO for DEV/QA-2026-05-19-010. Detailed QA matrix was not pushed into this repo, so QA_REPORT_CURRENT.md records owner-reported QA result only. Next stage is admin-only staging test preparation; no production/customer-wide traffic approved yet."
+  "notes": "DEV/QA-2026-05-19-010 accepted. Opened DEV/QA-2026-05-19-011 for admin-only staging preflight, migration readiness checks, and operator test prep. No production/customer-wide traffic approved."
 }
