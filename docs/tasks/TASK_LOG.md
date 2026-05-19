@@ -220,3 +220,12 @@ Result:
 - Verified admin command parsing, page-post source context, sold-out/full deterministic blocking, compact LLM planning note, and scope discipline.
 - Verified blocked paths bypass the LLM and unblocked paths receive only compact `page_post_planning_note`.
 - QA notes remaining operational risks: migration 020 still unapplied, production webhook source attribution not wired, LINE adapter staff allow-list still pending, and planner latency should be checked after migration.
+
+Codex operational follow-up:
+
+- Applied migration `20260519_020_page_post_intelligence.sql` to Supabase staging project `tourfiremai-v2-staging` (`mbcihtcdwfofagkxphcu`) via Supabase connector.
+- Verified tables exist: `page_posts`, `page_post_tour_links`, `tour_availability_overrides`.
+- Verified RLS is enabled on all three tables.
+- Verified policies are service-role only plus explicit anon deny policies.
+- Verified anon role sees `0` rows for all three tables.
+- Remaining next-step risks: production webhook source attribution is not wired yet, LINE adapter staff allow-list is still pending, and planner latency should be checked once staging traffic exercises the new tables.
