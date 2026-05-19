@@ -1,125 +1,114 @@
 # Current Dev Task
 
-Task ID: `DEV-2026-05-19-005`
+Task ID: `DEV-2026-05-19-006`
 Status: `PENDING`
 Assigned role: Claude Cowork Dev
 Controller: Codex
 
 ## Task
 
-Wire the V2 Admin Handoff + Memory Control foundation into a deterministic LINE admin command handler.
+Build the V2 Page Post Intelligence + Sold-Out Signal foundation.
 
-This task follows the QA-cleared `DEV-2026-05-19-004` admin_ops foundation. The business priority is operational reliability during live chat handling: staff must be able to see cases, pause the bot, resume the bot, and inspect a case from the staff LINE channel without the bot interrupting customers.
+Business need: most daily sales activity comes from Facebook page posts, ads, and organic chats. The AI must know what admins posted recently, remember at least the last 3 days of page posts, and respect admin sold-out/full signals before recommending a tour.
 
-Do not implement a visual dashboard in this task. Build the backend command parser/handler layer that a future LINE webhook adapter can call.
+This task is foundation only. Do not call Meta Graph API, do not build the visual dashboard UI, and do not change production webhook behavior yet.
 
 ## Context
 
-`DEV-2026-05-19-004` added:
+The current V2 priority is Sales Agent reliability before broader company automation.
 
-- `v2/lib/admin_ops.py`
-- `AdminCaseSummary`
-- `pause_bot_for_customer(...)`
-- `resume_bot_for_customer(...)`
-- `is_bot_paused_for(...)`
-- `get_admin_case(...)`
-- `list_admin_cases(...)`
-- `list_open_handoffs(...)`
-- `record_handoff(...)`
+Recent QA-cleared foundations:
 
-QA verdict for that task: `GO`.
+- Admin handoff + pause/resume foundation
+- Deterministic LINE admin command handler core
+- PDF fee extraction safety foundations
+- Tour canonical database and scraper foundation
 
-Current product invariant:
+New product invariant:
 
-> When a human/admin is handling a customer, the bot must not interrupt.
-
-The next practical step is a LINE admin command handler that calls `admin_ops` safely. This is not the final LINE Messaging API integration yet; it is the deterministic core that can be wrapped by an actual LINE webhook later.
+> If a customer comes from a recent page post/ad/organic source that points to a tour marked full/sold out by admin, the bot must not recommend that sold-out option. It should acknowledge the post context and offer the closest available alternatives.
 
 ## Scope
 
-You may modify V2 code, tests, and docs only.
+You may modify V2 code, migrations, tests, and docs only.
 
 Required work:
 
-1. Inspect `v2/lib/admin_ops.py`, `v2/lib/orchestrator.py`, current LINE/notification helper conventions, and existing tests.
-2. Add a deterministic admin command parser and handler layer.
-3. The handler must be pure/backend-safe:
-   - no live LINE send
-   - no network calls
-   - no customer-facing Messenger replies
-   - no secrets
-4. The handler should return a structured result plus safe Thai admin-facing text that a future LINE adapter can send.
-5. The handler must call `admin_ops` for case listing, case detail, pause, and resume.
+1. Inspect existing V2 migrations, `v2/lib/admin_ops.py`, `v2/lib/admin_command_handler.py`, `v2/lib/orchestrator.py`, and current tests.
+2. Add additive migration(s) after `20260518_019_*` for page-post memory and sold-out override storage.
+3. Add a pure deterministic V2 service module for page post context and sold-out decisions.
+4. Add unit tests with no live network calls and no real credentials.
+5. Update docs with a concise plan/contract for future dashboard and Meta source attribution wiring.
 
 Suggested implementation shape:
 
-- `v2/lib/admin_command_handler.py`
-  - `AdminCommand`
-  - `AdminCommandResult`
-  - `parse_admin_command(text: str) -> AdminCommand`
-  - `handle_admin_command(command_or_text, supabase, *, admin_user_id, memory=None, now=None) -> AdminCommandResult`
-  - Supported commands:
-    - `cases`
-    - `cases paused`
-    - `handoffs`
-    - `case <psid_or_conversation_id>`
-    - `pause <psid_or_conversation_id> [reason...]`
-    - `resume <psid_or_conversation_id> [reason...]`
-    - `help`
+- Migration: `v2/supabase/migrations/20260519_020_page_post_intelligence.sql`
+- Module: `v2/lib/page_post_context.py`
+- Tests: `v2/tests/test_page_post_context.py`
 
-If you find a cleaner shape, use it and explain the tradeoff.
+Suggested tables or equivalent:
+
+- `page_posts`
+  - platform, page_id, post_id, permalink_url, posted_at, text_hash, caption_text, status, active_until
+  - default relevance window: 3 days from `posted_at`
+- `page_post_tour_links`
+  - post_id reference, web_code, tour_code_real, tour_id/tour canonical reference if available, confidence, status
+- `tour_availability_overrides`
+  - web_code/tour_code_real/tour_id, status (`available`, `sold_out`, `full`, `unknown`), scope (`tour`, `departure`, `post`), reason, marked_by, marked_at, expires_at
+
+Use the existing schema style if there is a better local pattern.
 
 ## Required Behaviors
 
-1. `cases` lists a short safe queue of current open admin cases.
-2. `cases paused` lists paused/human-handled cases only.
-3. `handoffs` lists open handoffs.
-4. `case <id>` returns a safe case detail using `get_admin_case(...)`.
-5. `pause <id> [reason]` pauses the customer using `pause_bot_for_customer(...)`.
-6. `resume <id> [reason]` resumes the customer using `resume_bot_for_customer(...)`.
-7. `help` returns a short command list.
-8. Unknown/ambiguous commands return a safe help message.
-9. Output text must be safe for a staff LINE group:
-   - include customer display name if available
-   - include masked PSID or case id where useful
-   - include conversation state
-   - include selected tour / latest offer summary when available
-   - do not expose secrets
-   - do not expose wholesale partner names
-10. If the target customer cannot be found, return a clear admin-facing error and do not create a fake pause.
+1. Store/update recent page posts idempotently by `(platform, post_id)`.
+2. Detect tour references from page post text:
+   - tour URL such as `/tour/ap123456`
+   - web code such as `ap123456`
+   - real tour code if present
+3. `list_recent_page_posts(days=3)` returns only active posts in the recent window by default.
+4. Admin can mark a linked tour/post/departure as `sold_out` or `full` through a pure function.
+5. Admin can clear a sold-out/full override through a pure function.
+6. A response-planning helper can answer:
+   - source type: `page_post`, `ad`, `organic`, or `unknown`
+   - recent post context if available
+   - whether a candidate tour must be blocked because it is sold out/full
+   - safe Thai admin/bot-facing reason text
+7. If a tour from a recent post is sold out/full, return a deterministic replacement-needed signal instead of silently offering it.
+8. Do not expose wholesale partner names.
+9. Do not put full post history into LLM context. Return a compact deterministic context summary only.
+10. Do not make live Meta/Facebook, LINE, OpenAI, OCR, Supabase production, or paid-provider calls in tests.
 
-## Hard Constraints
+## Future Work Out of Scope
 
-- Do not touch V1 production behavior.
-- Do not touch Make.com.
-- Do not deploy anything.
-- Do not change production Messenger webhook behavior.
-- Do not make live LINE API calls.
-- Do not make live OpenAI calls.
-- Do not make live paid-provider calls.
-- Do not print, write, or commit secrets.
-- Do not introduce wholesale partner names into source, prompts, logs, cassettes, reports, or customer/admin output.
-- Do not weaken fee safety thresholds.
-- Do not change PDF extraction behavior.
-- Do not require real Supabase credentials for unit tests.
-- Do not create a customer-facing auto-reply in this task.
+Do not implement these in this task:
+
+- Live Meta Graph API page-post ingestion
+- Visual admin dashboard UI
+- Production webhook source-attribution wiring
+- Real LINE admin command adapter
+- Production deploy
+- V1 or Make.com changes
+
+This task should prepare the data model and deterministic service layer so those follow-up tasks are small and safe.
 
 ## Required Tests
 
 Add or update tests for:
 
-1. Parser recognizes `cases`, `cases paused`, `handoffs`, `case`, `pause`, `resume`, and `help`.
-2. Parser handles Thai/English whitespace and unknown commands safely.
-3. `cases` result calls/list-renders admin cases safely.
-4. `handoffs` result calls/list-renders open handoffs safely.
-5. `case <id>` renders customer name, state, selected tour/latest offer/handoff when present.
-6. `pause <id>` calls `pause_bot_for_customer` and returns a paused confirmation.
-7. `resume <id>` calls `resume_bot_for_customer` and returns a resumed confirmation.
-8. Missing target returns an admin-safe error and does not mutate pause state.
-9. Output text masks PSIDs where appropriate and contains no secret patterns.
-10. Output text contains no wholesale partner names, including hostile fixture strings.
+1. Upsert page post idempotency.
+2. 3-day recent-post filtering.
+3. Extraction of web code from tour URLs and plain text.
+4. Extraction of real tour code when present.
+5. Linking a page post to one or more tours.
+6. Marking a linked tour/post as `sold_out`.
+7. Clearing a sold-out/full override.
+8. Candidate tour blocking when sold-out/full override exists.
+9. Candidate tour allowed when no override exists or override expired.
+10. Source context: page post vs ad vs organic.
+11. Compact context summary does not include excessive post text.
+12. No secrets or wholesale partner names in generated admin/bot text.
 
-Run the broad non-live V2 suite if feasible.
+Run targeted tests and the broad non-live V2 suite if feasible.
 
 ## Deliverable
 

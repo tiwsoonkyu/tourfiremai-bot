@@ -43,9 +43,10 @@ Priority order:
 
 1. Customer memory continuity
 2. Accurate tour code / tour data / PDF fee data
-3. Human handoff without AI interruption
-4. Admin dashboard v0 for control and visibility
-5. Cost visibility and budget guardrails
+3. Page post / ads / organic source context, including recent page posts and sold-out signals
+4. Human handoff without AI interruption
+5. Admin dashboard v0 for control and visibility
+6. Cost visibility and budget guardrails
 
 Later modules:
 

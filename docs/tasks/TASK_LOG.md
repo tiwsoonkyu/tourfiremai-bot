@@ -121,3 +121,32 @@ Result:
   - Add explicit pause/resume redaction tests before wiring the real LINE adapter.
   - Future LINE adapter must enforce a staff allow-list before forwarding admin commands.
   - Codex should run a broad non-live suite on the real repo clone as post-QA sanity.
+
+### `DEV-2026-05-19-006`
+
+Status: `PENDING`
+
+Goal:
+
+Build the V2 Page Post Intelligence + Sold-Out Signal foundation so the AI can use recent page-post context and respect admin full/sold-out signals before recommending tours.
+
+Expected deliverables:
+
+- Additive V2 migration(s) for page posts, post-tour links, and availability overrides.
+- Deterministic V2 service module for recent post context and sold-out decisions.
+- Unit tests for 3-day memory, tour-code extraction, source context, and sold-out blocking.
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+### `QA-2026-05-19-006`
+
+Status: `PENDING`
+
+Goal:
+
+Review Dev output for page-post memory, admin sold-out/full override safety, source-context handling, and scope discipline.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`

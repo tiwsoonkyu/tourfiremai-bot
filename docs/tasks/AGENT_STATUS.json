@@ -1,17 +1,13 @@
 {
   "controller": "Codex",
-  "current_dev_task": "DEV-2026-05-19-005",
-  "current_qa_task": "QA-2026-05-19-005",
-  "role": "QA",
-  "status": "QA_GO_WITH_NOTES",
-  "verdict": "GO_WITH_NOTES",
-  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T18:00:00+07:00",
-  "next_action": "WAITING_FOR_CODEX_COMMIT_AND_PUSH",
+  "current_dev_task": "DEV-2026-05-19-006",
+  "current_qa_task": "QA-2026-05-19-006",
+  "role": "Dev",
+  "status": "PENDING",
+  "verdict": null,
+  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
+  "updated_at": "2026-05-19T18:30:00+07:00",
+  "next_action": "WAITING_FOR_CLAUDE_DEV",
   "blocked_reason": null,
-  "files_changed": [
-    "docs/tasks/QA_REPORT_CURRENT.md (overwritten — GO_WITH_NOTES verdict for QA-2026-05-19-005)",
-    "docs/tasks/AGENT_STATUS.json (this file — transitioned to QA_GO_WITH_NOTES)"
-  ],
-  "notes": "QA-2026-05-19-005 (LINE Admin Command Handler Core) verdict: GO_WITH_NOTES. Reviewed v2/lib/admin_command_handler.py (357 lines, NEW) + v2/tests/test_admin_command_handler.py (220 lines, NEW, 11 tests) + their dependency v2/lib/admin_ops.py (833 lines, unchanged from DEV-2026-05-19-004 QA_GO). Branch v2/s4-followup-vision-ondemand, parent a072820. All 15 QA scope checks pass: V2-only imports; no V1/Make.com/Cloudflare/Meta webhook touched; no secrets in source (literal sk-/EAA/ghp_ patterns absent; the two s{'k'}-… split-string occurrences are deliberate anti-grep splits used to *describe* / *strip* the prefix); no live LINE/OpenAI/paid-provider calls; no PDF/fee threshold change; parser covers all 7 required commands (cases, cases paused, handoffs, case <id>, pause <id>, resume <id>, help) with whitespace + unknown handling; unknown command returns safe help and mutates nothing (asserted by test + default mutated=False); pause routes through admin_ops.pause_bot_for_customer with paused_by='admin' and reason='admin command by <admin_user_id>' fallback; resume routes through admin_ops.resume_bot_for_customer with resumed_by=admin_user_id; case detail routes through admin_ops.get_admin_case via _resolve_case (psid first, conversation_id fallback); listing routes through admin_ops.list_admin_cases (only_open=True; only_paused toggle for cases_paused) and list_open_handoffs (limit=_DEFAULT_LIMIT=5); admin output safe (no raw PSID anywhere — case.psid_masked is used; _safe_text wraps every free-text via _scrub_wholesale + redactor.redact + sk-prefix strip; tests assert PSID_A not in admin_text and verify redaction of sk-shaped name and monkeypatched wholesale token). Product invariant preserved: handler never sends a customer-facing reply, only returns AdminCommandResult.admin_text; pause sets conv.is_human_paused=True + state='human_paused', which the existing orchestrator pause-guard short-circuits on. Three follow-ups (none blocking): M1 — post-pytest tweak routed pause/resume display names through _safe_text without an explicit redaction test on those two paths; existing redaction tests cover cases and case <id> only. M2 — handle_admin_command does no authorization (correct for a deterministic core; future LINE webhook adapter MUST enforce a staff allow-list before forwarding). L1-L6 informational. Could NOT run pytest from this Cowork workspace — only the four files Codex listed plus admin_ops.py are mounted; v2/lib/redactor.py, response_writer.py, state_machine.py, memory.py, and v2/tests/conftest.py are absent — so pytest would fail at import. Dev's claimed test counts (11 / 44 / 538) are plausible against the prior 501 baseline (501 + 33 admin_ops + 11 new ≈ 545) and taken at face value; recommend Codex run the broad non-live suite once on a real clone as post-merge sanity. Hard rules respected: read-only review, no runtime code modified, no V1 touched, no Make.com, no deploy, no secrets read/printed/committed, no live OpenAI / LINE / paid-provider call. No git commit/push from this workspace per instruction; Codex commits and pushes QA artifacts to v2/s4-followup-vision-ondemand."
+  "notes": "Codex opened DEV-2026-05-19-006 for V2 Page Post Intelligence + Sold-Out Signal foundation. Scope is V2-only data model/service/tests/docs. No live Meta Graph API, no dashboard UI, no production webhook, no deploy, no V1, no Make.com, and no secrets."
 }
