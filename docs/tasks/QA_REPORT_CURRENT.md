@@ -1,15 +1,15 @@
-# QA REPORT - QA-2026-05-19-010
+# QA REPORT - QA-2026-05-20-012
 
 ## 1. Verdict
 
-GO
+GO_WITH_NOTES
 
 ## 2. Source
 
 Owner-reported Claude QA verdict from Tiw:
 
 ```text
-Verdict: GO
+Verdict: GO_WITH_NOTES
 ```
 
 The full Claude QA matrix was not committed to this repository at the time of this controller update. This file intentionally records only the owner-reported QA result and does not fabricate detailed QA evidence.
@@ -18,11 +18,11 @@ The full Claude QA matrix was not committed to this repository at the time of th
 
 Dev task under review:
 
-- `DEV-2026-05-19-010`
+- `DEV-2026-05-20-012`
 - Branch: `v2/s4-followup-vision-ondemand`
 - Implementation commits:
-  - `d374ac3` - admin-only real chat readiness gate
-  - `6ebe374` - status docs update
+  - `938f5ef` - detail departure price parser implementation
+  - `8663c4a` - task status documentation update
 
 ## 4. Controller Evidence Available In Repo
 
@@ -32,38 +32,44 @@ Dev report:
 
 Implemented package:
 
-- `v2/webhook/test_mode_gate.py`
-- `v2/webhook/app.py`
-- `v2/webhook/admin_routes.py`
-- `v2/tests/test_admin_only_runtime_smoke.py`
-- `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`
+- `v2/scraper/departure_price_table.py`
+- `v2/supabase/migrations/20260520_021_departure_price_rows.sql`
+- `v2/tools/live_detail_departure_smoke.py`
+- `v2/tests/test_departure_price_table.py`
 
-Dev-reported tests:
+Dev-reported and Codex-verified tests:
 
-- Admin-only smoke: `9 passed`
-- Targeted runtime package: `40 passed`
-- Broad non-live V2 suite: `671 passed`
+- Targeted parser suite: `76 passed`
+- Existing scraper regression: `20 passed`
+- Broad non-live V2 suite: `747 passed / 0 failed`
+- Read-only live smoke CLI: exit `0` for `ap232919`, `ap242455`, `ap183598`
+
+Live smoke evidence recorded by Codex:
+
+- `ap232919` parsed `tour_code_real=BT-NRT_S15_XJ`, airline `XJ`, first row `2026-06-04` to `2026-06-08`, adult price `20999`.
+- `ap242455` parsed `tour_code_real=BCCKG27-HU`, airline `HU`, first row `2026-05-23` to `2026-05-26`, adult price `15998`.
+- `ap183598` parsed `tour_code_real=TFUEU0626`, airline unknown/null, first row `2026-06-02` to `2026-06-06`, adult price `17518`.
 
 ## 5. Findings
 
 No blocking findings were reported by Tiw from the Claude QA session.
 
+Because the verdict was `GO_WITH_NOTES`, the notes are treated as non-blocking until the detailed QA report is provided. Codex should not invent missing note details.
+
 ## 6. Residual Risks
 
 This is not production live approval. Remaining operational gates:
 
-- Staging environment variables still need to be set for admin-only test.
-- `/admin/runtime-config` must be verified on the staging service.
-- Only allowlisted admin/test PSIDs may be routed during the first real chat test.
-- Customer-facing outbound replies remain disabled until explicitly approved.
+- Migration `20260520_021_departure_price_rows.sql` has not yet been applied to Supabase staging from this controller update.
+- The parser is validated as a standalone package; the bot still needs a follow-up task to wire these exact departure rows into scraper/detail enrichment and selected-tour memory.
+- The bot still must not confirm seat availability, final price, or booking success from parsed table data.
+- Sold-out/full handling must continue to use admin availability overrides, not the generic contact button text from the website table.
 
 ## 7. Recommendation / Next Action
 
-Proceed to admin-only staging test preparation.
+Proceed with the next controller stage:
 
-Next controller action:
-
-- Prepare the admin-only staging test checklist and env verification flow.
-- Do not connect V2 to the production Meta page webhook yet.
-- Do not enable customer-wide bot replies yet.
+1. Apply migration `20260520_021_departure_price_rows.sql` to V2 Supabase staging only.
+2. Open the next Dev task to wire the detail-page departure parser into the V2 scraper/detail enrichment path.
+3. Keep V2 disconnected from production Meta webhook and customer-wide traffic until admin-only staging tests pass.
 

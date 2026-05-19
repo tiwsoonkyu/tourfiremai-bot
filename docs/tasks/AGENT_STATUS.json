@@ -1,43 +1,34 @@
 {
   "controller": "Codex",
-  "role": "Dev",
-  "status": "READY_FOR_QA",
-  "verdict": null,
+  "role": "QA",
+  "status": "QA_GO_WITH_NOTES",
+  "verdict": "GO_WITH_NOTES",
   "current_dev_task": "DEV-2026-05-20-012",
   "current_qa_task": "QA-2026-05-20-012",
   "branch": "v2/s4-followup-vision-ondemand",
   "base_commit": "a9ed2ea",
-  "commit": "938f5ef",
-  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-20T02:25:00+07:00",
-  "next_action": "CLAUDE_QA_REVIEW_CURRENT_DEV_TASK",
+  "commit": "8663c4a",
+  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
+  "updated_at": "2026-05-20T02:37:53+07:00",
+  "next_action": "CODEX_APPLY_MIGRATION_021_OR_OPEN_DEV_2026_05_20_013",
   "blocked_reason": null,
-  "files_changed": [
+  "files_reviewed": [
     "v2/scraper/departure_price_table.py",
     "v2/supabase/migrations/20260520_021_departure_price_rows.sql",
     "v2/tools/live_detail_departure_smoke.py",
     "v2/tests/test_departure_price_table.py",
-    "docs/tasks/DEV_REPORT_CURRENT.md",
-    "docs/tasks/AGENT_STATUS.json"
+    "docs/tasks/DEV_REPORT_CURRENT.md"
   ],
-  "dev_evidence": {
-    "targeted_new_suite": "76 passed in 0.31s (v2/tests/test_departure_price_table.py)",
-    "scraper_regression": "20 passed in 0.06s (v2/tests/test_scraper.py)",
-    "broad_non_live_v2_suite": "747 passed / 0 failed in 12.48s (ignored env-gated live tests)",
-    "cli_smoke_live": "exit 0 for ap232919/ap242455/ap183598; parsed real tour_code_real values BT-NRT_S15_XJ, BCCKG27-HU, TFUEU0626 and full start/end date ranges",
-    "hard_rules_compliance": "No V1 / Make.com / deploy / production webhook / secrets / live Meta / live LINE / live OpenAI / OCR / paid provider / Supabase migration apply / customer-facing outbound change"
+  "qa_source": "Owner-reported Claude QA verdict from Tiw. Full QA matrix was not committed to repo at controller update time.",
+  "qa_evidence_available": {
+    "targeted_parser_suite": "76 passed",
+    "scraper_regression": "20 passed",
+    "broad_non_live_v2_suite": "747 passed / 0 failed",
+    "live_smoke": "exit 0 for ap232919/ap242455/ap183598"
   },
-  "dev_acceptance_checks": {
-    "parser_uses_tour_path_not_intertourdetail": true,
-    "web_code_tour_code_real_airline_kept_separate": true,
-    "dash_cells_parse_to_null_never_zero": true,
-    "contact_button_text_never_classified_sold_out": true,
-    "row_level_adult_and_single_supplement_captured": true,
-    "thai_be_year_suffix_resolves_to_gregorian": true,
-    "cross_month_and_cross_year_ranges_supported": true,
-    "migration_021_additive_no_drop_no_rename_no_truncate": true,
-    "adapter_legacy_mirrors_present_no_zero_coercion": true,
-    "cli_is_read_only_no_db_no_llm_no_secrets": true
-  },
-  "notes": "DEV-2026-05-20-012 Sprint 5 Package F implemented and Codex-synced into the real git checkout. Codex added regression coverage from live HTML smoke findings, fixed full two-sided date ranges and live b-codepg value parsing, and verified 3/3 read-only live detail-page smoke. Awaiting QA-2026-05-20-012."
+  "notes": [
+    "GO_WITH_NOTES accepted as non-blocking owner-reported QA status.",
+    "Do not fabricate the missing QA notes; request or commit the detailed QA report if notes become decision-critical.",
+    "Next technical gate is staging migration 021, then a Dev task to wire exact departure rows into scraper/detail enrichment and selected-tour memory."
+  ]
 }

@@ -525,7 +525,7 @@ Hard rules:
 
 ### `QA-2026-05-20-012`
 
-Status: `PENDING`
+Status: `GO_WITH_NOTES`
 
 Goal:
 
@@ -542,3 +542,11 @@ Verdict options:
 - `GO_WITH_NOTES`
 - `NO_GO`
 - `BLOCKED`
+
+Result:
+
+- QA verdict: `GO_WITH_NOTES`
+- Reported by Tiw from Claude QA session.
+- Codex note: detailed QA matrix was not committed to this repo at the time of controller update, so this log records owner-reported QA status without fabricating note details.
+- Controller outcome: `DEV-2026-05-20-012` accepted, `QA-2026-05-20-012` accepted with notes.
+- Next action: apply migration `20260520_021_departure_price_rows.sql` to V2 Supabase staging, then open the follow-up Dev task to wire parsed departure rows into scraper/detail enrichment and selected-tour memory.
