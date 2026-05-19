@@ -1,17 +1,19 @@
 {
   "controller": "Codex",
-  "current_dev_task": "DEV-2026-05-19-004",
-  "current_qa_task": "QA-2026-05-19-004",
-  "role": "QA",
-  "status": "QA_GO",
-  "verdict": "GO",
-  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T09:30:00+07:00",
-  "next_action": "WAITING_FOR_CODEX",
+  "current_dev_task": "DEV-2026-05-19-005",
+  "current_qa_task": "QA-2026-05-19-005",
+  "role": "CONTROLLER",
+  "status": "PENDING_DEV",
+  "verdict": null,
+  "report_path": null,
+  "updated_at": "2026-05-19T10:30:00+07:00",
+  "next_action": "CLAUDE_DEV_TO_RUN_CURRENT_DEV_TASK",
   "blocked_reason": null,
   "files_changed": [
-    "docs/tasks/QA_REPORT_CURRENT.md (overwritten with this QA verdict on DEV-2026-05-19-004)",
-    "docs/tasks/AGENT_STATUS.json (this file — flipped to QA_GO)"
+    "docs/tasks/CURRENT_DEV_TASK.md",
+    "docs/tasks/CURRENT_QA_TASK.md",
+    "docs/tasks/TASK_LOG.md",
+    "docs/tasks/AGENT_STATUS.json"
   ],
-  "notes": "Reviewed v2/s4-followup-vision-ondemand @ 975b891 (docs companion) and code commit e152a07 against parent 78da867. Verdict: GO. CURRENT_QA_TASK.md is QA-2026-05-19-004 (Admin Handoff + Memory Control foundation). Code-only diff scope is two NEW files: v2/lib/admin_ops.py (833 lines) + v2/tests/test_admin_ops.py (603 lines, 33 tests across 7 classes). Zero diff in production runtime modules (orchestrator/response_writer/fee_answer_policy/memory/state_machine/llm/ondemand_vision/extract_fees/fee_schema/llm_pricing/cache/cassette_redactor — all 0 lines per file). Zero diff in V1 (app.py/scraper.py/fee_extractor.py/tourfiremai-bot-dev/Procfile/railway.json/cloudflare-worker*.js/webhook_proxy.py — 0 lines total). No Make.com/Cloudflare/Railway/Meta-webhook references in functional diff. Fee thresholds UNCHANGED (DEFAULT_THRESHOLD=0.80, SINGLE_SUPPLEMENT_THRESHOLD=0.90). Orchestrator pause-guard at orchestrator.py:98 byte-identical and reads conv.is_human_paused — pause_bot_for_customer writes exactly that flag (TestSilentPath::test_orchestrator_compatible_flag_is_set asserts this). Resume sets a non-silent state, refuses to land in silent state (test_resume_into_silent_state_rejected), closes open handoffs with resolution='bot_resumed' + admin_responder for audit. AdminCaseSummary view-model carries display_name (memory.customer_name → customers.fb_name → masked PSID, wholesale-scrubbed at each step), conversation state, latest memory fields, selected tour (wholesale-scrubbed), latest offer brief, open handoff (PSID masked + trigger_detail summarised to a short safe string with redactor.redact). list_open_handoffs masks PSIDs + wholesale-redacts trigger_detail (TestListings::test_list_open_handoffs_masks_psid_and_redacts_wholesale). paused_by validated against migration 012 CHECK ('admin','system','rule'). trigger_type validated against migration 011 8-value CHECK list. _WHOLESALE_BLACKLIST reused from response_writer (single source of truth). Tests verified by QA: module-scoped 33 passed in 0.11s; full non-live suite 527 passed + 7 Flask-skipped + 0 failed in 1.48s. Matches Dev's reported counts exactly; 527-33=494 confirms +33 over baseline 78da867 (494+7=501). No regressions. No secret-shape in either new file (grep clean for sk-…/EAA…/ghp_…/AKIA…). No live OpenAI/paid-provider call required. No new migration. Spend this session: $0.00. Two informational notes (do not block GO): N1 — Dev report § 2 line-count says +625 for admin_ops.py but actual is 833 lines (documentation slip); N2 — list_admin_cases is O(n) Python sort/filter (Dev's R3 also; fine for staging, needs server-side ORDER BY LIMIT when wiring to real dashboard). Next options per Dev report § 8: A) Wire admin_ops into LINE admin command handler (Sprint 5 prereq, recommended for operational reliability); B) Wire get_admin_case into minimal dashboard read-API (needs auth story first)."
+  "notes": "Codex accepted QA_GO for DEV-2026-05-19-004 and opened DEV-2026-05-19-005 / QA-2026-05-19-005 for a deterministic LINE admin command handler core. Priority is operational reliability: staff can list cases, inspect a case, pause the bot, and resume the bot from a future LINE adapter without live LINE calls in this task. No runtime code changed by Codex in this controller update."
 }

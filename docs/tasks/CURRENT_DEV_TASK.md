@@ -1,48 +1,39 @@
 # Current Dev Task
 
-Task ID: `DEV-2026-05-19-004`
+Task ID: `DEV-2026-05-19-005`
 Status: `PENDING`
 Assigned role: Claude Cowork Dev
 Controller: Codex
 
 ## Task
 
-Build the V2 Admin Handoff + Memory Control foundation.
+Wire the V2 Admin Handoff + Memory Control foundation into a deterministic LINE admin command handler.
 
-This task is the next step after the paid-OCR provider abstraction was QA-cleared. The business priority is now operational reliability for real chat handling:
+This task follows the QA-cleared `DEV-2026-05-19-004` admin_ops foundation. The business priority is operational reliability during live chat handling: staff must be able to see cases, pause the bot, resume the bot, and inspect a case from the staff LINE channel without the bot interrupting customers.
 
-1. Admin must see which customer/case needs attention.
-2. Admin must be able to pause the bot for a customer.
-3. The bot must never interrupt while a human is handling the case.
-4. Memory/selected tour state must remain inspectable and recoverable.
-
-Do not build the full visual dashboard yet unless it is clearly small and testable. Prefer a backend/domain foundation and tests that a dashboard can safely use next.
+Do not implement a visual dashboard in this task. Build the backend command parser/handler layer that a future LINE webhook adapter can call.
 
 ## Context
 
-TourFireMai V2 already has these foundations:
+`DEV-2026-05-19-004` added:
 
-- `customers`
-- `customer_memory`
-- `conversations`
-- `conversation_events`
-- `conversation_turns`
-- `offer_snapshots`
-- `selected_tours`
-- `handoffs`
-- `bot_pauses`
-- state machine states including `waiting_team` and `human_paused`
-- `MemoryService` for customer memory, offer snapshots, and selected tour locks
+- `v2/lib/admin_ops.py`
+- `AdminCaseSummary`
+- `pause_bot_for_customer(...)`
+- `resume_bot_for_customer(...)`
+- `is_bot_paused_for(...)`
+- `get_admin_case(...)`
+- `list_admin_cases(...)`
+- `list_open_handoffs(...)`
+- `record_handoff(...)`
 
-The core customer pain from V1 testing was not only PDF accuracy. It was:
+QA verdict for that task: `GO`.
 
-- bot forgets context after delay
-- bot asks again after customer already selected a tour
-- admin cannot take over cleanly
-- bot may continue chatting while admin is active
-- admin cannot easily see the customer name, latest intent, selected tour, or why handoff happened
+Current product invariant:
 
-This task should make those operational controls explicit and testable.
+> When a human/admin is handling a customer, the bot must not interrupt.
+
+The next practical step is a LINE admin command handler that calls `admin_ops` safely. This is not the final LINE Messaging API integration yet; it is the deterministic core that can be wrapped by an actual LINE webhook later.
 
 ## Scope
 
@@ -50,34 +41,52 @@ You may modify V2 code, tests, and docs only.
 
 Required work:
 
-1. Inspect the current V2 memory, state machine, webhook, and Supabase migration foundations.
-2. Add a small admin operations layer for case visibility and bot pause/resume.
-3. Provide deterministic functions that a future dashboard or LINE command handler can call.
-4. Add tests proving:
-   - admin can pause a customer/conversation
-   - paused customer becomes or remains `human_paused`
-   - paused bot is silent / does not proceed with normal response flow
-   - admin can resume a customer
-   - case summary includes customer display name when available
-   - case summary includes selected tour / latest offer state when available
-   - open handoffs can be listed without exposing secrets or wholesale names
+1. Inspect `v2/lib/admin_ops.py`, `v2/lib/orchestrator.py`, current LINE/notification helper conventions, and existing tests.
+2. Add a deterministic admin command parser and handler layer.
+3. The handler must be pure/backend-safe:
+   - no live LINE send
+   - no network calls
+   - no customer-facing Messenger replies
+   - no secrets
+4. The handler should return a structured result plus safe Thai admin-facing text that a future LINE adapter can send.
+5. The handler must call `admin_ops` for case listing, case detail, pause, and resume.
 
 Suggested implementation shape:
 
-- `v2/lib/admin_ops.py`
-  - `AdminCaseSummary` dataclass
-  - `list_admin_cases(...)`
-  - `get_admin_case(psid_or_conversation_id, ...)`
-  - `pause_bot_for_customer(psid, reason, paused_by, ttl_minutes, ...)`
-  - `resume_bot_for_customer(psid, resumed_by, reason, ...)`
-  - `record_handoff(...)` or reuse existing handoff rows if cleaner
+- `v2/lib/admin_command_handler.py`
+  - `AdminCommand`
+  - `AdminCommandResult`
+  - `parse_admin_command(text: str) -> AdminCommand`
+  - `handle_admin_command(command_or_text, supabase, *, admin_user_id, memory=None, now=None) -> AdminCommandResult`
+  - Supported commands:
+    - `cases`
+    - `cases paused`
+    - `handoffs`
+    - `case <psid_or_conversation_id>`
+    - `pause <psid_or_conversation_id> [reason...]`
+    - `resume <psid_or_conversation_id> [reason...]`
+    - `help`
 
-- Optional if needed:
-  - small helper functions in `v2/lib/memory.py`
-  - small state-machine helper if current code cannot inspect pause state cleanly
-  - docs describing the future dashboard contract
+If you find a cleaner shape, use it and explain the tradeoff.
 
-Do not create a production UI in this task unless it is trivial and fully tested. A JSON/view-model layer is enough for this task.
+## Required Behaviors
+
+1. `cases` lists a short safe queue of current open admin cases.
+2. `cases paused` lists paused/human-handled cases only.
+3. `handoffs` lists open handoffs.
+4. `case <id>` returns a safe case detail using `get_admin_case(...)`.
+5. `pause <id> [reason]` pauses the customer using `pause_bot_for_customer(...)`.
+6. `resume <id> [reason]` resumes the customer using `resume_bot_for_customer(...)`.
+7. `help` returns a short command list.
+8. Unknown/ambiguous commands return a safe help message.
+9. Output text must be safe for a staff LINE group:
+   - include customer display name if available
+   - include masked PSID or case id where useful
+   - include conversation state
+   - include selected tour / latest offer summary when available
+   - do not expose secrets
+   - do not expose wholesale partner names
+10. If the target customer cannot be found, return a clear admin-facing error and do not create a fake pause.
 
 ## Hard Constraints
 
@@ -85,10 +94,11 @@ Do not create a production UI in this task unless it is trivial and fully tested
 - Do not touch Make.com.
 - Do not deploy anything.
 - Do not change production Messenger webhook behavior.
-- Do not print, write, or commit secrets.
+- Do not make live LINE API calls.
 - Do not make live OpenAI calls.
 - Do not make live paid-provider calls.
-- Do not introduce wholesale partner names into customer-facing output, prompts, logs, cassettes, reports, or tests.
+- Do not print, write, or commit secrets.
+- Do not introduce wholesale partner names into source, prompts, logs, cassettes, reports, or customer/admin output.
 - Do not weaken fee safety thresholds.
 - Do not change PDF extraction behavior.
 - Do not require real Supabase credentials for unit tests.
@@ -98,23 +108,20 @@ Do not create a production UI in this task unless it is trivial and fully tested
 
 Add or update tests for:
 
-1. Pause creates an active `bot_pauses` row and updates the active conversation to `human_paused`.
-2. Resume marks the active pause as resumed and returns the conversation to a safe non-silent state.
-3. Paused customers are treated as silent / no bot response path.
-4. Admin case summary resolves:
-   - customer name
-   - PSID
-   - conversation state
-   - latest memory fields
-   - selected tour lock if present
-   - latest offer snapshot if present
-   - open handoff if present
-5. Open handoff queue can be listed deterministically.
-6. No secrets or wholesale partner names are introduced.
+1. Parser recognizes `cases`, `cases paused`, `handoffs`, `case`, `pause`, `resume`, and `help`.
+2. Parser handles Thai/English whitespace and unknown commands safely.
+3. `cases` result calls/list-renders admin cases safely.
+4. `handoffs` result calls/list-renders open handoffs safely.
+5. `case <id>` renders customer name, state, selected tour/latest offer/handoff when present.
+6. `pause <id>` calls `pause_bot_for_customer` and returns a paused confirmation.
+7. `resume <id>` calls `resume_bot_for_customer` and returns a resumed confirmation.
+8. Missing target returns an admin-safe error and does not mutate pause state.
+9. Output text masks PSIDs where appropriate and contains no secret patterns.
+10. Output text contains no wholesale partner names, including hostile fixture strings.
 
 Run the broad non-live V2 suite if feasible.
 
-## Deliverables
+## Deliverable
 
 Write:
 
@@ -124,11 +131,11 @@ Update:
 
 `docs/tasks/AGENT_STATUS.json`
 
-Use status:
+Commit and push your changes to:
 
-`READY_FOR_QA`
+`v2/s4-followup-vision-ondemand`
 
-## Dev Report Requirements
+## Dev Report Format
 
 Include:
 
@@ -143,4 +150,4 @@ Include:
 
 ## Stop Condition
 
-After writing the Dev report and AGENT_STATUS, stop and wait for QA/Codex review.
+After writing the report/status and pushing, stop. Do not proceed to QA yourself.

@@ -66,11 +66,40 @@ Expected deliverables:
 
 ### `QA-2026-05-19-004`
 
-Status: `PENDING`
+Status: `QA_GO`
 
 Goal:
 
 Review Dev output for admin handoff, bot pause/resume, memory continuity, dashboard-safe case summaries, and scope discipline.
+
+Result:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+- QA verdict: `GO`.
+- Latest QA status commit observed by Codex: `af6d3e9`.
+
+### `DEV-2026-05-19-005`
+
+Status: `PENDING`
+
+Goal:
+
+Wire the QA-cleared admin_ops foundation into a deterministic LINE admin command handler core so staff can list cases, inspect a case, pause the bot, and resume the bot without live LINE API calls.
+
+Expected deliverables:
+
+- V2-only code/tests/docs changes
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+### `QA-2026-05-19-005`
+
+Status: `PENDING`
+
+Goal:
+
+Review Dev output for the LINE admin command handler core, including parser coverage, admin_ops integration, pause/resume safety, and leakage controls.
 
 Expected deliverables:
 
