@@ -168,3 +168,38 @@ Result:
 - QA verified targeted tests: 41 passed.
 - QA verified broad non-live V2 suite: 563 passed, 7 skipped (flask-only), 0 failed.
 - Next action: Codex review, commit/push QA artifacts, then apply migration 020 on staging before downstream wiring.
+
+### `DEV-2026-05-19-007`
+
+Status: `PENDING`
+
+Goal:
+
+Wire the QA-cleared Page Post Intelligence foundation into the V2 sales-agent planning layer and deterministic admin command core.
+
+Expected deliverables:
+
+- Admin commands for recent posts and full/sold-out overrides.
+- Response-planning wiring that blocks deterministic full/sold-out candidates.
+- Compact page-post/ad/organic context passed to the response layer.
+- V2-only code/tests/docs changes.
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Operational note:
+
+- Migration `20260519_020_page_post_intelligence.sql` has QA GO, but Codex could not apply it to staging yet because the Supabase connector requires re-authentication and local staging DB credentials are not present in the shell.
+- Dev should not attempt live Supabase access; implement/test with local fakes only.
+
+### `QA-2026-05-19-007`
+
+Status: `PENDING`
+
+Goal:
+
+Review Dev output for page-post/sold-out command wiring, response-planning blocking, compact context, and scope discipline.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`

@@ -1,29 +1,28 @@
 # Current QA Task
 
-Task ID: `QA-2026-05-19-006`
+Task ID: `QA-2026-05-19-007`
 Status: `PENDING`
 Assigned role: Claude Cowork QA
 Controller: Codex
 
 ## Task
 
-Review Dev task `DEV-2026-05-19-006`.
+Review Dev task `DEV-2026-05-19-007`.
 
 This QA task is read-only. Do not patch code unless Codex explicitly asks for a QA patch.
 
 ## Context
 
-`DEV-2026-05-19-006` should add a V2-only Page Post Intelligence + Sold-Out Signal foundation.
+`DEV-2026-05-19-007` should wire the QA-cleared Page Post Intelligence foundation into the V2 planning/admin-command layer.
 
 The business problem:
 
-- Admin posts tours on the Facebook page daily.
-- Customers may chat from page posts, ads, or organic messages.
-- The AI should remember recent page posts for at least 3 days.
-- Admin needs a future dashboard control to mark a posted tour as full/sold out.
-- The bot must not recommend a tour that admin marked as full/sold out.
+- Admin posts tours on Facebook daily.
+- Customers may chat from page posts, ads, or organic inbox.
+- Admin needs a deterministic way to mark posted tours or tour codes as `full` / `sold_out`.
+- The bot must not recommend a tour that deterministic code says is full/sold out.
 
-This QA task verifies the foundation only. Live Meta ingestion, visual dashboard UI, production webhook source attribution, and deployment are out of scope.
+Migration `20260519_020_page_post_intelligence.sql` has QA GO, but may not yet be applied to staging at the time of this QA. This QA reviews code and tests only; do not attempt live Supabase access.
 
 ## Review Scope
 
@@ -47,21 +46,20 @@ Verify:
 3. Make.com / Cloudflare / Meta production webhook behavior was not changed.
 4. No secrets were written to files.
 5. No live Meta/Facebook, LINE, OpenAI, OCR, Supabase production, or paid-provider calls are required by tests.
-6. Migrations are additive and do not reset/drop existing staging data.
-7. Page posts can be upserted idempotently by platform/post id.
-8. Recent-post filtering defaults to at least the last 3 days.
-9. Tour references are extracted from post text:
-   - `/tour/ap123456`
-   - `ap123456`
-   - real tour code when present
-10. Admin sold-out/full override can be set and cleared.
-11. Sold-out/full override blocks a candidate tour deterministically.
-12. Expired or absent override allows a candidate tour.
-13. Source context distinguishes page post, ad, organic, and unknown.
-14. Compact context summary avoids dumping excessive post text into LLM context.
-15. Generated admin/bot reason text contains no secrets and no wholesale partner names.
-16. Tests cover all required behaviors.
-17. Broad non-live V2 suite passes or any skips/failures are clearly justified.
+6. Admin command parsing is conservative and deterministic.
+7. `posts` output is compact and does not dump full captions.
+8. `mark_full` / `mark_sold_out` can set the deterministic override.
+9. `clear_full` / `clear_sold_out` can clear the deterministic override.
+10. Ambiguous admin command targets ask for clarification instead of guessing.
+11. Response planning blocks a tour marked `full` or `sold_out`.
+12. Response planning blocks a candidate tied to a full/sold-out page post when source context is present.
+13. Response planning allows candidates when no active override exists.
+14. The response writer does not recommend blocked tours.
+15. LLM does not decide sold-out/full semantics.
+16. LLM context is compact and does not include full page-post history.
+17. New admin/bot text contains no wholesale partner names and no secrets.
+18. Tests cover all required behaviors.
+19. Broad non-live V2 suite passes or any skips/failures are clearly justified.
 
 ## Deliverable
 

@@ -1,13 +1,13 @@
 {
   "controller": "Codex",
-  "current_dev_task": "DEV-2026-05-19-006",
-  "current_qa_task": "QA-2026-05-19-006",
-  "role": "QA",
-  "status": "QA_GO",
-  "verdict": "GO",
-  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T20:30:00+07:00",
-  "next_action": "WAITING_FOR_CODEX_REVIEW",
-  "blocked_reason": null,
-  "notes": "QA-2026-05-19-006 review of DEV-2026-05-19-006 (V2 Page Post Intelligence + Sold-Out Signal foundation). Verdict GO. Migration 20260519_020 is additive/idempotent with proper RLS, CHECK constraints, and partial unique indexes. v2/lib/page_post_context.py is pure deterministic Python — no env reads, no live network, no LLM, no secrets, no wholesale partner names; reuses _WHOLESALE_BLACKLIST from response_writer for single source of truth. 41 targeted tests pass (test_page_post_context.py) and broad non-live V2 suite passes 563 / skipped 7 (flask-only) / 0 failed — same totals Dev reported. All 12 required behaviors covered: upsert idempotency, 3-day window, web/real code extraction, idempotent N:M linking, mark/clear override at tour/departure/post scope, block precedence departure>post>tour, source-type inference, compact title cap (80 chars), reason cap (160 chars), wholesale + secret scrubbing. No V1 (app.py), no Make.com (make_blueprint*.json), no Cloudflare worker, no production webhook, no live Meta/FB/LINE/OpenAI/OCR/Supabase production call. Eight low-severity non-blocking notes captured in report (L1–L8). Five residual risks captured (R1–R5). Cowork sandbox has no .git working tree — Codex must commit/push to v2/s4-followup-vision-ondemand on the real repo clone."
+  "current_dev_task": "DEV-2026-05-19-007",
+  "current_qa_task": "QA-2026-05-19-007",
+  "role": "Controller",
+  "status": "TASK_OPENED",
+  "verdict": null,
+  "report_path": null,
+  "updated_at": "2026-05-19T18:44:05+07:00",
+  "next_action": "SEND_CURRENT_DEV_TASK_TO_CLAUDE_DEV",
+  "blocked_reason": "Migration 020 is QA-cleared but not yet applied to staging because the Supabase connector requires reauthentication and no local staging DB credentials are available in the Codex shell.",
+  "notes": "DEV-2026-05-19-007 opened by Codex after QA-2026-05-19-006 GO. Scope: wire Page Post Intelligence foundation into admin command handling and response planning, without live Meta/LINE/OpenAI/Supabase calls and without touching V1/Make.com/production."
 }

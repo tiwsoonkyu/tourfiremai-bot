@@ -1,114 +1,116 @@
 # Current Dev Task
 
-Task ID: `DEV-2026-05-19-006`
+Task ID: `DEV-2026-05-19-007`
 Status: `PENDING`
 Assigned role: Claude Cowork Dev
 Controller: Codex
 
 ## Task
 
-Build the V2 Page Post Intelligence + Sold-Out Signal foundation.
+Wire the QA-cleared Page Post Intelligence foundation into the V2 sales-agent planning layer and deterministic admin command core.
 
-Business need: most daily sales activity comes from Facebook page posts, ads, and organic chats. The AI must know what admins posted recently, remember at least the last 3 days of page posts, and respect admin sold-out/full signals before recommending a tour.
+This task is the next safe step after `DEV-2026-05-19-006` / `QA-2026-05-19-006`.
 
-This task is foundation only. Do not call Meta Graph API, do not build the visual dashboard UI, and do not change production webhook behavior yet.
+Important operational note:
 
-## Context
+- Migration `20260519_020_page_post_intelligence.sql` has QA GO, but Codex has not applied it to Supabase staging yet because the Supabase connector requires re-authentication and local staging DB credentials are not available in this Codex shell.
+- Dev must write code/tests so the work is locally testable with in-memory fakes and does not require live Supabase.
+- Do not attempt to connect to Supabase from Claude Cowork.
 
-The current V2 priority is Sales Agent reliability before broader company automation.
+## Business Goal
 
-Recent QA-cleared foundations:
+TourFireMai admins post tours on the Facebook page daily. Customer chats can come from:
 
-- Admin handoff + pause/resume foundation
-- Deterministic LINE admin command handler core
-- PDF fee extraction safety foundations
-- Tour canonical database and scraper foundation
+- Recent page posts
+- Ads
+- Organic inbox messages
 
-New product invariant:
+The AI must use source context before recommending tours. If a customer came from a post/ad tied to a tour that admin marked `full` or `sold_out`, the bot must not recommend that tour. It should explain safely and offer available alternatives.
 
-> If a customer comes from a recent page post/ad/organic source that points to a tour marked full/sold out by admin, the bot must not recommend that sold-out option. It should acknowledge the post context and offer the closest available alternatives.
+Admin also needs deterministic commands before the dashboard UI exists:
+
+- See recent page posts
+- Mark a tour/post/departure as full
+- Clear a full/sold-out override
 
 ## Scope
 
-You may modify V2 code, migrations, tests, and docs only.
+You may modify V2 code, tests, and docs only.
 
-Required work:
+Allowed likely files:
 
-1. Inspect existing V2 migrations, `v2/lib/admin_ops.py`, `v2/lib/admin_command_handler.py`, `v2/lib/orchestrator.py`, and current tests.
-2. Add additive migration(s) after `20260518_019_*` for page-post memory and sold-out override storage.
-3. Add a pure deterministic V2 service module for page post context and sold-out decisions.
-4. Add unit tests with no live network calls and no real credentials.
-5. Update docs with a concise plan/contract for future dashboard and Meta source attribution wiring.
+- `v2/lib/orchestrator.py`
+- `v2/lib/response_writer.py`
+- `v2/lib/admin_command_handler.py`
+- `v2/lib/page_post_context.py` only if a tiny helper is required
+- `v2/tests/*`
+- `docs/*`
 
-Suggested implementation shape:
+Do not add a new migration in this task unless absolutely necessary. The storage layer was created in migration 020.
 
-- Migration: `v2/supabase/migrations/20260519_020_page_post_intelligence.sql`
-- Module: `v2/lib/page_post_context.py`
-- Tests: `v2/tests/test_page_post_context.py`
+## Required Work
 
-Suggested tables or equivalent:
+1. Inspect:
+   - `v2/lib/page_post_context.py`
+   - `v2/lib/admin_command_handler.py`
+   - `v2/lib/orchestrator.py`
+   - `v2/lib/response_writer.py`
+   - related tests
 
-- `page_posts`
-  - platform, page_id, post_id, permalink_url, posted_at, text_hash, caption_text, status, active_until
-  - default relevance window: 3 days from `posted_at`
-- `page_post_tour_links`
-  - post_id reference, web_code, tour_code_real, tour_id/tour canonical reference if available, confidence, status
-- `tour_availability_overrides`
-  - web_code/tour_code_real/tour_id, status (`available`, `sold_out`, `full`, `unknown`), scope (`tour`, `departure`, `post`), reason, marked_by, marked_at, expires_at
+2. Add deterministic admin command support for page-post/sold-out operations:
+   - `posts`
+   - `post <post_id>` or `post <short id>` if local patterns support it
+   - `mark_full <web_code|tour_code|post_id> [reason]`
+   - `mark_sold_out <web_code|tour_code|post_id> [reason]`
+   - `clear_full <web_code|tour_code|post_id>`
+   - `clear_sold_out <web_code|tour_code|post_id>`
 
-Use the existing schema style if there is a better local pattern.
+   Keep command parsing conservative. If the target is ambiguous, return a safe message asking admin to specify `web_code`, real tour code, or post id.
 
-## Required Behaviors
+3. Wire page-post planning context into the sales-agent response path:
+   - Before writing a recommendation, collect compact source context via the page-post service where available.
+   - If `replacement_needed` / blocked candidate is returned, do not recommend the blocked tour.
+   - Add a deterministic planning note for the response writer: source type, recent post title/code, blocked reason, and replacement requirement.
+   - Keep LLM context compact. Do not dump full post captions.
 
-1. Store/update recent page posts idempotently by `(platform, post_id)`.
-2. Detect tour references from page post text:
-   - tour URL such as `/tour/ap123456`
-   - web code such as `ap123456`
-   - real tour code if present
-3. `list_recent_page_posts(days=3)` returns only active posts in the recent window by default.
-4. Admin can mark a linked tour/post/departure as `sold_out` or `full` through a pure function.
-5. Admin can clear a sold-out/full override through a pure function.
-6. A response-planning helper can answer:
-   - source type: `page_post`, `ad`, `organic`, or `unknown`
-   - recent post context if available
-   - whether a candidate tour must be blocked because it is sold out/full
-   - safe Thai admin/bot-facing reason text
-7. If a tour from a recent post is sold out/full, return a deterministic replacement-needed signal instead of silently offering it.
-8. Do not expose wholesale partner names.
-9. Do not put full post history into LLM context. Return a compact deterministic context summary only.
-10. Do not make live Meta/Facebook, LINE, OpenAI, OCR, Supabase production, or paid-provider calls in tests.
+4. Preserve core invariants:
+   - LLM must not decide sold-out/full semantics.
+   - Sold-out/full decisions must come from deterministic code.
+   - Do not mention wholesale partner names.
+   - Do not confirm seats or final price.
+   - Do not expose full post history to the LLM.
 
-## Future Work Out of Scope
-
-Do not implement these in this task:
-
-- Live Meta Graph API page-post ingestion
-- Visual admin dashboard UI
-- Production webhook source-attribution wiring
-- Real LINE admin command adapter
-- Production deploy
-- V1 or Make.com changes
-
-This task should prepare the data model and deterministic service layer so those follow-up tasks are small and safe.
+5. Add tests that prove the wiring works without live services.
 
 ## Required Tests
 
-Add or update tests for:
+Add/update unit tests for:
 
-1. Upsert page post idempotency.
-2. 3-day recent-post filtering.
-3. Extraction of web code from tour URLs and plain text.
-4. Extraction of real tour code when present.
-5. Linking a page post to one or more tours.
-6. Marking a linked tour/post as `sold_out`.
-7. Clearing a sold-out/full override.
-8. Candidate tour blocking when sold-out/full override exists.
-9. Candidate tour allowed when no override exists or override expired.
-10. Source context: page post vs ad vs organic.
-11. Compact context summary does not include excessive post text.
-12. No secrets or wholesale partner names in generated admin/bot text.
+1. Admin command `posts` returns recent-post summaries only, not full captions.
+2. Admin command `mark_full <web_code>` calls the page-post/sold-out service and returns a safe Thai/English admin-facing confirmation.
+3. Admin command `clear_full <web_code>` clears the override.
+4. Ambiguous admin command target returns a safe clarification message.
+5. Response planning blocks a candidate tour marked `full`.
+6. Response planning blocks a candidate from a marked-full page post.
+7. Response planning allows a candidate when no override exists.
+8. Response planning emits compact context only.
+9. The response writer does not recommend a blocked tour.
+10. No wholesale partner names or secrets leak in new admin/bot text.
 
 Run targeted tests and the broad non-live V2 suite if feasible.
+
+## Out of Scope
+
+Do not implement:
+
+- Live Meta Graph API page-post ingestion
+- Live Facebook/Meta source-attribution webhook parsing
+- Visual dashboard UI
+- Real LINE Messaging API send/receive adapter
+- Production deploy
+- Supabase production access
+- V1 or Make.com changes
+- Live paid OpenAI/OCR/provider calls
 
 ## Deliverable
 
@@ -120,9 +122,11 @@ Update:
 
 `docs/tasks/AGENT_STATUS.json`
 
-Commit and push your changes to:
+Commit and push changes to:
 
 `v2/s4-followup-vision-ondemand`
+
+If Claude Cowork has no `.git` checkout, write the files in the shared workspace and stop. Codex will copy/commit/push.
 
 ## Dev Report Format
 
@@ -139,4 +143,4 @@ Include:
 
 ## Stop Condition
 
-After writing the report/status and pushing, stop. Do not proceed to QA yourself.
+After writing the report/status and pushing if possible, stop. Do not proceed to QA yourself.
