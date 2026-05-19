@@ -1,10 +1,10 @@
 # CURRENT QA TASK
 
 ## Task ID
-QA-2026-05-19-011
+QA-2026-05-20-012
 
 ## Title
-QA Review - Sprint 5 Package E Admin-Only Staging Preflight
+QA Review - Sprint 5 Package F Detail Page Departure Price Table Parser
 
 ## Status
 PENDING
@@ -22,7 +22,7 @@ Use GitHub repo as source of truth:
 - Repo: `github.com/tiwsoonkyu/tourfiremai-bot`
 - Branch: `v2/s4-followup-vision-ondemand`
 
-If your local Cowork workspace lacks git/source files, differs from the GitHub branch, or cannot inspect the changed files, stop and report:
+If local workspace lacks git/source files, differs from the GitHub branch, or cannot inspect the changed files, stop and report:
 
 `BLOCKED: source-of-truth repo unavailable`
 
@@ -37,28 +37,29 @@ Run this QA task only after Dev writes:
 
 ## Review Goal
 
-Decide whether the admin-only staging preflight package is safe and clear enough for Codex/Tiw to proceed toward manual staging setup and admin-only Messenger testing.
+Decide whether the detail page departure price table parser is deterministic, safe, and accurate enough to become the source of truth for row-level departure prices before admin-only real-chat testing.
 
 This QA task does not approve production go-live.
 
 ## Required Checks
 
-Review DEV-2026-05-19-011 as one integrated package.
+Review DEV-2026-05-20-012 as one integrated package.
 
 Verify:
 
-1. New preflight code is V2-only and does not touch V1.
-2. Preflight never prints raw secrets, raw PSIDs, service keys, passwords, app secrets, webhook tokens, or OpenAI keys.
-3. Preflight reports admin-only mode disabled as not ready.
-4. Preflight reports missing required staging env vars clearly.
-5. Preflight treats OpenAI/OCR/live provider keys as not required for admin-only preflight.
-6. Migration 020 readiness check verifies the three expected tables.
-7. Migration 020 readiness check verifies RLS, anon-deny, and service_role policies.
-8. Dev did not apply Supabase migrations.
-9. Dev did not call Meta, LINE, OpenAI, OCR, paid providers, or production webhooks.
-10. Runbook now has a clear "Before Meta Webhook Change" checklist.
-11. Tests cover both ready and not-ready paths.
-12. Broad non-live suite has no regressions, or Dev explains a credible environment limitation.
+1. Parser is V2-only and does not touch V1.
+2. Parser uses `/tour/<web_code>` for detail pages and does not rely on `/intertourdetail/<web_code>`.
+3. Parser does not call LLM, OpenAI, OCR, Meta, LINE, Supabase, or paid providers in unit tests.
+4. `web_code`, `tour_code_real`, and airline remain distinct and are not mixed.
+5. `-`, empty strings, and non-price placeholders map to `NULL` / `None`, never `0`.
+6. Thai date ranges parse correctly for same-month, cross-month, and Buddhist Era year suffix cases.
+7. Row-level adult price, child price, single supplement, joinland, group size, and status text are captured where present.
+8. Contact/status text such as "ติดต่อเจ้าหน้า" is preserved but not interpreted as sold-out.
+9. Migration 021 is additive and backward-compatible with existing `tour_departures` fields.
+10. Adapter maps `adult_price` to legacy `price` without losing detailed row fields.
+11. Read-only live smoke CLI, if added, does not write to DB, does not print secrets, and is safe to run manually.
+12. Tests cover parser success, parser edge cases, migration SQL, and no-regression paths.
+13. Broad non-live suite has no regressions, or Dev explains a credible environment limitation.
 
 ## Out of Scope For QA
 
@@ -98,3 +99,4 @@ Write `docs/tasks/QA_REPORT_CURRENT.md` with:
 7. Next recommended step
 
 Then stop for Codex.
+

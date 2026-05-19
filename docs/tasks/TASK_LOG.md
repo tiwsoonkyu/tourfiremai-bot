@@ -481,3 +481,64 @@ Verdict options:
 - `GO_WITH_NOTES`
 - `NO_GO`
 - `BLOCKED`
+
+Result:
+
+- QA verdict: `GO`
+- Reported by Tiw from Claude QA session.
+- Codex note: detailed QA report was not pasted into this repo at the time of controller update, so this log records owner-reported QA status.
+- Controller outcome: `DEV-2026-05-19-011` accepted, `QA-2026-05-19-011` accepted.
+
+## 2026-05-20
+
+### `DEV-2026-05-20-012`
+
+Status: `PENDING`
+
+Goal:
+
+Implement Sprint 5 Package F as one detail-page departure price table parser package:
+
+- Parse `tourfiremai.com/tour/<web_code>` detail pages.
+- Extract per-departure rows with exact date range, adult price, child price, single supplement, joinland, group size, and status text.
+- Keep `web_code`, `tour_code_real`, and airline distinct.
+- Add additive migration 021 for detailed departure row fields.
+- Add a read-only live smoke CLI if appropriate.
+
+Expected deliverables:
+
+- V2-only code/tests/docs.
+- `v2/supabase/migrations/20260520_021_departure_price_rows.sql`
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No Supabase migration apply from Claude Dev.
+- No customer-facing outbound replies.
+
+### `QA-2026-05-20-012`
+
+Status: `PENDING`
+
+Goal:
+
+Review DEV-2026-05-20-012 as one integrated detail-page departure price table parser package.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`
+- `BLOCKED`
