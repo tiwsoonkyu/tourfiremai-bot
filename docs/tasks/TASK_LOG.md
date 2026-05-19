@@ -298,7 +298,7 @@ Result:
 
 ### `DEV-2026-05-19-009`
 
-Status: `PENDING`
+Status: `READY_FOR_QA`
 
 Goal:
 
@@ -315,6 +315,19 @@ Expected deliverables:
 - `docs/tasks/DEV_REPORT_CURRENT.md`
 - `docs/tasks/AGENT_STATUS.json`
 
+Result:
+
+- Dev verdict: `READY_FOR_QA`
+- GitHub branch: `v2/s4-followup-vision-ondemand`
+- Dev commit: `08ed251`
+- Implemented Sprint 5 Package C runtime wiring:
+  - Meta webhook records deterministic `source_attribution` conversation events while preserving silent ingest.
+  - Added `POST /admin/line` route with `LineAdminAdapter` allow-list gate and no live LINE sends.
+  - Added guarded `GET /admin/dashboard/{cases,cases/<id>,posts,handoffs}` read API shim.
+  - Admin responses defensively strip raw PSIDs.
+- Codex verification: targeted runtime suite `77 passed`; broad non-live V2 suite `662 passed`.
+- No V1 / Make.com / deploy / production webhook settings / secrets / live provider changes.
+
 Hard rules:
 
 - No V1.
@@ -327,7 +340,7 @@ Hard rules:
 
 ### `QA-2026-05-19-009`
 
-Status: `PENDING`
+Status: `QA_GO`
 
 Goal:
 
@@ -343,3 +356,9 @@ Verdict options:
 - `GO`
 - `GO_WITH_NOTES`
 - `NO_GO`
+
+Result:
+
+- QA verdict: `GO`
+- Reported by Tiw from Claude QA session.
+- Codex note: QA report file was not pushed into this repo at the time of controller update, so this log records owner-reported QA status and the repository evidence from Dev/Codex verification.

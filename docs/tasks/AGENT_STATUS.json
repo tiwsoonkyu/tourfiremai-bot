@@ -2,12 +2,12 @@
   "controller": "Codex",
   "current_dev_task": "DEV-2026-05-19-009",
   "current_qa_task": "QA-2026-05-19-009",
-  "role": "Dev",
-  "status": "READY_FOR_QA",
-  "verdict": null,
-  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-19T23:55:00+07:00",
-  "next_action": "CLAUDE_QA_RUN_CURRENT_QA_TASK",
+  "role": "Controller",
+  "status": "QA_GO",
+  "verdict": "GO",
+  "report_path": "docs/tasks/TASK_LOG.md",
+  "updated_at": "2026-05-19T23:59:00+07:00",
+  "next_action": "CODEX_SELECT_NEXT_TASK",
   "blocked_reason": null,
-  "notes": "Sprint 5 Package C runtime wiring implemented as one integration package. Webhook now records a deterministic source_attribution conversation_events row per accepted Meta event (silent-ingest preserved — no outbound reply). New Flask shim v2/webhook/admin_routes.py adds POST /admin/line (LineAdminAdapter allow-list gated, no live LINE API) and GET /admin/dashboard/{cases,cases/<id>,posts,handoffs} guarded by X-Admin-Token via hmac.compare_digest. All admin responses passed through _strip_raw_psid as a defensive net so raw PSIDs cannot leak even if an upstream view-model regresses. Targeted suite (8 files): 77 passed / 0 failed. Broad non-live V2 suite: 662 passed / 0 failed (was 638). Hard rules respected: no V1, no Make.com, no deploy, no production webhook settings change, no secrets, no live Meta/LINE/OpenAI/OCR/paid-provider calls, no Supabase migrations from Dev. Orchestrator invocation from the webhook is NOT enabled in this package — the recorded source attribution is the seam a future task will use to flip orchestrator-on-webhook on; a replay test (test_recorded_attribution_blocks_via_orchestrator) proves the wire reaches planning."
+  "notes": "QA-2026-05-19-009 reported GO by Tiw. Sprint 5 Package C is controller-accepted: source attribution seam, LINE admin route, and dashboard read API shim are ready on V2 staging branch. Next recommended controller decision: open Sprint 5 Package D for staging runtime smoke tests and operational runbook, or open dashboard frontend/admin UX package if Tiw wants visible admin control next."
 }
