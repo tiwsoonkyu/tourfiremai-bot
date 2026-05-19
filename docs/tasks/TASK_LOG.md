@@ -550,3 +550,61 @@ Result:
 - Codex note: detailed QA matrix was not committed to this repo at the time of controller update, so this log records owner-reported QA status without fabricating note details.
 - Controller outcome: `DEV-2026-05-20-012` accepted, `QA-2026-05-20-012` accepted with notes.
 - Next action: apply migration `20260520_021_departure_price_rows.sql` to V2 Supabase staging, then open the follow-up Dev task to wire parsed departure rows into scraper/detail enrichment and selected-tour memory.
+
+Controller follow-up:
+
+- Codex applied migration `20260520_021_departure_price_rows.sql` to V2 Supabase staging project `tourfiremai-v2-staging` (`mbcihtcdwfofagkxphcu`).
+- Verification passed: 15 new columns present, 4 constraints present, 3 indexes present.
+- No V1 / production / Make.com / deployment changes.
+
+### `DEV-2026-05-20-013`
+
+Status: `PENDING`
+
+Goal:
+
+Wire the DEV-012 detail-page departure parser into V2 scraper/detail enrichment and selected-tour memory:
+
+- use `/tour/<web_code>` detail reads only;
+- persist parsed departure rows to migration 021 fields idempotently;
+- preserve `web_code`, `tour_code_real`, and airline separately;
+- make selected-date row matching deterministic and refuse to guess;
+- keep customer-facing production behavior unchanged.
+
+Expected deliverables:
+
+- V2-only scraper/detail enrichment code.
+- V2-only selected-tour row matching / memory helper code.
+- Tests.
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No customer-wide traffic.
+
+### `QA-2026-05-20-013`
+
+Status: `PENDING`
+
+Goal:
+
+Review DEV-2026-05-20-013 as one integrated detail departure rows wiring package.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`
+- `BLOCKED`

@@ -1,10 +1,10 @@
 # CURRENT QA TASK
 
 ## Task ID
-QA-2026-05-20-012
+QA-2026-05-20-013
 
 ## Title
-QA Review - Sprint 5 Package F Detail Page Departure Price Table Parser
+QA Review - Sprint 5 Package G Detail Departure Rows Wiring
 
 ## Status
 PENDING
@@ -37,29 +37,26 @@ Run this QA task only after Dev writes:
 
 ## Review Goal
 
-Decide whether the detail page departure price table parser is deterministic, safe, and accurate enough to become the source of truth for row-level departure prices before admin-only real-chat testing.
+Decide whether DEV-2026-05-20-013 safely wires the detail departure parser into scraper/detail enrichment and selected-tour memory without changing production behavior.
 
 This QA task does not approve production go-live.
 
 ## Required Checks
 
-Review DEV-2026-05-20-012 as one integrated package.
+Review DEV-2026-05-20-013 as one integrated package.
 
 Verify:
 
-1. Parser is V2-only and does not touch V1.
-2. Parser uses `/tour/<web_code>` for detail pages and does not rely on `/intertourdetail/<web_code>`.
-3. Parser does not call LLM, OpenAI, OCR, Meta, LINE, Supabase, or paid providers in unit tests.
-4. `web_code`, `tour_code_real`, and airline remain distinct and are not mixed.
-5. `-`, empty strings, and non-price placeholders map to `NULL` / `None`, never `0`.
-6. Thai date ranges parse correctly for same-month, cross-month, and Buddhist Era year suffix cases.
-7. Row-level adult price, child price, single supplement, joinland, group size, and status text are captured where present.
-8. Contact/status text such as "ติดต่อเจ้าหน้า" is preserved but not interpreted as sold-out.
-9. Migration 021 is additive and backward-compatible with existing `tour_departures` fields.
-10. Adapter maps `adult_price` to legacy `price` without losing detailed row fields.
-11. Read-only live smoke CLI, if added, does not write to DB, does not print secrets, and is safe to run manually.
-12. Tests cover parser success, parser edge cases, migration SQL, and no-regression paths.
-13. Broad non-live suite has no regressions, or Dev explains a credible environment limitation.
+1. DEV-012 parser is reused and not reimplemented inconsistently.
+2. Detail reads use `/tour/<web_code>` only, not `/intertourdetail/<web_code>`.
+3. Row persistence/mapping is idempotent and non-destructive.
+4. `-`, empty strings, and non-price placeholders remain `NULL` / `None`, never `0`.
+5. `web_code`, `tour_code_real`, and airline remain distinct.
+6. Selected-date matching is deterministic and refuses to guess on ambiguous/no-match input.
+7. Contact/status text is preserved but not interpreted as sold-out.
+8. No unit tests call live network, LLM, OpenAI, OCR, Meta, LINE, or paid providers.
+9. Broad non-live suite has no regressions, or Dev explains a credible environment limitation.
+10. No V1, Make.com, production webhook, deploy, or secret changes.
 
 ## Out of Scope For QA
 

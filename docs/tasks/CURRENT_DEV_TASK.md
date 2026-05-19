@@ -1,10 +1,10 @@
 # CURRENT DEV TASK
 
 ## Task ID
-DEV-2026-05-20-012
+DEV-2026-05-20-013
 
 ## Title
-Sprint 5 Package F - Detail Page Departure Price Table Parser
+Sprint 5 Package G - Wire Detail Departure Rows Into Scraper and Selected-Tour Memory
 
 ## Status
 PENDING
@@ -28,160 +28,94 @@ If local workspace lacks git/source files, differs from GitHub branch, or cannot
 
 Do not invent scope from chat memory. This file is the approved scope for the current Dev task.
 
-## Business Context
+## Context
 
-Customer-facing sales quality currently depends on the bot being able to read exact departure rows and prices from each tour detail page.
+DEV-2026-05-20-012 created and QA-cleared the deterministic `/tour/<web_code>` detail-page parser. Codex applied and verified staging migration `20260520_021_departure_price_rows.sql` on V2 Supabase staging (`tourfiremai-v2-staging`) before opening this task.
 
-Listing pages are useful for Top 3 discovery, but they are not enough for booking-stage answers because:
+The next sales-quality gap is wiring those parsed departure rows into the V2 scraper/detail enrichment path and selected-tour memory, so the bot can later answer exact row-level date/price questions without losing context or mixing codes.
 
-- departure prices can differ by date;
-- single supplement, joinland, child prices, group size, and status appear in the detail page price table;
-- customer date selection must lock an exact departure row before any booking summary;
-- sold-out / full status may come from admin overrides, not necessarily from the website row status.
+## Business Goal
 
-## Goal
+When a customer selects a tour and/or asks for a specific departure date, V2 must have deterministic row-level data available:
 
-Build a deterministic parser for `tourfiremai.com/tour/<web_code>` detail pages that extracts the per-departure price table into structured rows.
-
-This is a foundation task only. It must not change production traffic, customer webhook behavior, or final sales recommendation logic unless explicitly scoped below.
-
-## Live HTML Findings To Preserve
-
-- Correct detail URL pattern is `/tour/<web_code>`.
-- Older `/intertourdetail/<web_code>` returned HTTP 500 in live checks and should not be used for new V2 code.
-- The price table is server-rendered HTML and does not require a headless browser.
-- The layout is div-based, not a normal `<table>`.
-- Known structure:
-  - `div.table-dateprice`
-  - row wrapper: `div.b-tb-dp`
-  - cells: `s-tb1-n` through `s-tb9-n`
-- `-` means "missing / not provided" and must be stored as `NULL`, never `0`.
-- Status cell often contains only the LINE/contact button text such as `ติดต่อเจ้าหน้า`; parser should preserve raw text and class signals but must not treat this as sold-out.
-- Sold-out / full should be controlled by `tour_availability_overrides` from migration 020 when present.
-- `tour_code_real` appears in the page header near `.b-codepg` and must be kept separate from:
-  - `web_code` such as `ap232919`
-  - airline such as `XJ` or `VZ`
+- exact departure start/end;
+- adult / child / single supplement / joinland / group size where present;
+- web code vs real tour code vs airline kept separate;
+- no sold-out inference from generic website contact text;
+- no final seat or final price confirmation.
 
 ## Scope
 
-### 1. Add Detail Departure Parser
+### 1. Wire Parser Into Scraper / Detail Enrichment
 
-Create a V2-only module, preferred location:
-
-- `v2/scraper/departure_price_table.py`
-
-Implement pure parsing helpers with no DB writes and no network by default:
-
-- `DeparturePriceRow` dataclass or typed dict
-- `parse_departure_price_table(html: str, web_code: str, source_url: str | None = None) -> list[DeparturePriceRow]`
-- `parse_detail_header_codes(html: str) -> dict`
-
-Each row should capture at minimum:
-
-- `web_code`
-- `tour_code_real`
-- `departure_start`
-- `departure_end`
-- `departure_label_raw`
-- `bus`
-- `adult_price`
-- `child_bed_price`
-- `child_no_bed_price` if present / derivable
-- `single_supplement_price`
-- `joinland_price`
-- `group_size`
-- `status_text`
-- `status_class`
-- `availability_status`
-- `source_url`
-
-Parser rules:
-
-- Thai Buddhist Era year such as `69` must parse to Gregorian `2026`.
-- Thai month abbreviations must parse correctly, including May, June, July, and August abbreviations as they appear on the live website.
-- Date ranges crossing months must parse correctly, e.g. a late-July to early-August Buddhist Era year suffix range.
-- Money strings with comma parse to integers.
-- `-`, empty string, or non-price placeholders parse to `None`.
-- Do not infer sold-out from generic contact text.
-- Do not call LLM, OpenAI, OCR, Meta, LINE, Supabase, or external APIs from parser tests.
-
-### 2. Add Schema Migration
-
-Add a new additive migration:
-
-- `v2/supabase/migrations/20260520_021_departure_price_rows.sql`
-
-Preferred approach: extend `tour_departures` in a backward-compatible way.
-
-Add columns if missing:
-
-- `departure_start DATE`
-- `departure_end DATE`
-- `departure_label_raw TEXT`
-- `bus INTEGER`
-- `adult_price INTEGER`
-- `child_bed_price INTEGER`
-- `child_no_bed_price INTEGER`
-- `single_supplement_price INTEGER`
-- `joinland_price INTEGER`
-- `group_size INTEGER`
-- `status_text TEXT`
-- `status_class TEXT`
-- `availability_status TEXT`
-- `source_url TEXT`
-
-Compatibility mapping:
-
-- Existing `departure_date` may mirror `departure_start`.
-- Existing `return_date` may mirror `departure_end`.
-- Existing `price` may mirror `adult_price`.
-
-Do not apply the migration in this Dev task.
-
-### 3. Add Upsert Helper Or Dry-Run Adapter
-
-Add a deterministic adapter function that converts parsed rows into the existing `tour_departures` shape.
+Integrate `v2/scraper/departure_price_table.py` into the V2 scraper/detail flow.
 
 Preferred locations:
 
-- same parser module, or
-- `v2/scraper/scrape_tours.py` if it already owns upsert logic.
+- `v2/scraper/scrape_tours.py`
+- or a small V2-only helper module if that keeps the existing scraper cleaner.
 
-Rules:
+Required behavior:
 
-- Must be idempotent by `(tour_id or web_code, departure_start, departure_end, bus)` where possible.
-- Must not destroy existing rows.
-- Must not map missing prices to zero.
-- Must preserve exact row price for future selected-date locking.
+- Use `/tour/<web_code>` only for detail-page reads.
+- Do not use `/intertourdetail/<web_code>`.
+- Fetch detail page only when needed for detail enrichment / selected-tour context, not for every generic greeting.
+- Parse and map departure rows using the DEV-012 parser.
+- Preserve `web_code`, `tour_code_real`, and `airline` as distinct fields.
 
-### 4. Add Read-Only Live Smoke CLI
+### 2. Persist Parsed Rows To `tour_departures`
 
-Add an optional CLI that fetches 1-3 real detail pages and prints a redacted structured summary.
+Add an idempotent persistence helper for parsed detail rows.
 
-Preferred location:
+Required behavior:
 
-- `v2/tools/live_detail_departure_smoke.py`
+- Use migration 021 columns already applied on staging.
+- Do not destroy existing rows.
+- Do not map missing values to zero.
+- Prefer idempotent matching on `(tour_id or web_code, departure_start, departure_end, bus)` where possible.
+- Mirror compatibility fields where needed:
+  - `departure_start` -> legacy `departure_date`
+  - `departure_end` -> legacy `return_date`
+  - `adult_price` -> legacy `price`
+- Preserve detailed fields:
+  - `departure_label_raw`
+  - `bus`
+  - `adult_price`
+  - `child_bed_price`
+  - `child_no_bed_price`
+  - `single_supplement_price`
+  - `joinland_price`
+  - `group_size`
+  - `status_text`
+  - `status_class`
+  - `availability_status`
+  - `source_url`
+  - `tour_code_real`
 
-Rules:
+### 3. Selected-Tour Memory / Offer Snapshot Readiness
 
-- Read-only.
-- No DB write.
-- No LLM.
-- No secrets.
-- Default sample web codes may include `ap232919`, `ap242455`, `ap183598`.
-- Output must be compact and safe for Dev reports.
+Add deterministic data structures or helpers so a selected tour can carry row-level departure options forward.
 
-### 5. Tests
+Required behavior:
+
+- When a customer selects "ตัวที่ 1", web code, real tour code, price, or name, the selected tour context should be able to include parsed departure rows.
+- If the customer then says a date such as "13 มิ.ย. 3 คน", helper logic should identify the matching departure row or return an explicit low-confidence / no-match result.
+- Do not write customer-facing response copy in this task unless it is test-only or internal planning data.
+- Do not make the LLM the source of truth for selected row matching.
+
+### 4. Tests
 
 Add targeted tests covering:
 
-- parse rows from saved HTML fixture snippets;
-- parse Thai date ranges with same month, different month, and year suffix;
-- parse money values and `-` as `None`;
-- extract `tour_code_real` separately from `web_code` and airline;
-- status text is preserved but not treated as sold-out;
-- migration SQL contains all expected additive columns;
-- adapter maps `adult_price` to legacy `price` without losing detailed price fields.
+- detail page parser is called from the scraper/detail enrichment path;
+- parsed rows upsert/mapping preserves detailed fields;
+- `-` stays `None` / SQL NULL, never `0`;
+- `web_code`, `tour_code_real`, and airline stay separate;
+- selected-date matching finds the correct departure row;
+- selected-date matching returns no-match instead of guessing;
+- generic contact/status text is not treated as sold-out;
+- no live network calls in unit tests;
+- no V1 / Make.com / production webhook changes.
 
 Run:
 
@@ -200,16 +134,16 @@ Do not:
 - apply Supabase migrations;
 - read or print secrets;
 - call OpenAI, OCR, LINE, Meta, or paid providers;
-- change customer-facing response copy;
-- change fee extraction thresholds;
-- change admin dashboard routes;
-- mark tours sold-out based only on website contact button text.
+- enable customer-wide traffic;
+- confirm seat availability, final price, payment, or booking success;
+- infer sold-out/full from website contact button text;
+- change fee extraction confidence thresholds.
 
 ## Expected Deliverables
 
-- New parser module and tests.
-- Migration 021 SQL file.
-- Optional read-only live smoke CLI.
+- V2-only scraper/detail enrichment code.
+- V2-only selected-tour row matching / memory helper code.
+- Tests.
 - Updated docs if needed.
 - `docs/tasks/DEV_REPORT_CURRENT.md`.
 - `docs/tasks/AGENT_STATUS.json`.
@@ -221,7 +155,7 @@ Write `docs/tasks/DEV_REPORT_CURRENT.md` with:
 1. Status
 2. Files changed
 3. Summary of changes
-4. Live HTML assumptions verified
+4. Migration 021 usage assumptions
 5. Tests run
 6. Risks / assumptions
 7. What QA should verify
@@ -233,13 +167,12 @@ Then stop for QA.
 
 QA should verify:
 
-- parser is deterministic and does not use LLM/OCR/network in unit tests;
-- `/tour/<web_code>` is used for future detail reads, not `/intertourdetail/<web_code>`;
-- `web_code`, `tour_code_real`, and airline are not mixed;
-- `-` is stored as `NULL`, not `0`;
-- row-level adult price and single supplement are captured correctly;
-- status/contact text is not interpreted as sold-out;
-- migration 021 is additive and backward-compatible;
+- DEV-012 parser is reused, not duplicated;
+- detail reads use `/tour/<web_code>`, not `/intertourdetail/<web_code>`;
+- row persistence is idempotent and non-destructive;
+- missing values remain null, never zero;
+- selected-date matching is deterministic and refuses to guess;
+- real tour code, web code, and airline are not mixed;
+- no customer-facing production behavior changed;
 - no V1, Make.com, production webhook, deploy, or secret changes.
-
 
