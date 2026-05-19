@@ -74,7 +74,8 @@ Update:
 
 `docs/tasks/AGENT_STATUS.json`
 
-Commit and push the QA report/status only.
+Do not commit or push from Claude Cowork if the workspace has no `.git` checkout.
+Codex will commit and push the QA report/status after reading the files from the shared workspace.
 
 ## QA Report Format
 
@@ -90,4 +91,4 @@ Include:
 
 ## Stop Condition
 
-After writing the report/status and pushing, stop. Do not continue implementation.
+After writing the report/status, stop. Do not continue implementation.
