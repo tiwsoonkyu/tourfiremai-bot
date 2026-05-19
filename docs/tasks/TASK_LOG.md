@@ -171,7 +171,7 @@ Result:
 
 ### `DEV-2026-05-19-007`
 
-Status: `PENDING`
+Status: `READY_FOR_QA`
 
 Goal:
 
@@ -190,6 +190,15 @@ Operational note:
 
 - Migration `20260519_020_page_post_intelligence.sql` has QA GO, but Codex could not apply it to staging yet because the Supabase connector requires re-authentication and local staging DB credentials are not present in the shell.
 - Dev should not attempt live Supabase access; implement/test with local fakes only.
+
+Result:
+
+- Added/updated V2 admin command handling for page posts and availability overrides.
+- Wired page-post planning into `write_response(..., planning=...)`.
+- Wired `PlanningContext` construction into the orchestrator for non-silent turns.
+- Added orchestrator-level tests for sold-out blocking, post-source blocking, compact context, and no-source fallback.
+- Codex restored unrelated `deposit_confidence` propagation in `_get_tour_fees` to avoid a fee-memory regression.
+- Codex verification on repo clone: targeted package tests `124 passed`; broad non-live V2 suite `608 passed`, `0 failed` after rerunning with a repo-local temp directory due Windows temp permission issue.
 
 ### `QA-2026-05-19-007`
 

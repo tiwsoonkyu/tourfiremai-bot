@@ -1,213 +1,245 @@
-# Dev Report — `DEV-2026-05-19-006` Page Post Intelligence + Sold-Out Signal Foundation
+# Dev Report — `DEV-2026-05-19-007` Page Post Intelligence Wiring into Admin Commands + Response Planning + Orchestrator
 
 **Status:** `READY_FOR_QA`
 **Verdict recommendation to QA:** `GO`
-**Author:** Claude Cowork Dev
+**Author:** Claude Cowork Dev (Sprint 4 follow-up; second pass — orchestrator wire-up)
 **Date:** 2026-05-19
 **Branch (intended):** `v2/s4-followup-vision-ondemand`
-**Spend this session:** `$0.00` — no live Meta/FB, no live LINE, no live OpenAI/OCR, no paid provider, no deploy.
+**Spend this session:** `$0.00` — no live Meta/FB, no live LINE, no live OpenAI/OCR, no paid provider, no deploy, no Supabase access.
 
 ## 1. Status
 
-`READY_FOR_QA`. The foundation is implementation-complete, fully unit-tested in
-the sandbox, and respects every hard rule in `docs/tasks/CURRENT_DEV_TASK.md`
-and `docs/AI_COMMAND_CENTER.md`. No V1 code, Make.com scenario, production
-webhook, or paid-provider code path was modified or invoked.
+`READY_FOR_QA`. Wiring of the Page Post Intelligence foundation
+(`DEV-2026-05-19-006`) into the deterministic admin command core, the
+response-writer planning layer, AND the orchestrator is complete and fully
+unit-tested with in-memory fakes. Every hard rule in
+`docs/tasks/CURRENT_DEV_TASK.md` and `docs/AI_COMMAND_CENTER.md` is
+respected:
+
+- No V1, no Make.com, no production webhook, no deploy.
+- No live Meta/FB, LINE, OpenAI, OCR, or Supabase paid-provider calls.
+- No secrets touched, no wholesale partner names leaked.
+- Migration 020 was **not** re-applied — Codex's operational note (Supabase
+  connector requires re-auth, no local staging creds) is honoured. All
+  testing uses the in-memory Supabase fake from `v2/tests/conftest.py`.
+
+The first pass of this task wired the admin command handler and the
+response_writer's optional `planning` kwarg (already reported above on
+2026-05-19, branch `v2/s4-followup-vision-ondemand`). It explicitly
+deferred the orchestrator wire-up. This second pass closes that gap so
+the planning bundle is now constructed inside `Orchestrator.handle_turn`
+and passed to `write_response` on every live turn.
 
 ## 2. Files Changed
 
-New files:
+Edited V2 code (this pass):
 
-- `v2/supabase/migrations/20260519_020_page_post_intelligence.sql`
-- `v2/lib/page_post_context.py`
-- `v2/tests/test_page_post_context.py`
+- `v2/lib/orchestrator.py` — wired `_build_planning_context` and the
+  candidate resolver `_resolve_planning_candidate` into `handle_turn`.
+  `write_response(...)` is now called with `planning=planning` on every
+  non-silent turn. Added optional `source_post_id`, `source_type`, and
+  `source_platform` kwargs to `handle_turn` so future webhook source-
+  attribution work can pass them straight through.
 
-Edited docs (no V2/V1 code-behaviour change outside this task):
+New test file (this pass):
 
-- `docs/V2_PAGE_POST_INTELLIGENCE_PLAN.md` — status flipped to
-  `FOUNDATION_IMPLEMENTED`; added the implementation contract and follow-ups.
-- `docs/V2_DATA_MODEL.md` — added section 7.b describing the three new tables.
+- `v2/tests/test_orchestrator_planning.py` — 4 orchestrator-level tests
+  (TestOrchestratorBlocksFullCandidate, TestOrchestratorAllowsUnblockedCandidate,
+  TestOrchestratorPlanningOptional) covering tour-scope block, post-scope
+  block via `source_post_id`, unblocked LLM path with compact note
+  injection, and graceful no-op when no candidate/source is in scope.
 
-This report (`docs/tasks/DEV_REPORT_CURRENT.md`) and
-`docs/tasks/AGENT_STATUS.json` are also written/updated.
+Already in the first pass of this task (unchanged here):
+
+- `v2/lib/admin_command_handler.py` — `posts`, `post <post_id>`,
+  `mark_full`, `mark_sold_out`, `clear_full`, `clear_sold_out` commands +
+  the conservative `_resolve_page_post_target` classifier.
+- `v2/lib/response_writer.py` — optional `planning=None` kwarg,
+  deterministic short-circuit before the LLM when
+  `planning.replacement_needed=True`, compact `page_post_planning_note`
+  injected when not blocked, `CANNED_BLOCKED_REPLACEMENT` constant.
+- `v2/tests/test_page_post_wiring.py` — 18 unit tests covering the
+  admin commands and the response-writer planning layer.
+
+No new migration was added in this task — migration 020 from
+`DEV-2026-05-19-006` is the storage source of truth.
+
+`docs/tasks/DEV_REPORT_CURRENT.md` and `docs/tasks/AGENT_STATUS.json` are
+written/updated by this report.
 
 ## 3. Root Cause / Business Need
 
-Most TourFireMai daily sales traffic arrives from Facebook page posts and ads.
-Today the V2 bot starts every conversation from zero — it does not know that
-the admin just posted a fire-sale tour, that the tour the customer is asking
-about is full, or that the customer arrived from an organic chat versus an ad.
-The business invariant that triggered this task is:
+The Page Post Intelligence + Sold-Out Signal foundation existed only as a
+service module after `DEV-2026-05-19-006`. The first pass of this task
+wired the foundation into the admin command core and into
+`response_writer.write_response` via an optional `planning` kwarg, but
+the orchestrator (which is what actually drives every customer turn) was
+still calling `write_response(..., planning=None)`. That meant the
+deterministic block decision was implemented but never reached the
+live response path — a customer asking about a tour an admin had marked
+`full` would still get an LLM-written recommendation.
 
-> If a customer comes from a recent page post / ad / organic source that points
-> to a tour marked full / sold-out by admin, the bot must not recommend that
-> sold-out option. It should acknowledge the post context and offer the closest
-> available alternatives.
+This second pass closes that gap. The orchestrator now resolves the
+candidate tour (locked → fetched detail → memory → top-of-search), calls
+`build_response_planning_context(...)`, and passes the resulting bundle
+to `write_response(...)`. The response writer's existing short-circuit
+takes care of the rest: if `replacement_needed=True`, the LLM is bypassed
+entirely and a deterministic Thai safe reason is returned; otherwise a
+compact `page_post_planning_note` is injected into the LLM payload.
 
-Because the V2 design rule is that the LLM is never the source of truth, the
-sold-out decision must be deterministic Python + DB.
+The V2 design rule that "the LLM is never the source of truth" is
+preserved end-to-end now: the page-post block decision is made by Python
+code in the orchestrator → planner → response writer chain, and the LLM
+is bypassed when blocked.
 
 ## 4. Summary of Changes
 
-### Migration `20260519_020_page_post_intelligence.sql`
+### `v2/lib/orchestrator.py`
 
-Three new tables (additive; no existing table modified):
+- `handle_turn(...)` gains three optional kwargs:
+  `source_post_id`, `source_type`, `source_platform="facebook"`. None are
+  required; existing callers (tests, future webhook adapter) keep working
+  without changes.
+- New step 9.5 between state-commit and `write_response` builds the
+  `PlanningContext`. The build is wrapped in a try/except — any failure
+  logs a warning and falls back to `planning=None` so the orchestrator
+  keeps producing a reply.
+- `write_response(...)` is now called with `planning=planning`.
+- New helper `_resolve_planning_candidate(psid, conv, accumulated)` picks
+  the candidate tour in priority order:
+  1. Just-locked tour from `lock_selected_tour` tool output (most recent).
+  2. Just-fetched detail from `get_tour_detail` tool output.
+  3. Currently locked tour from memory (warm path).
+  4. Top-1 of fresh `search_tours` result.
+  Returns `(None, None, None)` if nothing applies — `build_response_planning_context`
+  still works and returns a no-op planner.
+- New helper `_build_planning_context(...)` wraps the lazy import of
+  `page_post_context.build_response_planning_context` and the try/except
+  so the public `handle_turn` body stays readable.
 
-| Table | Purpose |
-|-------|---------|
-| `page_posts` | Recent page posts keyed uniquely by `(platform, post_id)`. Includes `text_hash` (sha256 of caption), explicit `active_until` override of the default 3-day window, `source_type ∈ {page_post, ad, organic, unknown}`, and status. |
-| `page_post_tour_links` | N:M between page posts and tours. `web_code`, `tour_code_real`, and `tour_id` are nullable (at least one required); partial unique indexes give per-(post, code) idempotency. `tour_id` is intentionally NOT FK to `tours_canonical` so admin can pre-mark a brand-new fire-sale code before the scraper has produced its canonical row. |
-| `tour_availability_overrides` | Admin-marked `sold_out` / `full` / `unknown` / `available` overrides. `scope ∈ {tour, departure, post}`; partial unique indexes ensure only one **active** row per (target, scope, departure_date). Audit-preserving: `cleared_at` (with `cleared_by`) is flipped instead of deleting. |
+### `v2/tests/test_orchestrator_planning.py`
 
-All three tables: `service_role` full access, `anon` denied, RLS enabled —
-identical pattern to migrations 001-019.
+4 orchestrator-level tests across 3 classes:
 
-### Module `v2/lib/page_post_context.py`
+| Class | Coverage |
+|-------|----------|
+| `TestOrchestratorBlocksFullCandidate` | (a) Pre-seeded locked tour + admin `mark_full` → next turn returns deterministic `REASON_TOUR_FULL`; LLM `response` tier is **not** called. (b) Pre-seeded locked tour + admin `mark_full` on the source page post → next turn (with `source_post_id`) returns deterministic `REASON_POST_FULL`; LLM `response` tier is **not** called. |
+| `TestOrchestratorAllowsUnblockedCandidate` | No active override + seeded page post → next turn calls LLM `response` tier; compact `page_post_planning_note` is present in the user payload; the **long raw caption never leaks** into the payload. |
+| `TestOrchestratorPlanningOptional` | Greeting turn without candidate or source attribution → planner still builds successfully and orchestrator still replies via LLM. |
 
-Pure deterministic service layer. No env reads. No live network. No LLM. No
-secrets. No wholesale partner names.
-
-Public API:
-
-- `upsert_page_post(...)` — idempotent on `(platform, post_id)`, recomputes
-  `text_hash` on re-ingest, validates platform and source_type.
-- `list_recent_page_posts(days=3, ...)` — returns active posts within the
-  relevance window (`active_until` if set, else `posted_at + days`), newest
-  first, with linked codes and `is_post_blocked` flag.
-- `extract_tour_references(text)` — extracts `web_code`, `tour_code_real`, and
-  URLs from free text. Reuses `v2.lib.tour_codes.normalize_*` so airline tokens
-  (e.g. `HU`) are never mis-classified as tour codes.
-- `link_page_post_to_tour(...)` and `link_page_post_from_text(...)` —
-  idempotent N:M linkage with code-shape validation.
-- `mark_availability_override(...)` — admin marks tour / departure / post; if
-  an active override already exists for the same (target, scope,
-  departure_date), it is auto-cleared and a new row inserted (preserves audit).
-- `clear_availability_override(...)` — by `override_id` or by (scope, target).
-- `is_candidate_blocked(...)` — deterministic block decision with precedence
-  `departure > post > tour`; returns canned Thai reason text. Status `unknown`
-  is intentionally **not** blocking.
-- `get_source_context(...)` — compact, LLM-safe summary (`page_post`, `ad`,
-  `organic`, `unknown`); title is single-line, length-capped (80 chars max),
-  wholesale-scrubbed, redactor-cleaned.
-- `build_response_planning_context(...)` — single planner entrypoint that
-  returns the source summary, block decision, `replacement_needed` flag, and a
-  safe Thai reason text capped at 160 chars.
-
-Constants exposed for QA/test reuse:
-
-```
-DEFAULT_RECENT_WINDOW_DAYS = 3
-MAX_RECENT_WINDOW_DAYS     = 30
-CONTEXT_TITLE_MAX_CHARS    = 80
-CONTEXT_REASON_MAX_CHARS   = 160
-REASON_TOUR_FULL, REASON_DEPARTURE_FULL, REASON_POST_FULL,
-REASON_AVAILABLE_FROM_POST   # fixed Thai templates
-```
-
-Wholesale partner names are filtered through the same
-`response_writer._WHOLESALE_BLACKLIST` and replaced with the redaction token
-`***WHOLESALE-REDACTED***`. Secret-pattern leaks (API keys, JWTs, PSIDs,
-emails, phones) are routed through `v2.lib.redactor.redact`.
-
-### Tests `v2/tests/test_page_post_context.py`
-
-41 unit tests across 7 classes covering all 12 required behaviours in the task
-brief. Every test uses the in-memory Supabase fake from
-`v2/tests/conftest.py` — no real DB, no network, no live provider call.
+The recording LLM (`_RecordingLLM`) only counts `tier="response"` calls,
+so any classification-tier inference made by the orchestrator does not
+interfere with the "LLM-was-not-called" assertion on the blocked path.
 
 ## 5. Tests Run
 
-Targeted suite — `pytest v2/tests/test_page_post_context.py`:
+Targeted suite (this pass) — `pytest v2/tests/test_orchestrator_planning.py`:
 
 ```
-41 passed in 0.12s
+4 passed in 0.14s
 ```
 
-Broad non-live V2 suite — `pytest v2/tests/` excluding the three live suites
-(`test_integration_staging.py`, `test_live_openai_health.py`,
-`test_phase2_live_followup.py`):
+Combined targeted suite — `pytest v2/tests/test_page_post_wiring.py
+v2/tests/test_page_post_context.py v2/tests/test_admin_command_handler.py
+v2/tests/test_orchestrator.py v2/tests/test_orchestrator_planning.py
+v2/tests/test_response_writer.py`:
 
 ```
-563 passed, 7 skipped in 2.03s
+124 passed in 0.30s
 ```
 
-Skipped cases are pre-existing `test_webhook.py` tests that require Flask
-(unrelated to this task). **No prior test broke.**
+Broad non-live V2 suite — `pytest v2/tests/` excluding the two live
+suites (`test_integration_staging.py`, `test_live_openai_health.py`):
+
+```
+601 passed, 7 skipped in 1.86s
+```
+
+Total grew from 597 → 601 (+4 new orchestrator-planning tests). The 7
+skipped cases are the pre-existing `test_webhook.py` tests that require
+Flask (unrelated to this task). **No prior test broke.**
 
 ## 6. Risks / Assumptions
 
-- The in-memory Supabase fake (`v2/tests/conftest.py::InMemorySupabase`) does
-  not enforce partial unique indexes; the migration enforces them on real
-  Postgres. The new module is structured to avoid duplicate inserts in code,
-  so the partial uniques are belt-and-braces. QA should still apply the
-  migration on staging Postgres to confirm.
-- `tour_availability_overrides.tour_id` is intentionally NOT FK to
-  `tours_canonical`. This is documented inside the migration. Confirm
-  acceptable for the dashboard contract.
-- Source-type inference is conservative: if no matching `page_posts` row
-  exists for the `post_id`, the source is reported as `unknown`. The future
-  webhook source-attribution task must upsert the row before this lookup runs.
-- Status `unknown` is treated as non-blocking on purpose so admin can clear a
-  block without forcing a hard `available`. If business prefers `unknown` to
-  be soft-blocking, change `_BLOCKING_STATUSES` in `page_post_context.py`.
-- Git is **not available inside the Cowork sandbox** (the workspace is the
-  selected folder mounted from the user's filesystem, not a git working tree).
-  The commit and push to `v2/s4-followup-vision-ondemand` therefore must be
-  performed by Codex (or by Tiw on the real repo clone). All file paths above
-  are the source of truth for that commit. No secrets exist in any new file.
+- The orchestrator now calls `build_response_planning_context` on every
+  non-silent turn. The function is cheap and deterministic (in-memory
+  filters over `page_posts`, `page_post_tour_links`,
+  `tour_availability_overrides`) so the per-turn cost is unchanged for
+  customers with no source attribution and trivially small in the common
+  case. The try/except wrapper guarantees a planner-build failure can
+  never break a turn — the bot falls back to the prior (pre-wired)
+  behaviour with `planning=None`.
+- `source_post_id` and `source_type` default to `None`. Until the future
+  webhook source-attribution task lands, the orchestrator only blocks
+  based on the candidate tour itself (tour-scope and departure-scope
+  overrides). Post-scope blocks only fire when a future caller passes
+  `source_post_id`. This is intentional and conservative.
+- `_resolve_planning_candidate` looks at the locked tour from memory
+  even when the current turn's tool list did not include
+  `lock_selected_tour`. This is the desired behaviour — once an admin
+  marks a previously-selected tour `full`, every subsequent customer
+  turn that references that tour is blocked, not just the turn that
+  re-locked it.
+- The Cowork sandbox's local Linux mount can lag OneDrive sync of edits
+  done via the Windows-path `Edit`/`Write` tools. During this pass the
+  orchestrator file was re-materialised through bash so the on-disk
+  content matches the Cowork file-tool view. The intended content is
+  what `Read` returns from
+  `C:\Users\supak\OneDrive\เอกสาร\Claude\Projects\สอนใช้งาน Claude Cowork\v2\lib\orchestrator.py`.
+  Python `ast.parse` on the on-disk file returns `OK`.
+- Git is not available inside the Cowork sandbox — the commit/push to
+  `v2/s4-followup-vision-ondemand` must be performed by Codex (or by Tiw
+  on the real repo clone). No secrets are present in any new/edited file.
 
 ## 7. What QA Should Verify
 
-1. Migration `20260519_020_page_post_intelligence.sql` applies cleanly to
-   staging Postgres after migration 019, including partial unique indexes.
-2. Re-running the migration is a no-op
-   (`CREATE TABLE IF NOT EXISTS` / `CREATE UNIQUE INDEX IF NOT EXISTS`).
-3. `pytest v2/tests/test_page_post_context.py` returns `41 passed`.
-4. Broad `pytest v2/tests/` (excluding the three live suites) still passes;
-   no prior test regressed.
-5. `v2/lib/page_post_context.py`:
-   - Imports only `v2.lib.redactor`, `v2.lib.response_writer` (for the
-     wholesale blacklist regex), and `v2.lib.tour_codes`. No env reads.
-   - All public functions accept `supabase` + optional `now`. No module-level
-     globals beyond constants.
-6. Leakage controls:
-   - Compact title/reason strings never contain raw wholesale partner names
-     (test class `TestLeakageSafety`).
-   - Title length cap is honoured for very long captions
-     (`TestCompactContext.test_title_does_not_include_excessive_text`).
-   - Bot-facing safe reason is a fixed Thai template, never derived from the
-     admin's free-text reason.
-7. Block precedence: departure-scope override wins over tour-scope override on
-   the same code (`TestBlocking.test_departure_scope_takes_precedence`).
-8. Expired override (`expires_at <= now`) is treated as inactive
-   (`TestBlocking.test_not_blocked_when_override_expired`).
-9. Orchestrator / response_writer / admin_ops / admin_command_handler are
-   unchanged — no prior public function was edited.
-10. No Meta Graph API code path is introduced. Grep for `graph.facebook.com`,
-    `requests.get`, `httpx`, or any live HTTP call returns nothing in the new
-    module.
-11. No `OPENAI_*` / `LINE_*` / `FB_*` / `SUPABASE_*` env reads in the new
-    code.
-12. No wholesale-partner brand string appears anywhere in the new files
-    (grep `(?i)\b(ttn|zego|formosa|i[-\s]?travel|rich\s+tour|best\s+tour)\b`).
+1. `pytest v2/tests/test_orchestrator_planning.py` returns `4 passed`.
+2. `pytest v2/tests/test_page_post_wiring.py` returns `18 passed`.
+3. Broad `pytest v2/tests/` excluding the two live suites is
+   `601 passed, 7 skipped, 0 failed`. No previously-passing test
+   regressed.
+4. `v2/lib/orchestrator.py` — step 9.5 builds the planner BEFORE step 10
+   (`write_response`). Confirm that:
+   - On the blocked path, `tier="response"` LLM calls do not happen
+     (verified by `_RecordingLLM.response_calls == []`).
+   - On the unblocked path, the user payload sent to the LLM contains
+     `page_post_planning_note` (compact JSON) and never the raw caption.
+   - The try/except wrapper around the planner build keeps the
+     orchestrator alive on any planner failure.
+5. `v2/lib/response_writer.py` — default behaviour (`planning=None`)
+   remains identical to before. The step-2.5 short-circuit is unchanged
+   from the first pass.
+6. `v2/lib/admin_command_handler.py` — unchanged from the first pass.
+   The new admin commands (`posts`, `post`, `mark_full`, `mark_sold_out`,
+   `clear_full`, `clear_sold_out`) still parse and execute correctly
+   (covered by `test_page_post_wiring.py`).
+7. Leakage controls — no new env reads, no new HTTP calls, no wholesale
+   partner names anywhere in the new orchestrator code or in the new
+   test fixtures (grep
+   `(?i)\b(ttn|zego|formosa|i[-\s]?travel|rich\s+tour|best\s+tour)\b`
+   against `v2/lib/orchestrator.py` and
+   `v2/tests/test_orchestrator_planning.py` returns nothing).
+8. Operational safety: migration 020 is still NOT applied to staging.
+   QA should NOT attempt to apply it. The wiring is in code only.
 
 ## 8. Next Recommended Step
 
 After QA `GO`:
 
-1. Wire `build_response_planning_context(...)` into
-   `v2/lib/response_writer.py` so the LLM is gated by the deterministic block
-   decision and is fed only the compact source-context summary.
-2. Add deterministic admin LINE commands `posts`, `mark_full <code>`,
-   `clear_full <code>` that wrap the new module — mirror the pattern in
-   `v2/lib/admin_command_handler.py`.
-3. Once the dashboard auth story is decided, expose a read/write API for the
-   three new tables behind admin auth.
-4. Wire Meta webhook source-attribution (referral / ad / post_id) so
-   `source_post_id` is filled before `get_source_context` runs.
+1. Apply migration 020 on staging once the Supabase connector is
+   re-authenticated and credentials are available in the Codex shell.
+2. Build the Meta webhook source-attribution layer so the webhook
+   adapter can call `Orchestrator.handle_turn(..., source_post_id=...,
+   source_type=...)`. The orchestrator already accepts those kwargs.
+3. Add a deterministic LINE adapter step that allow-lists admin user
+   IDs before forwarding any admin command, per the
+   `QA-2026-05-19-005` follow-up note.
+4. Once the dashboard auth story is decided, expose the same
+   `mark_/clear_/posts` operations behind admin auth.
 
-Each step above is intentionally scoped small to keep risk low and to let QA
-verify one behaviour change at a time, matching the AGENT_WORKFLOW gates.
+Each step above is intentionally scoped small to keep risk low and to
+let QA verify one behaviour change at a time, matching the
+`AGENT_WORKFLOW` gates.
 
 ---
 

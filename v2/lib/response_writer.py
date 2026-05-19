@@ -7,9 +7,12 @@ Guard rails enforced HERE (in code, not just prompt):
   3. Fee discipline: if fees.is_complete == False, return canned handoff message (no LLM)
   4. Length cap: truncate to 400 chars after LLM (paranoia)
   5. Wholesale brand leak check: search reply for known partner names → flag + retry
+  6. Page-post / sold-out planning: if planner says replacement_needed, return canned
+     reply BEFORE the LLM. The LLM never decides sold-out semantics.
 
 Public API:
-    write_response(state, intent, tool_results, customer_memory, *, llm) -> ResponseDecision | None
+    write_response(state, intent, tool_results, customer_memory, *, llm,
+                   planning=None) -> ResponseDecision | None
 """
 
 from __future__ import annotations
@@ -26,18 +29,18 @@ from .fee_answer_policy import (
     decide_fee_answer, detect_asked_field, format_fee_answer,
     FeeAnswerDecision,
 )
+# NOTE: page_post_context is imported lazily inside write_response to avoid a
+# circular import path (page_post_context imports _WHOLESALE_BLACKLIST from
+# this module). The `planning` kwarg uses a forward reference.
 
 logger = logging.getLogger("v2.response_writer")
 
 # Wholesale brand names that must NEVER appear in customer-facing reply.
-# Use word-boundary regex (compiled below) to avoid false positives on innocent
-# substrings like "tags", "the best in Tokyo", "check in 14.00 น.", etc.
 import re as _re_brand_check
 
 _WHOLESALE_BLACKLIST = [
-    # Conservative: require either whole-token match OR brand-specific multi-word phrase
     _re_brand_check.compile(r"\b(?:ttn|zego|formosa|i[-\s]?travel|rich\s+tour|best\s+tour)\b", _re_brand_check.I),
-    _re_brand_check.compile(r"(?:^|[\s.,/])GS\s+(?:travel|tour)", _re_brand_check.I),  # GS only when followed by travel/tour to avoid 'tags','GSM' etc
+    _re_brand_check.compile(r"(?:^|[\s.,/])GS\s+(?:travel|tour)", _re_brand_check.I),
     _re_brand_check.compile(r"ttn[\s_]?เกิดมาเที่ยว"),
 ]
 
@@ -52,12 +55,15 @@ CANNED_HANDOFF_GENERIC = (
 CANNED_WAITING_ACK = (
     "รับทราบค่ะ ทีมงานกำลังเตรียมข้อมูล ขอเวลาสักครู่นะคะ 😊"
 )
+CANNED_BLOCKED_REPLACEMENT = (
+    "ขอตรวจสอบรอบนี้ก่อนนะคะ เดี๋ยวช่วยคัดตัวที่ยังเปิดรับให้ตรงงบให้ค่ะ 🙏"
+)
 
 
 @dataclass
 class ResponseDecision:
     text: Optional[str]
-    decision: str                # 'silent' | 'canned_handoff' | 'llm_reply' | 'redacted_retry' | 'fallback_canned'
+    decision: str
     used_canned: bool = False
     used_llm: bool = False
     llm_response: Optional[LLMResponse] = None
@@ -68,7 +74,6 @@ class ResponseDecision:
 # --- Helpers ------------------------------------------------------------------
 
 def _strip_wholesale(tool_results: dict) -> dict:
-    """Recursively drop any 'wholesale' key (case-insensitive) from tool_results."""
     if isinstance(tool_results, dict):
         return {
             k: _strip_wholesale(v)
@@ -81,31 +86,51 @@ def _strip_wholesale(tool_results: dict) -> dict:
 
 
 def _has_brand_leak(text: str) -> bool:
-    """Check if reply mentions any wholesale partner name (word-boundary match)."""
     if not text:
         return False
     return any(pat.search(text) for pat in _WHOLESALE_BLACKLIST)
 
 
 def _truncate(text: str, limit: int = 400) -> str:
-    """Hard length cap (post-LLM safety)."""
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
 
 
 def _load_prompt(name: str) -> str:
-    """Load versioned prompt from v2/prompts/."""
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prompts")
     path = os.path.join(base, f"{name}.md")
     with open(path, "r", encoding="utf-8") as f:
         body = f.read()
-    # Strip YAML frontmatter (--- ... ---) if present
     if body.startswith("---\n"):
         end = body.find("\n---\n", 4)
         if end != -1:
             body = body[end + 5:]
     return body
+
+
+def _planning_to_compact_note(planning) -> dict:
+    """Compact LLM-safe dict from a PlanningContext (or None)."""
+    if planning is None:
+        return {}
+    src = planning.source
+    note = {
+        "source_type": src.source_type,
+        "is_recent": src.is_recent,
+        "title": src.title,
+        "linked_web_codes": list(src.linked_web_codes),
+        "replacement_needed": bool(planning.replacement_needed),
+    }
+    if planning.block.is_blocked:
+        note["block_status"] = planning.block.status
+        note["block_scope"] = planning.block.scope
+        note["block_reason"] = planning.block.reason_text
+    if planning.safe_reason_text:
+        note["safe_reason"] = planning.safe_reason_text
+    return {
+        k: v for k, v in note.items()
+        if v not in (None, "", [], False) or k == "replacement_needed"
+    }
 
 
 # --- Main entry ---------------------------------------------------------------
@@ -117,31 +142,22 @@ def write_response(
     tool_results: dict,
     customer_memory: dict,
     llm: LLMClient,
+    planning=None,
 ) -> Optional[ResponseDecision]:
     """
     Generate a reply (or None if bot must stay silent).
-
-    All state/tool inputs must already be in their final form — this function
-    does NOT call tools.
     """
-    # 1) Silence states — bot returns None (orchestrator will skip sending)
     if is_silent_state(state):
         logger.info("State %s is silent — skipping response writer", state.value)
         return ResponseDecision(text=None, decision="silent")
 
-    # 2) Pre-canned cases that bypass LLM entirely
     if state == State.WAITING_TEAM:
-        # 1-shot ack allowed in waiting_team — return canned (orchestrator should
-        # only call us once via waiting_ack_sent flag — defense-in-depth: still canned)
         return ResponseDecision(
             text=CANNED_WAITING_ACK,
             decision="canned_handoff", used_canned=True,
         )
 
     if state == State.FEE_CHECK_REQUIRED:
-        # Sprint 4 follow-up: per-field, confidence-gated fee answers.
-        # `fees` is the orchestrator's snapshot from _get_tour_fees; it may
-        # carry a `fees_row` (DB row) and `asked_field` hint.
         fees = tool_results.get("fees") or tool_results.get("get_tour_fees") or {}
         fees_row = (fees or {}).get("fees") or (fees or {}).get("fees_row")
         raw_text = tool_results.get("raw_customer_text") or ""
@@ -159,7 +175,6 @@ def write_response(
                     f"threshold={decision.threshold:.2f}",
                 ],
             )
-        # Otherwise handoff — keep existing canned message
         return ResponseDecision(
             text=CANNED_HANDOFF_FEE_INCOMPLETE,
             decision="canned_handoff", used_canned=True,
@@ -176,8 +191,30 @@ def write_response(
             decision="canned_handoff", used_canned=True,
         )
 
+    # 2.5) Deterministic page-post / sold-out block — runs BEFORE the LLM.
+    if planning is not None and getattr(planning, "replacement_needed", False):
+        safe = getattr(planning, "safe_reason_text", None) or CANNED_BLOCKED_REPLACEMENT
+        logger.info(
+            "page_post_planning: blocked candidate (scope=%s status=%s) — canned reply",
+            getattr(planning.block, "scope", None),
+            getattr(planning.block, "status", None),
+        )
+        return ResponseDecision(
+            text=_truncate(safe, limit=400),
+            decision="canned_blocked",
+            used_canned=True,
+            notes=[
+                f"page_post_block:{getattr(planning.block, 'scope', None)}",
+                f"status:{getattr(planning.block, 'status', None)}",
+                f"source:{getattr(planning.source, 'source_type', None)}",
+            ],
+        )
+
     # 3) Sanitize tool_results before passing to LLM
     clean_tools = _strip_wholesale(tool_results)
+    planning_note = _planning_to_compact_note(planning)
+    if planning_note:
+        clean_tools = {**clean_tools, "page_post_planning_note": planning_note}
 
     # 4) Compose messages
     system_prompt = _load_prompt("response_writer_v1")
@@ -187,7 +224,7 @@ def write_response(
         {"role": "user", "content": user_payload},
     ]
 
-    # 5) Call LLM (response tier)
+    # 5) Call LLM
     try:
         rsp = llm.chat(
             tier="response",
@@ -205,11 +242,9 @@ def write_response(
 
     text = rsp.text or ""
     text = text.strip()
-    # Strip leading template literals just in case
     text = re.sub(r"^```[a-zA-Z]*\n", "", text)
     text = re.sub(r"\n```$", "", text)
 
-    # 6) Brand leak check
     leak = _has_brand_leak(text)
     if leak:
         logger.warning("Wholesale brand leak detected in LLM reply — falling back to canned")
@@ -221,10 +256,8 @@ def write_response(
             notes=["brand_leak_in_llm_reply"],
         )
 
-    # 7) Length cap
     text = _truncate(text, limit=400)
 
-    # 8) Silent state echo check
     if "__SILENT__" in text:
         return ResponseDecision(text=None, decision="silent",
                                  used_llm=True, llm_response=rsp,
@@ -240,14 +273,6 @@ def write_response(
 
 def _build_user_payload(state: State, intent_type: str, tool_results: dict,
                         customer_memory: dict) -> str:
-    """
-    Build the user message containing state + intent + sanitized tool_results +
-    customer profile. The orchestrator's runtime context, not the customer's
-    raw text (customer text is inside tool_results.raw_customer_text).
-
-    Format chosen to make it cheap for the model to parse and for grep-style
-    debug/cassette diffs.
-    """
     customer_name = customer_memory.get("customer_name") or customer_memory.get("fb_name") or ""
     parts = [
         f"state={state.value}",

@@ -33,6 +33,9 @@ from .memory import MemoryService, TourOption
 from .response_writer import write_response, ResponseDecision
 from .llm import LLMClient
 from . import redactor
+# NB: page_post_context is imported lazily inside _build_planning_context to
+# keep import-time deps minimal and avoid surprising side effects in tests that
+# stub the supabase fake before importing the orchestrator.
 
 logger = logging.getLogger("v2.orchestrator")
 
@@ -77,6 +80,9 @@ class Orchestrator:
         meta_message_id: Optional[str] = None,
         platform: str = "fb",
         trace_id: Optional[str] = None,
+        source_post_id: Optional[str] = None,
+        source_type: Optional[str] = None,
+        source_platform: str = "facebook",
     ) -> TurnResult:
         """
         Process one customer message end-to-end.
@@ -183,6 +189,20 @@ class Orchestrator:
                 reason=result.reason, meta_message_id=meta_message_id, platform=platform,
             )
 
+        # 9.5) Build planning context — deterministic page-post / sold-out
+        # signal evaluation BEFORE the LLM. The planner is no-op-safe for
+        # silent states (silent path skips write_response entirely).
+        planning = None
+        if not is_silent_state(state_after):
+            planning = self._build_planning_context(
+                psid=psid, conv=conv,
+                accumulated=tool_results,
+                source_post_id=source_post_id,
+                source_type=source_type,
+                source_platform=source_platform,
+                trace_id=trace_id,
+            )
+
         # 10) Response writer
         rd: Optional[ResponseDecision]
         if is_silent_state(state_after):
@@ -192,6 +212,7 @@ class Orchestrator:
                 state=state_after, intent_type=intent.type,
                 tool_results=tool_results, customer_memory=cmem,
                 llm=self.llm,
+                planning=planning,
             )
 
         # 11) Persist conversation_turns (inbound + outbound)
@@ -273,6 +294,96 @@ class Orchestrator:
             admin_resumed=False,
             timeout_reached=False,
         )
+
+    def _resolve_planning_candidate(self, psid: str, conv: dict,
+                                     accumulated: dict) -> tuple:
+        """
+        Pick the candidate tour fields the response planner should evaluate.
+
+        Priority order:
+          1. Just-locked tour from `lock_selected_tour` tool output
+          2. Just-fetched detail from `get_tour_detail` tool output
+          3. Currently locked tour from memory (warm path)
+          4. Top-1 of fresh `search_tours` result
+
+        Returns (web_code, tour_code_real, tour_id). Any field may be None.
+        Returns (None, None, None) if no candidate is in scope.
+        """
+        web_code = None
+        tour_code_real = None
+        tour_id = None
+
+        if isinstance(accumulated, dict):
+            locked = accumulated.get("lock_selected_tour")
+            if isinstance(locked, dict) and not locked.get("error"):
+                web_code = locked.get("web_code") or web_code
+                tour_code_real = locked.get("tour_code_real") or tour_code_real
+                tour_id = locked.get("tour_id") or tour_id
+
+            if not (web_code or tour_code_real or tour_id):
+                detail = accumulated.get("get_tour_detail")
+                if isinstance(detail, dict):
+                    web_code = detail.get("web_code") or web_code
+                    tour_code_real = detail.get("tour_code_real") or tour_code_real
+                    tour_id = detail.get("id") or tour_id
+
+        if not (web_code or tour_code_real or tour_id):
+            try:
+                existing = self.memory.get_selected_tour(psid)
+                if existing:
+                    web_code = existing.web_code or web_code
+                    tour_code_real = existing.tour_code_real or tour_code_real
+                    tour_id = existing.tour_id or tour_id
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("planning: get_selected_tour failed: %s", e)
+
+        if not (web_code or tour_code_real or tour_id) and isinstance(accumulated, dict):
+            st = accumulated.get("search_tours")
+            if isinstance(st, dict):
+                tours = st.get("tours") or []
+                if tours:
+                    top = tours[0] if isinstance(tours[0], dict) else {}
+                    web_code = top.get("web_code") or web_code
+                    tour_code_real = top.get("tour_code_real") or tour_code_real
+
+        return web_code, tour_code_real, tour_id
+
+    def _build_planning_context(self, *, psid: str, conv: dict,
+                                 accumulated: dict,
+                                 source_post_id: Optional[str],
+                                 source_type: Optional[str],
+                                 source_platform: str,
+                                 trace_id: Optional[str]):
+        """
+        Build the LLM-safe planning bundle the response writer uses to block
+        sold-out / full candidates BEFORE the LLM runs. Never raises — returns
+        None on any error so the orchestrator can still produce a reply.
+        """
+        try:
+            from .page_post_context import build_response_planning_context
+            web_code, tour_code_real, tour_id = self._resolve_planning_candidate(
+                psid, conv, accumulated,
+            )
+            planning = build_response_planning_context(
+                self.supabase,
+                candidate_web_code=web_code,
+                candidate_tour_code_real=tour_code_real,
+                candidate_tour_id=tour_id,
+                source_post_id=source_post_id,
+                source_type=source_type,
+                source_platform=source_platform,
+            )
+            if planning.replacement_needed:
+                logger.info(
+                    "[%s] planning: candidate blocked scope=%s status=%s",
+                    trace_id,
+                    getattr(planning.block, "scope", None),
+                    getattr(planning.block, "status", None),
+                )
+            return planning
+        except Exception as e:
+            logger.warning("[%s] planning: build failed: %s", trace_id, e)
+            return None
 
     @staticmethod
     def _intent_to_sm(intent: Intent) -> SMIntent:
