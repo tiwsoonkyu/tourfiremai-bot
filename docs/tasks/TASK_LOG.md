@@ -913,3 +913,47 @@ Result:
   - Scheduled refresher operator wrapper documentation remains a future polish item.
 - This QA verdict does **not** approve production Meta webhook changes, customer-facing V2 outbound replies, live LLM/OCR/paid-provider calls, migration apply, or production go-live.
 
+### Controller Action — `ADMIN-ONLY-PREFLIGHT-CLI-2026-05-20`
+
+Status: `PASSED`
+
+Goal:
+
+Close the runbook gap where `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md` referenced `python -m v2.tools.admin_only_preflight` but the CLI module did not exist in the repository.
+
+Result:
+
+- Added `v2/tools/admin_only_preflight.py`.
+- Added `v2/tests/test_admin_only_preflight.py`.
+- Updated the runbook smoke-test section to call out the Flask/test-dependency prerequisite.
+- The preflight CLI is offline-only, secret-safe, and reads no live provider credentials.
+- It reports only status strings/counts and never prints raw tokens, raw PSIDs, Supabase URLs, Redis URLs, or secret values.
+- It intentionally requires:
+  - `V2_ADMIN_ONLY_TEST_MODE=true`;
+  - a non-empty admin PSID allow-list;
+  - staging dashboard/LINE/Supabase/Redis/Meta env presence.
+- Live-provider keys remain `not_required`.
+
+Test evidence:
+
+- Preflight + admin-only smoke + signed webhook smoke: `32 passed`.
+- Admin adjacency suite including preflight: `63 passed`.
+- Broad non-live V2 suite: `857 passed / 0 failed`.
+
+Current local preflight result:
+
+- `python -m v2.tools.admin_only_preflight --json` runs successfully.
+- It returns `status=missing` in this local shell because staging env vars are not set locally. This is expected; the same command should be run in the staging service/operator shell before real Messenger smoke.
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets printed or committed.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No Supabase migration apply.
+- No customer-wide traffic.
+- No customer-facing V2 outbound replies.
+

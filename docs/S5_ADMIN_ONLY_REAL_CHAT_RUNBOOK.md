@@ -92,6 +92,8 @@ Exit code `0` = ready; `1` = at least one required item missing or admin-only mo
 
 Run from the repo root. These never call Meta, LINE, OpenAI, OCR providers, Supabase, or Redis - they exercise the V2 app with in-memory fakes.
 
+Prerequisite for the webhook smoke tests: install the test dependencies, including Flask, before running this section.
+
 ### Targeted admin-only smoke
 
 ```bash
