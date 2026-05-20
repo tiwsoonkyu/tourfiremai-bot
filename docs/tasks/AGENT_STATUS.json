@@ -7,10 +7,10 @@
   "current_qa_task": "QA-2026-05-20-013",
   "branch": "v2/s4-followup-vision-ondemand",
   "base_commit": "0fa9591",
-  "commit": "0fa9591",
+  "commit": "e3ebe3b",
   "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
   "updated_at": "2026-05-20T23:15:00+07:00",
-  "next_action": "CODEX_COMMIT_FOUR_NEW_FILES_AND_QA_ARTEFACTS_THEN_OPEN_NEXT_WIRING_TASK",
+  "next_action": "CODEX_OPEN_NEXT_WIRING_TASK",
   "blocked_reason": null,
   "files_reviewed": [
     "v2/scraper/detail_enrichment.py",
