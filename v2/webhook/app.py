@@ -395,6 +395,12 @@ def _register_routes(app: Flask) -> None:
         return jsonify({
             "status": "ok",
             "env": config.env_name,
+            "build_commit": (
+                os.getenv("RAILWAY_GIT_COMMIT_SHA")
+                or os.getenv("RAILWAY_GIT_COMMIT")
+                or os.getenv("GIT_COMMIT")
+            ),
+            "runtime_marker": "v2-jsonb-db-adapter-20260521",
             "has_redis": config.has_redis,
             "has_llm": config.has_llm,
             "has_line": config.has_line,
