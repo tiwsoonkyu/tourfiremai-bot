@@ -842,7 +842,7 @@ Open `DEV-2026-05-20-016` / `QA-2026-05-20-016` as the integrated admin-only sta
 
 ### `DEV-2026-05-20-016`
 
-Status: `PENDING`
+Status: `READY_FOR_QA`
 
 Goal:
 
@@ -854,6 +854,18 @@ Expected deliverables:
 - V2-only code/tests if needed.
 - `docs/tasks/DEV_REPORT_CURRENT.md`.
 - `docs/tasks/AGENT_STATUS.json`.
+
+Result:
+
+- Finalized `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md` for admin-only staging real-chat preflight.
+- Added `v2/tools/signed_meta_webhook_smoke.py` for offline-safe signed Meta webhook smoke payload generation.
+- Added `v2/tests/test_signed_meta_webhook_smoke.py`.
+- Dev evidence:
+  - New helper/admin-only smoke: `24 passed`.
+  - Adjacency suite: `55 passed`.
+  - Broad non-live V2 suite: `862 passed / 0 failed` in Claude Dev sandbox.
+- No runtime V2 modules changed.
+- No V1, Make.com, Cloudflare worker, production webhook, secrets, live providers, migration apply, customer-wide traffic, or V2 customer-facing outbound changes.
 
 Hard rules:
 
@@ -869,7 +881,7 @@ Hard rules:
 
 ### `QA-2026-05-20-016`
 
-Status: `PENDING`
+Status: `GO_WITH_NOTES`
 
 Goal:
 
@@ -886,4 +898,18 @@ Verdict options:
 - `GO_WITH_NOTES`
 - `NO_GO`
 - `BLOCKED`
+
+Result:
+
+- QA verdict: `GO_WITH_NOTES`.
+- QA evidence:
+  - Targeted DEV-016 helper + admin-only smoke: `24 passed`.
+  - Adjacency suite: `55 passed`.
+  - Broad non-live V2 suite: `862 passed / 0 skipped / 0 failed`.
+- No P0/P1 findings.
+- P2 notes:
+  - Helper POST URL is protected by convention and operator warning, not a hard URL denylist.
+  - `_pending_023_departure_unique.sql.proposal` remains gated and unapplied.
+  - Scheduled refresher operator wrapper documentation remains a future polish item.
+- This QA verdict does **not** approve production Meta webhook changes, customer-facing V2 outbound replies, live LLM/OCR/paid-provider calls, migration apply, or production go-live.
 

@@ -1,87 +1,90 @@
 {
   "controller": "Codex",
-  "role": "Claude Dev",
-  "status": "READY_FOR_QA",
-  "verdict": "GO",
+  "role": "Claude QA",
+  "status": "QA_GO_WITH_NOTES",
+  "verdict": "GO_WITH_NOTES",
   "current_dev_task": "DEV-2026-05-20-016",
   "current_qa_task": "QA-2026-05-20-016",
   "branch": "v2/s4-followup-vision-ondemand",
   "base_commit": "946790c",
   "commit": "946790c",
-  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-20T18:00:00+07:00",
-  "next_action": "CLAUDE_QA_RUN_CURRENT_QA_TASK",
+  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
+  "updated_at": "2026-05-20T19:15:00+07:00",
+  "next_action": "WAITING_FOR_CODEX",
   "blocked_reason": null,
-  "files_changed": [
+  "files_reviewed": [
     "docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md",
     "v2/tools/signed_meta_webhook_smoke.py",
     "v2/tests/test_signed_meta_webhook_smoke.py",
     "docs/tasks/DEV_REPORT_CURRENT.md",
     "docs/tasks/AGENT_STATUS.json"
   ],
-  "dev_evidence": {
-    "runbook_finalized": "docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md rewritten from 175-line draft to 299-line finalized version (13974 bytes). All 11 required sections present: staging-only warning, env-var table with safe descriptions (no values), runtime-config check + expected statuses, exact local smoke commands (targeted + adjacency + broad), signed Meta webhook smoke procedure, staging Meta webhook verification, admin PSID allowlist setup + verification, non-allowlisted PSID negative test (two options), first-30-min watch checklist, immediate rollback steps, explicit not-approved-yet list. Plus controller-verified Staging Data Readiness section + Helper Index.",
-    "signed_meta_webhook_smoke_added": "v2/tools/signed_meta_webhook_smoke.py (333 lines). Offline-safe HMAC-SHA256 signer with build_event() + sign_body() + build_curl_preview() + main(). Dry-run by default. Requires --post-url AND --i-understand-staging-only to actually POST. App secret read via env var NAME only (default V2_STAGING_FB_APP_SECRET; --app-secret-env override supported). Value never echoed. Signature digest redacted to first 8 hex chars in curl previews. No requests / openai / anthropic / linebot / supabase / psycopg / redis import surface (urllib.request only).",
-    "test_coverage_added": "v2/tests/test_signed_meta_webhook_smoke.py (325 lines, 15 tests). Includes: signature format check, byte-for-byte compatibility with v2.webhook.app._verify_meta_signature, dry-run-is-default safety, --post-url-without-opt-in returns 2, opt-in path invokes injected poster, non-2xx returns 3, custom env-var name supported, full-digest never in dry-run output, no-paid-provider-import negative check, build_event shape matches test_admin_only_runtime_smoke._message_event.",
-    "targeted_dev016_suite": "15 passed in 0.31s (test_signed_meta_webhook_smoke.py alone) - fresh Cowork Dev verification 2026-05-20",
-    "admin_only_smoke_suite": "9 passed in 2.66s (test_admin_only_runtime_smoke.py) - fresh Cowork Dev verification 2026-05-20",
-    "adjacency_suite": "55 passed in 6.95s (test_webhook.py + test_webhook_source_attribution.py + test_line_admin_runtime.py + test_admin_dashboard_runtime.py + test_admin_only_runtime_smoke.py + test_signed_meta_webhook_smoke.py) - fresh Cowork Dev verification 2026-05-20",
-    "broad_non_live_v2_suite": "862 passed / 0 failed / 0 skipped in 8.94s (v2/tests, excluding test_integration_staging.py, test_live_openai_health.py, test_phase2_live_followup.py) - fresh Cowork Dev verification 2026-05-20",
-    "post_runbook_rewrite_resmoke": "24 passed in 2.65s (test_admin_only_runtime_smoke.py + test_signed_meta_webhook_smoke.py) - confirms no test depends on runbook byte content",
-    "runtime_safety_invariants_unchanged": "Inspected (read-only) v2/webhook/app.py, v2/webhook/admin_routes.py, v2/webhook/test_mode_gate.py, v2/lib/source_attribution.py, v2/lib/line_admin_adapter.py, v2/lib/admin_dashboard_api.py - all DEV-015 mtimes preserved. Six runtime invariants verified to still hold.",
-    "staging_data_readiness_recorded": "Runbook section 'Staging Data Readiness (controller-verified for DEV-016)' mirrors the four facts from controller_context: migration 022 applied / refreshed_at present / idx_dep_refreshed_at present / 24-of-24 rows have refreshed_at / duplicate audit zero / _pending_023 not applied / not in scope / audit-clean-at-apply-time still required.",
-    "scope_guard_compliance": "verified - V1 (app.py May-9, app_patched_v2 May-10, webhook_proxy.py May-6) untouched; Make.com blueprints (May-5 / May-8) untouched; cloudflare-worker.js (May-8) untouched; v2/supabase/migrations/ unchanged (latest is 022, 023 still .sql.proposal); no secret value read / printed / written; no live Meta / LINE / OpenAI / OCR / paid-provider call; no customer-wide traffic; no V2 customer-facing outbound enabled."
+  "qa_evidence": {
+    "targeted_dev016_helper_plus_admin_smoke": "24 passed in 2.59s (test_signed_meta_webhook_smoke.py 15 + test_admin_only_runtime_smoke.py 9)",
+    "adjacency_suite": "55 passed in 6.74s (test_webhook.py + test_webhook_source_attribution.py + test_line_admin_runtime.py + test_admin_dashboard_runtime.py + test_admin_only_runtime_smoke.py + test_signed_meta_webhook_smoke.py)",
+    "broad_non_live_v2_suite": "862 passed / 0 skipped / 0 failed in 8.26s (deselected: test_integration_staging.py, test_live_openai_health.py, test_phase2_live_followup.py; flask 3.1.x installed in QA sandbox unlocks the 40 previously-skipped webhook tests)",
+    "flask_observation": "First QA attempt without flask installed produced 2 failures (test_sign_body_is_compatible_with_webhook_verifier + test_main_post_url_with_opt_in_invokes_injected_poster) — both import v2.webhook.app._verify_meta_signature which requires flask. Same environmental contingency Dev report §6 documents. After pip install flask, all 24 helper+smoke tests pass.",
+    "hard_rules_compliance": "verified by mtime inspection — V1 (app.py 2026-05-09, webhook_proxy.py 2026-05-06) untouched, Make.com (newest 2026-05-08) untouched, Cloudflare (2026-05-08) untouched, all V2 runtime modules (webhook/app.py 2026-05-19 15:55, webhook/admin_routes.py 2026-05-19 15:55, webhook/test_mode_gate.py 2026-05-19 16:06, lib/source_attribution.py 2026-05-19 14:19, lib/line_admin_adapter.py 2026-05-19 14:19, lib/admin_dashboard_api.py 2026-05-19 14:19) untouched, no new migration files, _pending_023 still .sql.proposal outside *.sql glob",
+    "forbidden_import_grep": "no openai/anthropic/requests/psycopg/supabase/httpx/boto3/linebot/redis imports in v2/tools/signed_meta_webhook_smoke.py or v2/tests/test_signed_meta_webhook_smoke.py",
+    "secret_handling_verified": "Helper reads only the env var NAME via --app-secret-env (default V2_STAGING_FB_APP_SECRET); value read once via env.get(name) and never echoed to stdout/stderr. _redact_signature truncates the HMAC digest to first 8 hex chars + '...' in curl previews.",
+    "two_flag_opt_in_verified": "Dry-run is default (--post-url not supplied → returns exit 0 without urllib call). --post-url alone returns exit 2 with 'requires --i-understand-staging-only' error. --post-url + --i-understand-staging-only is the explicit opt-in; injected poster called only on that path.",
+    "signature_compatibility_pinned": "test_sign_body_is_compatible_with_webhook_verifier asserts the helper's sha256= HMAC-SHA256 output byte-for-byte matches v2.webhook.app._verify_meta_signature. Load-bearing for runbook §5 dry-run-to-real-POST procedure.",
+    "runbook_quality_verified": "299 lines / 13,974 bytes. All 11 required sections present (staging-only warning as blockquote at top, then ## 2-## 11) plus Staging Data Readiness + Helper Index. Tail matches Dev report exactly: 'Next change trigger: when Tiw/Codex approves V2 customer-facing outbound replies (separate task), OR when the production Meta webhook becomes in scope (separate task).'",
+    "runtime_safety_invariants": "All six invariants from CURRENT_DEV_TASK.md §2 verified by inspection: (1) non-allowlisted PSIDs filtered before state mutation [webhook/app.py untouched], (2) no V2 customer outbound enabled [no runtime change], (3) admin runtime-config returns only status strings [admin_routes.py untouched], (4) dashboard masks PSIDs [admin_dashboard_api.py untouched], (5) LINE/admin mutation allowlist-gated [line_admin_adapter.py untouched], (6) source attribution does not trust user-typed post ids [source_attribution.py untouched]",
+    "wholesale_grep": "no wholesale partner names in v2/tools/signed_meta_webhook_smoke.py, v2/tests/test_signed_meta_webhook_smoke.py, or docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md",
+    "source_of_truth": "Cowork workspace mirror used; no .git in workspace so commit 946790c not directly verified — Codex should re-run pytest on the local clone post-commit"
   },
-  "dev_acceptance_checks": {
+  "qa_acceptance_checks": {
     "no_v1_modified": true,
     "no_make_com_modified": true,
     "no_cloudflare_or_production_webhook_settings_change": true,
-    "no_secrets_added_or_printed": true,
+    "no_secrets_added_printed_or_committed": true,
     "no_live_line_meta_openai_ocr_paid_provider_calls_in_tests": true,
     "no_supabase_migration_applied_from_dev": true,
-    "no_new_migration_files_authored_in_dev": true,
-    "no_customer_wide_outbound_behavior_enabled": true,
-    "no_v2_customer_facing_outbound_reply_enabled": true,
-    "runbook_has_all_11_required_sections": true,
-    "runbook_has_staging_data_readiness_section": true,
-    "runbook_env_vars_documented_without_values": true,
-    "runbook_runtime_config_expected_statuses_documented": true,
-    "runbook_signed_meta_webhook_smoke_procedure_documented": true,
-    "runbook_staging_meta_webhook_verification_documented": true,
-    "runbook_admin_psid_allowlist_setup_documented": true,
-    "runbook_non_allowlisted_psid_negative_test_documented": true,
-    "runbook_first_30_minute_watch_checklist_documented": true,
-    "runbook_rollback_disable_steps_documented": true,
-    "runbook_not_approved_yet_list_documented": true,
-    "smoke_helper_dry_run_by_default": true,
-    "smoke_helper_requires_two_flag_opt_in_to_post": true,
-    "smoke_helper_secret_value_never_echoed": true,
-    "smoke_helper_signature_redacted_in_previews": true,
-    "smoke_helper_signature_compatible_with_webhook_verifier": true,
-    "smoke_helper_no_paid_provider_imports": true,
+    "no_customer_wide_traffic_enabled": true,
+    "no_customer_facing_v2_outbound_reply_enabled": true,
+    "non_allowlisted_psids_filtered_before_state_mutation": true,
+    "allowlisted_admin_test_psids_can_pass_gate": true,
+    "runtime_config_returns_safe_statuses_only": true,
+    "runtime_config_never_returns_raw_secrets_or_psids": true,
+    "dashboard_safe_read_apis_mask_psids": true,
+    "line_admin_command_mutation_allowlist_gated": true,
+    "source_attribution_does_not_trust_user_typed_post_ids": true,
+    "runbook_is_executable_by_operator_without_guessing": true,
+    "runbook_includes_all_required_sections": true,
+    "runbook_states_v2_not_approved_for_production_or_customer_outbound": true,
+    "runbook_records_migration_022_applied_and_duplicate_audit_zero": true,
+    "runbook_states_unique_proposal_not_applied": true,
     "targeted_tests_pass": true,
-    "broad_non_live_suite_passes": true,
-    "no_v2_runtime_module_modified": true,
-    "wholesale_brand_not_mentioned_in_new_artifacts": true
+    "broad_non_live_v2_suite_passes": true
   },
-  "risks": [
-    "Helper POST mode is local/staging-only by convention, not by enforcement. The CLI requires --i-understand-staging-only but cannot independently verify the URL is not the production webhook. Runbook calls this out explicitly. If QA wants a hard gate, the easiest add is a URL-substring denylist; not done in DEV-016 to keep scope minimal.",
-    "Runbook PSID-collection step (section 7.1) is operator-bound - cannot be automated without sending a real Messenger message to the staging page. Documented as a manual step with a blank line for Tiw to record the expected count before launch.",
-    "OneDrive sync race observed during runbook authoring AND AGENT_STATUS.json authoring: first Write went through the Windows path, but the Linux bash mount lagged with a truncated cached view. Resolved by rewriting via the Linux mount using Python open(...) with utf-8 encoding. Flagged so QA does not interpret the file-change history as content drift.",
-    "Signed-webhook helper signature is intentionally compatible with the production verifier (matches v2.webhook.app._verify_meta_signature). This makes it directly useful for staging real-chat tests AND means it would also work if pointed at production. The runbook warns; the helper requires --i-understand-staging-only; ultimate responsibility for URL choice rests with the operator.",
-    "Carry-over from DEV-015 (informational, not in DEV-016 scope): HTML class-name drift is still the structural risk for the parser pipeline (DEV-012 CLI sentinel); UNIQUE promotion (_pending_023) still awaits audit-clean-at-apply-time; scheduled refresher wrapper is still a one-line operator script per DEV-015 section 3.",
-    "Negative-import test on the helper is conservative (forbids requests.get|post in addition to obvious paid SDKs). A future Sprint that legitimately needs requests will need to update either the test allowlist or keep the helper urllib-only."
+  "qa_findings": {
+    "p0_blocking": [],
+    "p1_pre_wiring": [],
+    "p2_next_package": [
+      "P2-1 (new, low): Helper POST mode is local/staging-only by convention not by enforcement. CLI requires --i-understand-staging-only but cannot verify the URL is not the production webhook. Dev report §8.2 calls this out and runbook warns. Easy add to close: URL substring denylist.",
+      "P2-2 (carried over from QA-013/QA-014/QA-015): idx_dep_full_row UNIQUE promotion still gated. Migration 022 applied and audit clean per controller verification, but _pending_023_departure_unique.sql.proposal remains outside *.sql glob and is explicitly out of DEV-016 scope. Runbook §11 lists this as 'Not Approved Yet'. Audit-clean-at-apply-time still required.",
+      "P2-3 (carried over from QA-015): Scheduled refresher operator wrapper documentation. DEV-016 references the refresher in the runbook Helper Index but does not document the wrapper-script pattern. Worth folding into the runbook in a future package."
+    ],
+    "p3_nits": [
+      "P3-1: Runbook section 1 (Staging-only warning) is delivered as a blockquote at the top rather than as a numbered '## 1.' heading. Content satisfies the charter. Future revision could promote it to a real numbered heading.",
+      "P3-2: test_helper_has_no_paid_provider_imports forbids requests.get|post conservatively. Dev report §8.6 warns that legitimate future additions of requests would require updating this test. Acceptable trade-off.",
+      "P3-3 (carried over from QA-013): three pre-existing tests fail when pytest is invoked from v2/ (test_admin_only_preflight, two TestNoSecretOrWholesaleLeakage). Hygiene fix to pathlib.Path(__file__).resolve().parents[...]. Not introduced by this task.",
+      "P3-4 (new, informational): On a fresh clone without flask installed, two DEV-016 tests fail with ModuleNotFoundError because the compatibility test imports v2.webhook.app. Dev report §6 mentions flask 3.1.3 as a sandbox prerequisite but the runbook §4 smoke commands do not explicitly say 'ensure flask installed first'. Consider adding 'pip install flask' to the runbook prerequisite."
+    ],
+    "ctr_process": [
+      "CTR-1: TASK_LOG.md still ends at QA-2026-05-20-015. Codex should append entries for DEV-2026-05-20-016 (accepted) and QA-2026-05-20-016 (GO_WITH_NOTES) when committing this artefact."
+    ]
+  },
+  "remaining_risks": [
+    "Helper POST URL is operator-bound — runbook warns but no URL-substring denylist exists (P2-1).",
+    "UNIQUE promotion (_pending_023) still deferred behind a fresh audit (P2-2 carry-over). Migration 022 is applied and audit is clean, but apply-time re-audit is still required.",
+    "Customer-facing production behaviour does not change with this merge — production Meta webhook gate is still off and admin-only posture is preserved.",
+    "Scheduled refresher operator wrapper not documented in the runbook (P2-3 carry-over).",
+    "Fresh-clone test sandboxes need flask installed before the DEV-016 compatibility test can run (P3-4).",
+    "Runbook PSID-collection step (§7.1) is operator-bound — cannot be automated without sending a real Messenger message to staging.",
+    "HTML class-name drift remains the structural risk for the parser pipeline (carry-over from QA-012). DEV-012 CLI is still the only drift sentinel."
   ],
-  "qa_focus_areas": [
-    "docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md - verify all 11 sections present, plus Staging Data Readiness section. File should be 299 lines, 13974 bytes, tail line 'Next change trigger: when Tiw/Codex approves V2 customer-facing outbound replies (separate task), OR when the production Meta webhook becomes in scope (separate task).'",
-    "v2/tools/signed_meta_webhook_smoke.py - confirm dry-run-by-default; confirm --post-url alone returns 2; confirm secret value never appears in any code path; confirm signature header matches v2.webhook.app._verify_meta_signature format; confirm no requests / openai / anthropic / linebot / supabase / psycopg / redis imports.",
-    "v2/tests/test_signed_meta_webhook_smoke.py - 15 tests; the load-bearing one is test_sign_body_is_compatible_with_webhook_verifier. Verify it imports v2.webhook.app._verify_meta_signature and asserts True.",
-    "Confirm DEV-016 did NOT modify v2/webhook/app.py, v2/webhook/admin_routes.py, v2/webhook/test_mode_gate.py, v2/lib/source_attribution.py, v2/lib/line_admin_adapter.py, v2/lib/admin_dashboard_api.py - mtimes should be at-or-before 2026-05-20 05:43 (DEV-015) for all.",
-    "Scope discipline: V1 (app.py / app_patched_v2 / webhook_proxy.py), Make.com (make_blueprint*.json), cloudflare-worker.js, v2/supabase/migrations/ all untouched.",
-    "Reproducible test counts: pytest v2/tests/test_admin_only_runtime_smoke.py -> 9 passed; pytest <6-file adjacency> -> 55 passed; pytest v2/tests <minus 3 live ignores> -> 862 passed.",
-    "Wholesale-brand discipline: no helper output, test fixture, or runbook paragraph mentions a wholesale partner name. New code uses generic identifiers only.",
-    "OneDrive sync sanity: read the runbook AND AGENT_STATUS.json from both the bash mount and the Windows path; both should show the same byte count and same tail. If they diverge, sync has lagged - wait and re-read."
-  ],
-  "recommendation": "GO",
-  "notes": "DEV-2026-05-20-016 Sprint 5 Package J complete in fresh Cowork Dev sandbox 2026-05-20. Three deliverables as one integration package: (1) docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md finalized to 299 lines with all 11 required sections + Staging Data Readiness section + Helper Index; (2) v2/tools/signed_meta_webhook_smoke.py - offline-safe HMAC-SHA256 signer with dry-run default and two-flag opt-in to POST; (3) v2/tests/test_signed_meta_webhook_smoke.py - 15 tests pinning signature format compatibility with the production verifier, safety gates, redaction, and no-paid-provider import surface. Targeted suite: 15 passed (new) / 9 passed (admin-only smoke) / 55 passed (adjacency) / 862 passed (broad non-live). No V1 / Make.com / deploy / production webhook / secret / live-provider / migration-apply / customer-wide / V2 customer-facing-outbound change. Six existing V2 runtime safety invariants verified unchanged via read-only inspection. Customer-facing production behaviour unchanged. Awaiting QA review per CURRENT_QA_TASK.md (QA-2026-05-20-016)."
+  "next_recommended_step": "1) Codex commits the three artefacts (docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md, v2/tools/signed_meta_webhook_smoke.py, v2/tests/test_signed_meta_webhook_smoke.py) + this QA artefact + updated AGENT_STATUS.json from a local clone on v2/s4-followup-vision-ondemand. Append TASK_LOG.md entries for DEV-016 (accepted) and QA-016 (GO_WITH_NOTES). 2) Tiw / admin runs the runbook end-to-end on V2 staging with the allow-list populated (intentionally human-gated; Claude Dev cannot click the Meta App Dashboard webhook subscription). Record the first-30-minute watch checklist results. 3) If watch returns green, open the next planned package: either admin-only outbound response delivery behind a feature flag, OR gated UNIQUE promotion (_pending_023) with a fresh pre-apply duplicate audit. 4) If anything in runbook §9 watch fires, follow §10 rollback immediately (V2_ADMIN_ONLY_TEST_MODE=false → remove webhook subscription → rotate tokens if leak suspected) and open an incident-tracking task. 5) Production go-live still requires Tiw's explicit approval.",
+  "notes": "QA-2026-05-20-016 verdict: GO_WITH_NOTES. All 22 internal acceptance checks (A-D) pass. QA re-ran 24 targeted + 55 adjacency + 862 broad-non-live tests in the Cowork workspace (no network, no live providers, no secrets, no migration apply, flask 3.1.x installed). Hard-rule compliance verified by file inspection and mtime comparison: V1 (app.py 2026-05-09, webhook_proxy.py 2026-05-06), Make.com (≤2026-05-08), Cloudflare worker (2026-05-08), all six V2 runtime modules (webhook/app.py, webhook/admin_routes.py, webhook/test_mode_gate.py, lib/source_attribution.py, lib/line_admin_adapter.py, lib/admin_dashboard_api.py) all untouched — every mtime predates DEV-015. No new migration files; _pending_023 still .sql.proposal. No P0/P1 findings. Three P2 items: one new low (URL denylist convention only), two carry-over (UNIQUE promotion still gated, refresher operator runbook). Four P3 nits including two carry-overs. One charter-process note (CTR-1) for TASK_LOG.md rotation. The package closes the runbook + signed-webhook helper requirements for admin-only real-chat preflight and is operator-ready. Verdict does NOT approve pointing the production Meta webhook at staging, enabling V2 customer outbound replies, live LLM/OCR/paid-provider calls, applying any migration (including _pending_023), or production go-live."
 }

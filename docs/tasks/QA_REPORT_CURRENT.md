@@ -1,142 +1,176 @@
-# QA Report — QA-2026-05-20-015
+# QA Report — QA-2026-05-20-016
 
 ## 1. Verdict
 
 `GO_WITH_NOTES`
 
 Reviewer: Claude QA (Cowork session, 2026-05-20)
-Dev task reviewed: `DEV-2026-05-20-015` (Sprint 5 Package I — Departure
-Row Freshness, Canonical Tour URL Fix, and Uniqueness Readiness)
+Dev task reviewed: `DEV-2026-05-20-016` (Sprint 5 Package J —
+Admin-Only Staging Real-Chat Preflight and Operator Runbook
+Finalization)
 Branch: `v2/s4-followup-vision-ondemand`
-Base commit (per Dev / AGENT_STATUS.json): `4ef8114`
+Base commit (per Dev / AGENT_STATUS.json): `946790c`
 
-Verdict means: the package closes two of the four QA-014 P2 items
-(listing scraper canonical URL and DB-first staleness) and adds a
-gated, operator-driven path toward closing the third (`idx_dep_full_row`
-UNIQUE promotion). Migration 022 is additive and deliberately not
-applied; the proposed UNIQUE-promotion file is name-gated out of every
-`*.sql` glob so no automation can pick it up. All 20 charter checks
-(A–E) pass. The refresh-failure path is verified fail-closed end-to-end:
-the bot keeps replying off stale rows, the Redis guard prevents a fetch
-loop, and the deterministic `safe_planning_note` keeps the LLM from
-quoting price/seat. Customer-facing production behaviour does not change
-with this merge.
+Verdict means: the package is complete and operator-ready. All 21
+charter checks (A–D) pass. The runbook is executable end-to-end with
+no guessing required, the signed Meta webhook smoke helper is safe-by-
+default (dry-run + two-flag opt-in to POST, secret value never echoed,
+no live-provider import surface), and the V2 runtime safety surface is
+verifiably unchanged (every runtime module mtime predates this task).
+Customer-facing production behaviour does not change with this merge.
 
 Notes are minor and consist of:
-- operator-runbook prerequisites (migration 022 apply, refresher
-  wrapper script);
-- conscious carry-over items (UNIQUE promotion still awaits an
-  audit-clean signal);
-- low-severity observations on the freshness heuristic.
+- one new low-severity operator-convention item (POST URL is not
+  enforced to be staging — Dev explicitly acknowledges and runbook
+  warns);
+- one P3 documentation formatting nit (section 1 delivered as a
+  blockquote rather than a numbered heading);
+- carry-over items from earlier sprints (UNIQUE promotion still
+  gated, scheduled-refresher wrapper still operator-script).
 
 This verdict does **not** approve:
 
-- applying migration 022 (Codex/Tiw via standard staging pipeline),
-- applying the `.sql.proposal` UNIQUE promotion (gated behind a clean
-  duplicate audit),
-- customer-facing outbound replies,
-- production webhook changes,
-- any LLM / OCR / paid-provider live calls,
+- pointing the production Meta webhook at the V2 staging URL,
+- enabling customer-facing V2 outbound replies,
+- live LLM / OCR / paid-provider calls,
+- applying any migration (including the `_pending_023` UNIQUE
+  proposal),
 - production go-live.
 
 ## 2. Scope Reviewed
 
-Reviewed `DEV-2026-05-20-015` as one integration package against the
-charter sections A–E in `docs/tasks/CURRENT_QA_TASK.md`:
+Reviewed `DEV-2026-05-20-016` as one integrated preflight package
+against the charter sections A–D in `docs/tasks/CURRENT_QA_TASK.md`:
 
 - **A. Scope discipline:** no V1, Make.com, Cloudflare, production
-  webhook, secrets, live providers, migration apply, or customer-wide
-  outbound.
-- **B. Canonical URL:** `/tour/<web_code>` everywhere, no V2 canonical
-  path emits `/intertourdetail/`, three code fields stay separate.
-- **C. Freshness / refresh behaviour:** clear freshness field, fresh
-  rows skip HTTP, stale rows trigger one bounded refresh, refresh
-  failure fails closed, no loop, dry-run refresher writes nothing.
-- **D. Uniqueness readiness:** audit uses the intended logical key,
-  proposed migration gated and not applied, no destructive cleanup.
-- **E. Tests:** targeted suite passes, broad non-live suite passes
-  cleanly under a Linux tmpdir.
+  webhook, secrets, live providers, migration apply, customer-wide
+  traffic, or customer-facing V2 outbound reply.
+- **B. Admin-only runtime safety:** non-allowlisted PSID filter
+  before any conversation/state mutation, allowlisted PSIDs pass the
+  gate, runtime-config returns only safe statuses with no raw
+  secrets/PSIDs, dashboard masks PSIDs, LINE/admin mutation
+  allowlist-gated, source attribution does not trust user-typed post
+  IDs.
+- **C. Runbook quality:** executable by operator without guessing,
+  contains env checklist + runtime check + smoke tests + PSID
+  allowlist setup + negative test + watch checklist + rollback, says
+  V2 is not approved for production webhook/customer outbound, records
+  migration 022 applied + duplicate audit zero, says UNIQUE proposal
+  is not applied.
+- **D. Tests:** targeted suite passes, broad non-live V2 suite
+  passes.
 
-Artefacts inspected in the OneDrive Cowork workspace mirror of
-`v2/s4-followup-vision-ondemand`:
+Artefacts inspected:
 
 | File | Type | Size | mtime |
 |------|------|-----:|-------|
-| `v2/scraper/scrape_tours.py` | modified | 15,494 | 2026-05-20 05:40 |
-| `v2/scraper/departure_price_table.py` | modified | 24,686 | 2026-05-20 05:41 |
-| `v2/scraper/detail_enrichment.py` | modified | 12,184 | 2026-05-20 05:41 |
-| `v2/lib/orchestrator.py` | modified | 56,999 | 2026-05-20 05:43 |
-| `v2/supabase/migrations/20260520_022_departure_refreshed_at.sql` | new | 2,537 | 2026-05-20 05:41 |
-| `v2/supabase/migrations/_pending_023_departure_unique.sql.proposal` | new | 1,354 | 2026-05-20 05:46 |
-| `v2/tools/refresh_departure_rows.py` | new | 14,469 | 2026-05-20 05:44 |
-| `v2/tools/departure_duplicate_audit.py` | new | 6,224 | 2026-05-20 05:45 |
-| `v2/tests/conftest.py` | modified | 7,802 | 2026-05-20 05:40 |
-| `v2/tests/test_departure_freshness_and_audit.py` | new | 22,040 | 2026-05-20 05:49 |
+| `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md` | doc rewrite | 13,974 | 2026-05-20 10:56 |
+| `v2/tools/signed_meta_webhook_smoke.py` | new | 11,879 | 2026-05-20 10:50 |
+| `v2/tests/test_signed_meta_webhook_smoke.py` | new | 10,503 | 2026-05-20 10:51 |
+| `docs/tasks/DEV_REPORT_CURRENT.md` | DEV-016 report | — | 2026-05-20 |
+| `docs/tasks/AGENT_STATUS.json` | Dev snapshot | — | 2026-05-20 18:00 |
 
-Out-of-scope artefacts (verified untouched):
+Out-of-scope artefacts (verified untouched by mtime inspection):
 
-- V1: `app.py` mtime 2026-05-09; `webhook_proxy.py` mtime 2026-05-06.
-- Make.com: newest `make_blueprint*.json` mtime 2026-05-08.
-- Production webhook / Cloudflare worker / Railway config: untouched.
-- DEV-013 / DEV-014 modules (`v2/lib/selected_departure_match.py`,
-  `v2/lib/selected_departure_planning.py`, `v2/lib/response_writer.py`):
-  unchanged.
+- **V1**: `app.py` mtime 2026-05-09; `webhook_proxy.py` mtime
+  2026-05-06.
+- **Make.com**: newest `make_blueprint*.json` mtime 2026-05-08.
+- **Cloudflare worker**: `cloudflare-worker.js` mtime 2026-05-08.
+- **V2 runtime modules (all predate DEV-016 work)**:
+  - `v2/webhook/app.py` mtime 2026-05-19 15:55
+  - `v2/webhook/admin_routes.py` mtime 2026-05-19 15:55
+  - `v2/webhook/test_mode_gate.py` mtime 2026-05-19 16:06
+  - `v2/lib/source_attribution.py` mtime 2026-05-19 14:19
+  - `v2/lib/line_admin_adapter.py` mtime 2026-05-19 14:19
+  - `v2/lib/admin_dashboard_api.py` mtime 2026-05-19 14:19
+- **Supabase migrations**: latest is
+  `20260520_022_departure_refreshed_at.sql` mtime 2026-05-19 18:51
+  (from DEV-015 — Codex applied to staging). No new migration in
+  DEV-016. `_pending_023_departure_unique.sql.proposal` correctly
+  remains outside the `*.sql` glob.
 
 ## 3. Test Results
 
 QA re-executed in the Cowork workspace (no network, no live providers,
-no secrets, no migration apply).
+no secrets, no migration apply, `flask 3.1.x` installed in the QA
+sandbox).
 
-### 3.1 Targeted DEV-015 suite
+### 3.1 Targeted DEV-016 helper + admin-only runtime
 
 ```text
 PYTHONPATH=. python3 -m pytest \
-  v2/tests/test_detail_enrichment.py \
-  v2/tests/test_selected_departure_planning.py \
-  v2/tests/test_departure_freshness_and_audit.py \
-  --basetemp=/tmp/pyt_qa -p no:cacheprovider
-=> 62 passed in 0.91s
+  v2/tests/test_signed_meta_webhook_smoke.py \
+  v2/tests/test_admin_only_runtime_smoke.py \
+  --basetemp=/tmp/pyt_qa16c -p no:cacheprovider
+=> 24 passed in 2.59s
 ```
 
-Exactly matches Dev report §5 ("62 passed in 0.33s") — count identical.
-Breakdown:
+Matches Dev report §6 exactly (15 new + 9 admin-only smoke = 24).
 
-| File | Tests |
-|------|------:|
-| `test_detail_enrichment.py` | 26 |
-| `test_selected_departure_planning.py` | 16 |
-| `test_departure_freshness_and_audit.py` | 20 |
-| **Total** | **62** |
+### 3.2 Adjacency suite required by the task
 
-### 3.2 Broad non-live V2 suite
+```text
+PYTHONPATH=. python3 -m pytest \
+  v2/tests/test_webhook.py \
+  v2/tests/test_webhook_source_attribution.py \
+  v2/tests/test_line_admin_runtime.py \
+  v2/tests/test_admin_dashboard_runtime.py \
+  v2/tests/test_admin_only_runtime_smoke.py \
+  v2/tests/test_signed_meta_webhook_smoke.py \
+  --basetemp=/tmp/pyt_qa16d -p no:cacheprovider
+=> 55 passed in 6.74s
+```
+
+Matches Dev report §6.2 exactly.
+
+### 3.3 Broad non-live V2 suite
 
 ```text
 PYTHONPATH=. python3 -m pytest v2/tests \
   --ignore=v2/tests/test_integration_staging.py \
   --ignore=v2/tests/test_live_openai_health.py \
   --ignore=v2/tests/test_phase2_live_followup.py \
-  --basetemp=/tmp/pyt_qa_broad -p no:cacheprovider
-=> 807 passed / 40 skipped / 0 failed in 2.44s
+  --basetemp=/tmp/pyt_qa16_broad -p no:cacheprovider
+=> 862 passed in 8.26s
 ```
 
-Exactly matches Dev report §5 ("807 passed, 40 skipped, 0 failed in
-2.23s"). Skips are flask-only webhook tests; the OneDrive tmpdir
-`PermissionError` scenario continues to be avoided by using `/tmp/...`
-for `--basetemp`.
+Matches Dev report §6.3 exactly. Compared to DEV-015's 807 passed +
+40 skipped baseline, this run shows 862 passed / 0 skipped because
+flask is installed in the QA sandbox (DEV-016 added 15 tests + flask
+unlocks 40 previously-skipped webhook tests = +55 passed).
 
-### 3.3 Test-class breakdown of the 20 new freshness/audit tests
+### 3.4 Flask gating observation
 
-| Class | Tests | Charter case |
-|-------|------:|--------------|
-| `TestCanonicalListingUrl` | 4 | B-7, B-8 |
-| `TestRefreshedAtMetadata` | 2 | C-10 |
-| `TestOrchestratorFreshnessGate` | 3 | C-11, C-12, C-13, C-14 |
-| `TestRefresherDryRun` | 1 | C-15 |
-| `TestRefresherSelectedTours` | 1 | C-12 (helper) |
-| `TestRefresherStaleOnly` | 3 | C-12, C-13, C-14 |
-| `TestDuplicateAudit` | 4 | D-16, D-17 (read-only) |
-| `TestMigrationFiles` | 2 | A-5, D-17, D-18 |
-| **Total** | **20** | All 10 required cases + regression guards |
+QA's first attempt to run the DEV-016 helper test suite without flask
+installed exhibited two failures
+(`test_sign_body_is_compatible_with_webhook_verifier` and
+`test_main_post_url_with_opt_in_invokes_injected_poster`) because both
+import `v2.webhook.app._verify_meta_signature`, which loads `flask` at
+module-import time. This is the **same environmental contingency**
+Dev report §6 explicitly notes (flask 3.1.3 in Dev's sandbox). Once
+flask is installed, all 15 tests pass. **Not a code defect.** Worth
+noting in the runbook so operators on a fresh clone install flask
+before running the helper's test suite.
+
+### 3.5 Test-class breakdown of the 15 new helper tests
+
+Mapped against the safety properties they pin:
+
+| Test | Property |
+|------|----------|
+| signature format = `sha256=<64-hex>` | charter B — webhook signature shape |
+| signature byte-compatible with `_verify_meta_signature` | runbook §5 — load-bearing dry-run-to-real-POST chain |
+| `sign_body` rejects empty secret / non-bytes payload | safety |
+| `build_event` shape matches admin-only runtime smoke fixture | runbook §5 — operator confidence |
+| `build_curl_preview` redacts digest to first 8 hex chars | secret redaction |
+| dry-run is default | helper safety posture |
+| missing env var → exit 1 + names the var (no value) | secret never echoed |
+| `--post-url` without `--i-understand-staging-only` → exit 2 | two-flag opt-in |
+| both opt-in flags + injected poster 2xx → exit 0 | success path |
+| both opt-in flags + injected poster non-2xx → exit 3 | failure surfaces |
+| `--app-secret-env <NAME>` honoured | flexibility |
+| dry-run output has no 64-char hex run | full-digest redaction |
+| helper has no `openai`/`anthropic`/`linebot`/`supabase`/`psycopg`/`redis`/`requests.get|post` imports | no paid-provider import surface |
 
 ## 4. Findings, ordered by severity
 
@@ -148,224 +182,197 @@ None.
 
 ### P2 — Should fix in the next package
 
-- **P2-1 (carried over from QA-013/QA-014):** `idx_dep_full_row` is
-  still non-unique. This package adds the audit helper + a gated
-  `.sql.proposal` for promotion but does NOT apply UNIQUE. Closure
-  requires Codex/Tiw to (a) apply migration 022, (b) run the duplicate
-  audit on staging (Python helper or `DUPLICATE_AUDIT_SQL`), and
-  (c) rename the proposal to a real `.sql` migration only after
-  `safe_for_unique_index == True`. The proposal SQL is well-formed
-  (transactional, partial UNIQUE on `(tour_id, departure_start,
-  departure_end, COALESCE(bus, 0)) WHERE departure_start IS NOT NULL`,
-  with non-blocking `CONCURRENTLY` variant documented).
+- **P2-1 (new, low):** Helper POST mode is local/staging-only by
+  *convention*, not by *enforcement*. The CLI requires
+  `--i-understand-staging-only` but cannot independently verify the
+  URL is not the production webhook. Dev report §8.2 calls this out
+  explicitly and the runbook warns. Easy add to close: a URL
+  substring denylist (e.g. reject any URL containing the production
+  Page ID or `cloudflare-worker` path). Not done in DEV-016 to keep
+  scope minimal — flag for the next operator-tooling task.
 
-- **P2-2 (new):** Migration 022 is authored but NOT applied. Until
-  Codex/Tiw applies it on `tourfiremai-v2-staging`
-  (`mbcihtcdwfofagkxphcu`), the orchestrator's freshness gate is
-  inert: `_rows_are_stale` treats NULL `refreshed_at` as fresh
-  (intentional for pre-022 compatibility), so the gate gives the
-  appearance of "always fresh" against pre-022 data. The scheduled
-  refresher likewise can't backfill `refreshed_at` until the column
-  exists. **Operational ordering matters:** apply 022 → run
-  `refresh_departure_rows` once with `--stale-only --no-dry-run` to
-  backfill the column → the freshness gate becomes load-bearing.
+- **P2-2 (carried over from QA-013/QA-014/QA-015):**
+  `idx_dep_full_row` UNIQUE promotion still gated. Migration 022 is
+  applied, duplicate audit is clean per controller verification, but
+  `_pending_023_departure_unique.sql.proposal` remains correctly
+  outside the `*.sql` glob and is explicitly out of DEV-016 scope.
+  The runbook §11 lists this as "Not Approved Yet" and §"Staging
+  Data Readiness" notes that audit-clean-at-apply-time is still
+  required when the proposal is eventually promoted. Closure
+  requires Codex/Tiw to (a) re-run `find_duplicates` immediately
+  before the apply, (b) rename the proposal to a real `.sql`
+  migration, and (c) apply via the standard staging pipeline.
 
-- **P2-3 (new, low):** The scheduled refresher CLI is intentionally
-  inert (no auto-wired Supabase/HTTP client) — operator must write a
-  one-line wrapper script. This is the right safety posture but
-  creates an operator-runbook prerequisite. The runbook
-  (`docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md` or wherever the
-  scheduling is documented) should explicitly show the wrapper-script
-  pattern before scheduling.
+- **P2-3 (carried over from QA-015):** Scheduled refresher operator
+  wrapper documentation. DEV-016 references the refresher in the
+  runbook's Helper Index but does not document the wrapper-script
+  pattern. The CLI's intentional no-op safety net continues to
+  require an operator wrapper. Worth folding into the runbook in a
+  future package.
 
 ### P3 — Nits
 
-- **P3-1:** `TOUR_LINK_RE` and `TOUR_LINK_ALT_RE` in
-  `v2/scraper/scrape_tours.py` still match `/intertourdetail/`
-  patterns. This is deliberate (parsing the production listing HTML,
-  which still emits the legacy anchor) and is explained in Dev report
-  §3.1. Only the *outgoing* canonical URL (`url =
-  f"{BASE_URL}/tour/{code}"` at line 255) and the fixture URL are
-  changed. The regression guard
-  `test_no_v2_canonical_url_uses_intertourdetail_in_scraper_source`
-  is implemented at file level and might be tightened to assert
-  "no `f-string` or string concatenation builds an
-  `/intertourdetail/` URL". Not blocking.
+- **P3-1:** Runbook section 1 ("Staging-only warning") is delivered
+  as a blockquote at the top (`> 1. Staging-only warning ...`) rather
+  than as a numbered `## 1. Staging-Only Warning` heading. Content
+  satisfies the charter (warning is present, prominent, and
+  references the P0 incident posture). Future revision could
+  promote it to a real numbered heading for parser-friendliness.
 
-- **P3-2:** `_rows_are_stale` returns `True` if **any** row in the DB
-  result set has an old `refreshed_at`. Across a typical web_code, all
-  rows are refreshed together by `enrich_tour_detail`, so this is
-  fine. But if a future code path were to upsert a single row outside
-  the enrichment pipeline, the gate could over-trigger refreshes for
-  the whole set. Low impact today; flag for review if the refresher
-  evolves into a per-row scheduler.
+- **P3-2:** `test_helper_has_no_paid_provider_imports` is a
+  conservative negative-import test that forbids `requests.get|post`
+  to keep the dependency surface to `urllib` only. Dev report §8.6
+  warns that legitimate future additions of `requests` would require
+  updating this test. Acceptable trade-off; consider a `# noqa:
+  imports-allowlist` annotation if `requests` is ever introduced.
 
-- **P3-3:** `safe_planning_note` copy is unchanged from DEV-014 even
-  when the data being planned over is known-stale. Dev report §7
-  acknowledges this: "downstream reviewers should confirm that note
-  copy is still appropriate when the data is known stale." Consider a
-  separate planner branch with a stronger "ข้อมูลรอบล่าสุด อาจไม่ตรงกับ
-  หน้าเว็บ — ทีมงานเช็กให้ค่ะ" copy when the freshness gate decides to
-  serve stale.
-
-- **P3-4 (carried over from QA-013):** Three pre-existing tests fail
+- **P3-3 (carried over from QA-013):** Three pre-existing tests fail
   when pytest is invoked from `v2/` instead of repo root
   (`test_admin_only_preflight`, two `TestNoSecretOrWholesaleLeakage`).
   Hygiene fix to `pathlib.Path(__file__).resolve().parents[...]`.
-  Not introduced by this task; tracked since QA-013.
+  Not introduced by this task.
+
+- **P3-4 (new, informational):** When running the DEV-016 helper test
+  suite on a fresh clone without flask installed, two tests fail with
+  `ModuleNotFoundError: No module named 'flask'` because the
+  compatibility test imports `v2.webhook.app`. Dev report mentions
+  flask 3.1.3 as a sandbox prerequisite in §6 prose but the runbook
+  §4 smoke commands do not explicitly say "ensure flask installed
+  first". Consider adding a `pip install flask` line to the runbook's
+  prerequisite section.
 
 ### Charter / process
 
-- **CTR-1:** `TASK_LOG.md` ends at `QA-2026-05-20-014`. Codex should
-  append entries for `DEV-2026-05-20-015` (accepted) and
-  `QA-2026-05-20-015` (`GO_WITH_NOTES`) when committing this artefact.
+- **CTR-1:** `TASK_LOG.md` still ends at `QA-2026-05-20-015`. Codex
+  should append entries for `DEV-2026-05-20-016` (accepted) and
+  `QA-2026-05-20-016` (`GO_WITH_NOTES`) when committing this
+  artefact.
 
 ## 5. Required Fixes
 
-None for this cycle. P2 items are deferred-by-design operational
-prerequisites (apply 022, run audit, write wrapper script) — none
-require Dev code changes. P3 items are nits.
+None for this cycle. All P2 items are deferred-by-design or
+operator-tooling debt; P3 items are nits.
 
 Recommended next-package follow-ups (informational):
 
-1. After Codex applies migration 022 on staging, run
-   `refresh_departure_rows` once with `--stale-only --no-dry-run` via
-   an operator wrapper to backfill `refreshed_at` for any legacy rows
-   that did not get a value from the COALESCE backfill.
-2. Run `v2.tools.departure_duplicate_audit.find_duplicates` (or
-   paste `DUPLICATE_AUDIT_SQL`) against staging. If
-   `safe_for_unique_index == True`, rename
-   `_pending_023_departure_unique.sql.proposal` to
-   `20260520_023_departure_unique.sql` (or next available date) and
-   apply via the standard staging pipeline.
-3. Document the wrapper-script pattern for the scheduled refresher
-   in the admin-only runbook (P2-3).
-4. (Optional, P3-3) Consider a stale-data-served planner branch with
-   a stronger Thai disclaimer when the freshness gate decides to
-   serve stale rows.
-5. (Optional, P3-4) Hygiene fix for CWD-dependent admin-ops tests.
+1. Add a URL substring denylist to the signed-webhook helper to make
+   "never point at production" a hard gate rather than a convention
+   (closes P2-1).
+2. Promote the runbook's blockquote staging-only warning to a
+   numbered `## 1.` heading (closes P3-1).
+3. Add a `pip install flask` prerequisite line to the runbook smoke
+   commands section (closes P3-4).
+4. After Tiw runs the real-chat staging session and the 30-minute
+   watch checklist returns green, open the next planned task: either
+   admin-only outbound response delivery behind a feature flag, or
+   the gated UNIQUE promotion (`_pending_023`).
 
 ## 6. Notes / Residual Risks
 
-1. **The two QA-014 P2 items relevant to this package are closed**:
-   - QA-014 P2-2 (listing scraper canonical URL `/intertourdetail/`) →
-     closed. Line 255 of `v2/scraper/scrape_tours.py` now writes
-     `f"{BASE_URL}/tour/{code}"`. Conftest fixture URL also normalized.
-     Regression tests verify both the parsed listing and the
-     persisted `tours_canonical.url` use `/tour/`.
-   - QA-014 P2-3 (DB-first staleness) → closed. The freshness gate
-     refuses to serve indefinitely stale rows once migration 022 is
-     applied; the refresher gives operators a deterministic
-     backfill/refresh tool.
+1. **All six runtime safety invariants verified by inspection.** Per
+   Dev report §4 and confirmed by QA's mtime check:
+   - `v2/webhook/app.py` (admin-only PSID filter before any state
+     mutation): mtime 2026-05-19 15:55 — unchanged in DEV-016.
+   - `v2/webhook/admin_routes.py` (runtime-config + dashboard read API
+     mask PSIDs/secrets): mtime 2026-05-19 15:55 — unchanged.
+   - `v2/webhook/test_mode_gate.py` (PSID allowlist): mtime
+     2026-05-19 16:06 — unchanged.
+   - `v2/lib/source_attribution.py` (Meta-only fields, validates
+     against `page_posts`): mtime 2026-05-19 14:19 — unchanged.
+   - `v2/lib/line_admin_adapter.py` (allowlist-gated mutation): mtime
+     2026-05-19 14:19 — unchanged.
+   - `v2/lib/admin_dashboard_api.py` (PSID masking): mtime 2026-05-19
+     14:19 — unchanged.
 
-2. **Page-post / sold-out block still wins ahead of the LLM**
-   (DEV-014 invariant, structurally unchanged in this package).
-   Verified by inspection of `v2/lib/response_writer.py` lines
-   201–218 — `replacement_needed` branch returns the canned blocked
-   reply before the LLM payload is built. The
-   `TestSoldOutOverrideStillBlocks` test (still in
-   `test_selected_departure_planning.py`) continues to pass.
+2. **Helper safety posture confirmed by structural inspection.**
+   - Only third-party deps: `urllib.request` (stdlib), `hmac`
+     (stdlib), `hashlib` (stdlib), `json`, `os`, `shlex`. No
+     `requests`, `openai`, `anthropic`, `linebot`, `supabase`,
+     `psycopg`, `redis` — verified by `grep` over the source.
+   - Secret env var name only via `--app-secret-env` (default
+     `V2_STAGING_FB_APP_SECRET`); value read once via `env.get(name)`
+     and never put back into stdout/stderr. `_redact_signature`
+     truncates the digest to 8 hex chars + `...` for the curl preview.
+   - Dry-run is the default. `--post-url` alone returns exit 2.
+     `--post-url --i-understand-staging-only` is the explicit opt-in;
+     `_do_post` uses `urllib.request.urlopen` with the operator-typed
+     URL only.
+   - Exit codes: 0 success, 1 missing secret env, 2 missing opt-in,
+     3 non-2xx response from injected poster.
 
-3. **Fee policy + handoff path unchanged.** `FEE_CHECK_REQUIRED`
-   branch in `response_writer.py` lines 167–193 still uses
-   `decide_fee_answer(fees_row, asked_field)` and falls back to
-   `CANNED_HANDOFF_FEE_INCOMPLETE` on low confidence or missing data.
-   The new freshness path does not touch this branch.
+3. **Page-post / sold-out block + FEE_CHECK_REQUIRED policy
+   unchanged.** No runtime module was modified by this task; the
+   DEV-014 invariants (page-post canned reply wins before LLM;
+   `FEE_CHECK_REQUIRED` still uses `decide_fee_answer` +
+   `CANNED_HANDOFF_FEE_INCOMPLETE`) continue to hold structurally.
 
-4. **Fail-closed refresh path verified end-to-end.** Test
-   `test_refresh_failure_falls_back_to_stale_no_loop` confirms:
-   (a) `ConnectionError` on the refresh HTTP does not silence the
-   bot (`result.silent is False`); (b) exactly one refresh attempt
-   (`len(http.calls) == 1`); (c) the Redis guard prevents a second
-   HTTP attempt on the next turn (`len(http.calls)` stays at 1).
-   This satisfies charter checks C-13 (refresh failure does not
-   quote final price/availability) and C-14 (no unbounded fetch
-   loop).
+4. **Staging data readiness recorded.** Runbook section "Staging
+   Data Readiness" mirrors the four controller-verified facts from
+   Codex's pre-task application of migration 022:
+   - `tour_departures.refreshed_at` column present;
+   - `idx_dep_refreshed_at` index present;
+   - 24/24 staging departure rows have `refreshed_at`;
+   - duplicate audit returned zero rows;
+   - `_pending_023_departure_unique.sql.proposal` not applied (and
+     not in DEV-016 scope);
+   - audit-clean-at-apply-time still required for any future UNIQUE
+     promotion.
 
-5. **Migration 022 safety verified by inspection:**
-   - All schema changes use `ADD COLUMN IF NOT EXISTS` (line 30) or
-     `CREATE INDEX IF NOT EXISTS` (line 65).
-   - No `DROP COLUMN`, no `DROP TABLE`, no `RENAME COLUMN`, no
-     `TRUNCATE`. Test `test_022_freshness_migration_exists` enforces
-     no UNIQUE keyword (uniqueness is deferred to the gated proposal).
-   - Three best-effort backfill blocks each wrapped in
-     `DO $$ ... EXCEPTION WHEN undefined_column THEN NULL; END $$` so
-     databases missing legacy audit columns (`updated_at`,
-     `scraped_at`, `created_at`) remain safe to migrate.
-   - Header comment explicitly states "NOT applied by Claude Dev."
+5. **OneDrive sync race documented.** Dev report §8.4 flags that
+   the runbook was rewritten via the Linux mount to converge two
+   diverged views; both views now report `299 lines / 13,974 bytes`
+   with identical tail. QA confirmed line count (299) and tail
+   content matches Dev report (`Next change trigger: when Tiw/Codex
+   approves V2 customer-facing outbound replies (separate task), OR
+   when the production Meta webhook becomes in scope (separate
+   task).`).
 
-6. **Uniqueness proposal correctly gated**:
-   - File suffix is `.sql.proposal`, not `.sql`. Verified by
-     `ls v2/supabase/migrations/*.sql | grep _pending_023` returning
-     zero matches. Test `test_uniqueness_proposal_is_not_a_sql_file`
-     enforces this.
-   - SQL block uses `BEGIN; ... COMMIT;` (atomic), partial UNIQUE
-     index matches the application's `idempotency_key` shape, and
-     includes a documented `CREATE UNIQUE INDEX CONCURRENTLY`
-     variant for hot tables.
+6. **Hard-rule compliance verified.** Grep over the new helper +
+   test file confirms no forbidden imports
+   (`openai`/`anthropic`/`requests`/`psycopg`/`supabase`/`httpx`/
+   `boto3`/`linebot`/`redis`). No secret/token reads beyond the
+   declared env-var name lookup. No wholesale partner names in the
+   helper, the test file, or the runbook (`grep -i wholesale` returns
+   zero matches across all three).
 
-7. **Refresher CLI is operator-driven only.** The CLI `main()` prints
-   a stderr message instructing the operator to wire their own
-   Supabase + HTTP client; it does NOT auto-construct either client
-   and does NOT auto-run any work. `python -m v2.tools.refresh_departure_rows`
-   without an operator wrapper is a no-op safety net. Dry-run is the
-   default everywhere; `--no-dry-run` is the explicit opt-in.
-
-8. **Duplicate audit is read-only.** Both the Python helper
-   (`find_duplicates`) and the raw SQL (`DUPLICATE_AUDIT_SQL`) use
-   `SELECT` only — no `INSERT` / `UPDATE` / `DELETE` /
-   `CREATE` / `DROP`. Verified by
-   `test_sql_audit_block_is_read_only_and_targets_correct_columns`.
-   NULL `departure_start` rows are excluded (matching the proposed
-   partial UNIQUE index's `WHERE departure_start IS NOT NULL`
-   predicate).
-
-9. **Hard-rule compliance verified.** V1 (`app.py` 2026-05-09;
-   `webhook_proxy.py` 2026-05-06), Make.com (≤2026-05-08), production
-   webhook / Cloudflare / Railway / secrets all untouched. Grep
-   confirms no `openai`/`anthropic`/`requests`/`psycopg`/`supabase`/
-   `httpx`/`boto3` imports in the two new tools modules or in the
-   new test file. No secret/token reads beyond pre-existing constants
-   in the parser module.
-
-10. **Defense-in-depth on wholesale.** No new code surface needs
-    wholesale filtering — the duplicate audit and the refresher both
-    operate on already-parsed `DeparturePriceRow` objects whose schema
-    has no wholesale field.
+7. **Flask is required in the test sandbox** for the helper's
+   compatibility test
+   (`test_sign_body_is_compatible_with_webhook_verifier`) to run —
+   that test imports `v2.webhook.app._verify_meta_signature`, which
+   loads flask at module import. Dev's sandbox had flask 3.1.3
+   installed; QA installed it before re-running. This is consistent
+   with Dev's broad-suite count of 862 (which includes the
+   previously-skipped flask-only webhook tests once flask is
+   present).
 
 ## 7. Recommendation to Codex
 
-1. **Accept `QA-2026-05-20-015` as `GO_WITH_NOTES`.** Commit the
-   ten files (six new, three modified V2, plus this QA artefact +
-   updated `AGENT_STATUS.json`) from a local clone on
+1. **Accept `QA-2026-05-20-016` as `GO_WITH_NOTES`.** Commit the
+   three artefacts (`docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`,
+   `v2/tools/signed_meta_webhook_smoke.py`,
+   `v2/tests/test_signed_meta_webhook_smoke.py`) plus this QA report
+   + updated `AGENT_STATUS.json` from a local clone on
    `v2/s4-followup-vision-ondemand`. Append `TASK_LOG.md` entries
-   for `DEV-2026-05-20-015` (accepted) and `QA-2026-05-20-015`
+   for `DEV-2026-05-20-016` (accepted) and `QA-2026-05-20-016`
    (`GO_WITH_NOTES`).
 
-2. **Apply migration 022 on staging via the standard pipeline**
-   (`tourfiremai-v2-staging` / `mbcihtcdwfofagkxphcu`). Verify the
-   new column `tour_departures.refreshed_at` exists and the partial
-   index `idx_dep_refreshed_at` is present.
+2. **Run the runbook end-to-end on V2 staging with Tiw/admin
+   allow-list populated.** This step is intentionally human-gated —
+   Claude Dev cannot click the Meta App Dashboard webhook
+   subscription. Follow the exact sequence in §1 → §11. Record the
+   first-30-minute watch checklist results.
 
-3. **Backfill `refreshed_at` for legacy rows** by running an operator
-   wrapper around `v2.tools.refresh_departure_rows.refresh_departure_rows`
-   with `dry_run=False` and the `--stale-only` source. This makes
-   the freshness gate load-bearing.
+3. **If watch returns green**, open the next planned package: either
+   (a) admin-only outbound response delivery behind a feature flag,
+   or (b) gated UNIQUE promotion (`_pending_023`) with a fresh
+   pre-apply duplicate audit.
 
-4. **Run the duplicate audit on staging**
-   (`v2.tools.departure_duplicate_audit.find_duplicates` or paste
-   `DUPLICATE_AUDIT_SQL`). If `safe_for_unique_index == True`, rename
-   `_pending_023_departure_unique.sql.proposal` to a proper
-   timestamped `.sql` migration and apply it. If duplicates exist,
-   open a separate, manually-approved triage task before promoting
-   to UNIQUE.
+4. **If anything in §9 watch fires**, follow runbook §10 immediately
+   (V2_ADMIN_ONLY_TEST_MODE=false → remove webhook subscription →
+   rotate tokens if leak suspected) and open an incident-tracking
+   task.
 
-5. **Open the next Dev task** focused on whichever of the remaining
-   admin-only readiness items is highest-priority — likely the
-   scheduled-refresher operator wrapper documentation + wiring into
-   the admin runbook (P2-3).
-
-6. **Production go-live still requires Tiw's explicit approval.** V2
+5. **Production go-live still requires Tiw's explicit approval.** V2
    continues to operate behind the admin-only test posture; this QA
    does not unlock public webhook traffic or customer-wide replies.
 
@@ -374,23 +381,23 @@ Recommended next-package follow-ups (informational):
 `CURRENT_QA_TASK.md` specifies that QA must treat the GitHub repo
 `tiwsoonkyu/tourfiremai-bot` on `v2/s4-followup-vision-ondemand` as
 source of truth. The Cowork workspace does not have `.git` for this
-project, so direct verification of commit `4ef8114` was not possible
+project, so direct verification of commit `946790c` was not possible
 from this session.
 
 However:
 
 - The Dev report explicitly notes Codex/Tiw will commit/push from a
-  local clone, so the ten files in the workspace are the artefacts
-  intended for that commit.
-- The user directed QA against `QA-2026-05-20-015` against the files
-  on disk. QA proceeded with the workspace-mirror files, matching the
-  scope the user named — consistent with the precedent set by every
-  QA cycle since `QA-2026-05-19-008`.
+  local clone, so the three artefacts in the workspace are the
+  artefacts intended for that commit.
+- The user directed QA against `QA-2026-05-20-016` against the files
+  on disk. QA proceeded with the workspace-mirror files, matching
+  the scope the user named — consistent with the precedent set by
+  every QA cycle since `QA-2026-05-19-008`.
 
 If Codex needs strict commit-level verification, Codex should re-run
-the same pytest commands on a local clone after committing. The
-numbers above (62 / 807 + 40 skips) should reproduce exactly when
-run with a Linux-style tmpdir.
+the three pytest commands on a local clone after committing. The
+numbers above (24 / 55 / 862) should reproduce exactly with flask
+installed and a Linux-style tmpdir.
 
 ---
 
