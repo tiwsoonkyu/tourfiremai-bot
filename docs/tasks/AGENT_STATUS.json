@@ -1,20 +1,26 @@
 {
   "controller": "Codex",
   "role": "Claude Dev",
-  "status": "DEV_TASK_OPEN",
+  "status": "READY_FOR_QA",
   "verdict": null,
   "current_dev_task": "DEV-2026-05-20-015",
   "current_qa_task": "QA-2026-05-20-015",
   "branch": "v2/s4-followup-vision-ondemand",
-  "base_commit": "e53f644",
-  "commit": "e53f644",
+  "base_commit": "4ef8114",
+  "commit": "4ef8114",
   "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-20T12:20:00+07:00",
-  "next_action": "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
+  "updated_at": "2026-05-20T13:10:00+07:00",
+  "next_action": "CLAUDE_QA_RUN_CURRENT_QA_TASK",
   "blocked_reason": null,
   "notes": [
-    "QA-2026-05-20-014 accepted as GO_WITH_NOTES and recorded by Codex.",
-    "DEV-2026-05-20-015 opens the next integrated data hardening package before admin-only real-chat testing.",
-    "Scope: canonical /tour/<web_code> URLs, departure-row freshness/refresh, scheduled refresher foundation, and uniqueness readiness."
+    "DEV-2026-05-20-015 implemented as one integration package per CURRENT_DEV_TASK.md.",
+    "Canonical URL fix: v2/scraper/scrape_tours.py + conftest fixture now emit /tour/<web_code>.",
+    "Freshness wiring: migration 022 (NOT applied) adds refreshed_at; departure_price_table + detail_enrichment stamp it; orchestrator gains detail_freshness_ttl_s + stale-row gate with fail-closed refresh.",
+    "Scheduled refresher: v2/tools/refresh_departure_rows.py supports --web-codes / --selected-tours / --stale-only with default dry-run; CLI deliberately does not auto-wire live clients.",
+    "Uniqueness readiness: v2/tools/departure_duplicate_audit.py + DUPLICATE_AUDIT_SQL; docs/V2_DEPARTURE_UNIQUENESS_PROPOSAL.md; _pending_023_departure_unique.sql.proposal is deliberately not a .sql file so no glob applies it.",
+    "20 new tests in v2/tests/test_departure_freshness_and_audit.py cover all 10 required cases plus regression guards.",
+    "Test results: targeted 62/62 passed, broad non-live V2 suite 807 passed / 40 skipped (flask-only) / 0 failed (run with --basetemp=/tmp/pyt to avoid OneDrive temp permission errors).",
+    "Hard rules honored: no V1, no Make.com, no deploy, no production webhook changes, no secrets, no live Meta/LINE/OpenAI/OCR/paid-provider calls, no Supabase migrations applied.",
+    "Customer-facing production behavior unchanged. Recommendation from Dev: GO."
   ]
 }

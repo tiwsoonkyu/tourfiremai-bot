@@ -252,7 +252,7 @@ def parse_listing_html(html: str, country: str, country_id: int) -> list[ParsedT
             kw in snippet for kw in ("ทัวร์ไฟไหม้", "ไฟไหม้", "Flash Sale", "FLASH SALE")
         )
 
-        url = f"{BASE_URL}/intertourdetail/{code}"
+        url = f"{BASE_URL}/tour/{code}"
         tour = ParsedTour(
             web_code=code,
             name=name or f"(unparsed name {code})",

@@ -225,7 +225,7 @@ def make_tour(supabase):
             "nights": max(days - 1, 0),
             "base_price": price,
             "airline": airline,
-            "url": f"https://www.tourfiremai.com/intertourdetail/{web_code}",
+            "url": f"https://www.tourfiremai.com/tour/{web_code}",
             "city_tags": city_tags or [],
             "is_active": True,
             "is_fire_sale": is_fire_sale,

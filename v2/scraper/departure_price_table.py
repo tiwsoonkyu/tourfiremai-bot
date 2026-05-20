@@ -612,6 +612,7 @@ def to_tour_departure_rows(
     rows: list[DeparturePriceRow],
     *,
     tour_id: Optional[str] = None,
+    refreshed_at: Optional[datetime] = None,
 ) -> list[dict[str, Any]]:
     """Convert parsed rows to a list of upsert payloads compatible with the
     existing `tour_departures` shape (post migration 021).
@@ -661,6 +662,8 @@ def to_tour_departure_rows(
         }
         if tour_id is not None:
             payload["tour_id"] = tour_id
+        if refreshed_at is not None:
+            payload["refreshed_at"] = refreshed_at.isoformat()
         payloads.append(payload)
     return payloads
 

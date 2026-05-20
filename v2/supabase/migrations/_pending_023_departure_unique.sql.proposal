@@ -1,0 +1,32 @@
+-- PROPOSAL ONLY. Do NOT apply automatically.
+-- File suffix `.sql.proposal` keeps it out of any *.sql migration glob.
+--
+-- Promotes idx_dep_full_row to UNIQUE once the duplicate audit returns
+-- zero rows. Owner of the audit + apply: Codex with Tiw approval.
+--
+-- Audit gate (run BEFORE applying):
+--   1. SQL helper: v2/tools/departure_duplicate_audit.DUPLICATE_AUDIT_SQL
+--   2. Python helper: v2.tools.departure_duplicate_audit.find_duplicates
+--   3. Both must report zero offending groups.
+
+BEGIN;
+
+-- Drop the existing non-unique index so the UNIQUE one can replace it.
+DROP INDEX IF EXISTS idx_dep_full_row;
+
+-- Partial UNIQUE index on the same logical key the application uses
+-- (v2.scraper.departure_price_table.idempotency_key). COALESCE on `bus`
+-- so a missing bus number doesn't get treated as distinct from another
+-- missing bus number for the same date range.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dep_full_row
+  ON tour_departures (tour_id, departure_start, departure_end, COALESCE(bus, 0))
+  WHERE departure_start IS NOT NULL;
+
+COMMIT;
+
+-- Non-blocking variant (preferred on hot staging tables):
+--
+-- DROP INDEX IF EXISTS idx_dep_full_row;
+-- CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_dep_full_row
+--   ON tour_departures (tour_id, departure_start, departure_end, COALESCE(bus, 0))
+--   WHERE departure_start IS NOT NULL;

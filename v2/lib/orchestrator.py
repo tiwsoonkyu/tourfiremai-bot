@@ -70,7 +70,9 @@ class Orchestrator:
     def __init__(self, supabase, redis, llm: LLMClient, *,
                  enable_llm_intent: bool = False,
                  http_client: Optional[Any] = None,
-                 detail_fetch_ttl_s: int = 300):
+                 detail_fetch_ttl_s: int = 300,
+                 detail_freshness_ttl_s: int = 6 * 60 * 60,
+                 now=None):
         self.supabase = supabase
         self.redis = redis
         self.memory = MemoryService(supabase, redis)
@@ -85,6 +87,13 @@ class Orchestrator:
         # the orchestrator from re-fetching the same page within the window
         # when DB rows are already present.
         self.detail_fetch_ttl_s = int(detail_fetch_ttl_s)
+        # Sprint 5 Package I: how stale a tour_departures row may be before
+        # the orchestrator treats it as a refresh trigger. 6h is conservative
+        # for tour pricing on staging; can be overridden in production or
+        # in tests via this kwarg.
+        self.detail_freshness_ttl_s = int(detail_freshness_ttl_s)
+        # Injectable clock for tests — defaults to datetime.utcnow.
+        self._now = now or (lambda: datetime.now(timezone.utc))
 
     def handle_turn(
         self, *,
@@ -619,24 +628,66 @@ class Orchestrator:
         except Exception:
             pass
 
+    def _rows_are_stale(self, db_rows: list) -> bool:
+        """Return True when at least one row's ``refreshed_at`` is older
+        than ``detail_freshness_ttl_s``. Legacy rows whose refreshed_at
+        is NULL are treated as fresh (so V2 keeps working pre-migration
+        022 application) — operators tighten this by running the
+        scheduled refresher once migration 022 is live on staging.
+        """
+        if not db_rows:
+            return False
+        now = self._now()
+        ttl = max(0, int(self.detail_freshness_ttl_s))
+        if ttl <= 0:
+            # TTL=0 means "always treat as stale" — useful in tests.
+            return True
+        for d in db_rows:
+            v = d.get("refreshed_at") if isinstance(d, dict) else None
+            if v is None or v == "":
+                continue  # legacy row — skip
+            try:
+                if isinstance(v, str):
+                    ts = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                else:
+                    ts = v
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+            age_s = (now - ts).total_seconds()
+            if age_s > ttl:
+                return True
+        return False
+
     def _get_or_fetch_departure_rows(
         self, *, web_code: str, tour_id: Optional[str], trace_id: Optional[str],
     ):
         """
         Return the parsed DeparturePriceRow list for ``web_code``.
 
-        Strategy (DB-first, then HTTP fallback):
+        Strategy (DB-first with freshness gate, then HTTP refresh):
           1. Read ``tour_departures`` rows for the web_code from the DB.
-             If any rows exist, convert and return them — no HTTP fetch.
-          2. If DB is empty AND the redis guard is hot, return [] (we
-             tried recently and there's nothing new — don't hammer).
-          3. Otherwise, if an injected http_client exists, run
-             ``enrich_tour_detail`` (fetch + parse + idempotent upsert)
-             and return the freshly-parsed rows. Mark the guard.
-          4. If no http_client is available, return [] (graceful no-op).
+          2. If any rows exist AND every row's ``refreshed_at`` is within
+             ``detail_freshness_ttl_s`` (or refreshed_at is missing on
+             every row — legacy DB), use them directly without HTTP.
+          3. If rows exist but are STALE (oldest refreshed_at older than
+             the TTL), check the redis guard. If the guard is hot we
+             already tried recently — fall back to the stale rows and
+             never quote final price/availability (the planner's
+             safe_planning_note already does that). If the guard is
+             cold, run ``enrich_tour_detail`` to refresh, set the guard,
+             and return the freshly-parsed rows. On refresh failure we
+             fall back to the stale rows so the bot still has something
+             deterministic to plan around (fail closed: never invent
+             availability or final price).
+          4. If DB is empty and the redis guard is hot, return [] (don't
+             hammer). Otherwise, fetch via ``enrich_tour_detail`` once.
+          5. If no http_client is available, return what we have (DB
+             rows or []), without ever trying a refresh.
 
-        Never raises — returns ``[]`` on any failure so the planner can
-        still produce a safe note.
+        Never raises — returns ``[]`` (or stale rows) on any failure so
+        the planner can still produce a safe note.
         """
         from .selected_departure_planning import row_dict_to_departure_price_row
         if not web_code:
@@ -650,11 +701,11 @@ class Orchestrator:
             logger.warning("[%s] departure_rows DB read failed: %s", trace_id, e)
             db_rows = []
 
-        if db_rows:
-            parsed = []
-            for d in db_rows:
+        def _convert(rows: list) -> list:
+            out = []
+            for d in rows:
                 try:
-                    parsed.append(
+                    out.append(
                         row_dict_to_departure_price_row(d, default_web_code=web_code)
                     )
                 except Exception as e:  # pragma: no cover - defensive
@@ -662,7 +713,52 @@ class Orchestrator:
                         "[%s] departure_rows convert failed wc=%s err=%s",
                         trace_id, web_code, e,
                     )
-            return parsed
+            return out
+
+        if db_rows:
+            is_stale = self._rows_are_stale(db_rows)
+            if not is_stale:
+                return _convert(db_rows)
+            # Stale path — try a deterministic refresh once unless guarded.
+            if self.http_client is None:
+                # No http_client to refresh with — serve what we have.
+                logger.info(
+                    "[%s] departure_rows: stale rows wc=%s but no http_client — serving stale",
+                    trace_id, web_code,
+                )
+                return _convert(db_rows)
+            if self._recently_fetched_detail(web_code):
+                logger.info(
+                    "[%s] departure_rows: stale rows wc=%s but refresh guard hot — serving stale",
+                    trace_id, web_code,
+                )
+                return _convert(db_rows)
+            # Attempt the refresh.
+            try:
+                from v2.scraper.detail_enrichment import enrich_tour_detail
+                result = enrich_tour_detail(
+                    web_code,
+                    http=self.http_client,
+                    supabase=self.supabase,
+                    tour_id=tour_id,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[%s] enrich_tour_detail refresh failed wc=%s err=%s — serving stale",
+                    trace_id, web_code, e,
+                )
+                self._mark_detail_fetched(web_code)
+                return _convert(db_rows)
+            self._mark_detail_fetched(web_code)
+            if not result.parsed:
+                # Refresh produced nothing usable — fall back to stale
+                # rows (fail closed, no fabricated availability).
+                logger.info(
+                    "[%s] departure_rows: refresh wc=%s did not parse — serving stale",
+                    trace_id, web_code,
+                )
+                return _convert(db_rows)
+            return list(result.rows)
 
         if self._recently_fetched_detail(web_code):
             return []

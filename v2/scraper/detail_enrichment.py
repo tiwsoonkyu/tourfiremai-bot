@@ -159,6 +159,7 @@ def upsert_departure_rows(
     *,
     supabase: Any,
     tour_id: Optional[str] = None,
+    refreshed_at: Optional[datetime] = None,
 ) -> DetailPersistenceResult:
     """Idempotently upsert parsed detail rows into ``tour_departures``.
 
@@ -175,7 +176,11 @@ def upsert_departure_rows(
     if not rows:
         return DetailPersistenceResult()
 
-    payloads = to_tour_departure_rows(rows, tour_id=tour_id)
+    # Always stamp a freshness timestamp on every upserted row so the
+    # orchestrator's stale-row gate can read deterministic data.
+    stamp = refreshed_at or datetime.utcnow()
+
+    payloads = to_tour_departure_rows(rows, tour_id=tour_id, refreshed_at=stamp)
     skipped = len(rows) - len(payloads)
 
     result = DetailPersistenceResult(skipped_no_date=skipped)
@@ -316,7 +321,8 @@ def enrich_tour_detail(
 
     if persist and supabase is not None and result.rows:
         result.persistence = upsert_departure_rows(
-            result.rows, supabase=supabase, tour_id=tour_id
+            result.rows, supabase=supabase, tour_id=tour_id,
+            refreshed_at=fetched_at,
         )
         result.persisted = bool(result.persistence and result.persistence.upserted)
 
