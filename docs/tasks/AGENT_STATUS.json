@@ -1,20 +1,25 @@
 {
   "controller": "Codex",
-  "role": "Controller",
-  "status": "DEV_TASK_OPEN",
+  "role": "Claude Dev",
+  "status": "READY_FOR_QA",
   "verdict": null,
   "current_dev_task": "DEV-2026-05-20-014",
   "current_qa_task": "QA-2026-05-20-014",
   "branch": "v2/s4-followup-vision-ondemand",
   "base_commit": "4ef8114",
   "commit": "4ef8114",
-  "report_path": "docs/tasks/CURRENT_DEV_TASK.md",
-  "updated_at": "2026-05-20T10:17:37+07:00",
-  "next_action": "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
+  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
+  "updated_at": "2026-05-20T11:05:00+07:00",
+  "next_action": "CLAUDE_QA_RUN_CURRENT_QA_TASK",
   "blocked_reason": null,
   "notes": [
-    "DEV/QA-013 accepted with notes and committed by Codex.",
-    "DEV-014 is opened as the next integration package: selected departure detail planning into orchestrator and response writer.",
-    "No production deploy, V1, Make.com, production webhook, secrets, or live paid providers are authorized."
+    "DEV-2026-05-20-014 implemented as one integration package per CURRENT_DEV_TASK.md.",
+    "Added v2/lib/selected_departure_planning.py (deterministic, no LLM/network/DB/OCR).",
+    "Wired orchestrator candidate resolver, enrichment trigger gate, DB-first row fetch with Redis guard, and selected_departure planning bundle into handle_turn.",
+    "Wired response_writer to inject selected_departure_planning into the LLM payload AFTER _strip_wholesale; page-post sold-out canned block still wins before the LLM.",
+    "16 new tests in v2/tests/test_selected_departure_planning.py cover all 10 required cases plus candidate-resolution priority and row-dict round-trip.",
+    "Test results: targeted 71/71 passed, broad non-live V2 suite 783 passed / 40 skipped (flask-only) / 0 failed.",
+    "Hard rules honored: no V1, no Make.com, no deploy, no production webhook changes, no secrets, no live Meta/LINE/OpenAI/OCR/paid provider calls, no Supabase migrations.",
+    "Customer-facing production behavior unchanged. Recommendation from Dev: GO."
   ]
 }

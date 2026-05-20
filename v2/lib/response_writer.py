@@ -9,10 +9,16 @@ Guard rails enforced HERE (in code, not just prompt):
   5. Wholesale brand leak check: search reply for known partner names → flag + retry
   6. Page-post / sold-out planning: if planner says replacement_needed, return canned
      reply BEFORE the LLM. The LLM never decides sold-out semantics.
+  7. Selected-departure planning: a compact, LLM-safe bundle is injected
+     into ``tool_results`` for the LLM to consume. The bot never quotes
+     a price/seat as final and never guesses a row — it must use the
+     ``matched_departure`` data when ``match_status == "matched_high"``
+     and otherwise rely on the planning ``safe_planning_note``.
 
 Public API:
     write_response(state, intent, tool_results, customer_memory, *, llm,
-                   planning=None) -> ResponseDecision | None
+                   planning=None, selected_departure=None)
+                       -> ResponseDecision | None
 """
 
 from __future__ import annotations
@@ -143,6 +149,7 @@ def write_response(
     customer_memory: dict,
     llm: LLMClient,
     planning=None,
+    selected_departure=None,
 ) -> Optional[ResponseDecision]:
     """
     Generate a reply (or None if bot must stay silent).
@@ -215,6 +222,22 @@ def write_response(
     planning_note = _planning_to_compact_note(planning)
     if planning_note:
         clean_tools = {**clean_tools, "page_post_planning_note": planning_note}
+
+    # 3.5) Selected-departure planning bundle (Sprint 5 Package H).
+    # The bundle is strictly LLM-safe: web_code / tour_code_real /
+    # airline are kept separate, "-" stays None, wholesale never appears,
+    # and a deterministic ``safe_planning_note`` tells the LLM how to
+    # phrase the reply without quoting price/seat as final.
+    if selected_departure is not None:
+        try:
+            sd_dict = selected_departure.to_compact_dict()
+        except AttributeError:
+            sd_dict = selected_departure if isinstance(selected_departure, dict) else {}
+        if sd_dict:
+            clean_tools = {
+                **clean_tools,
+                "selected_departure_planning": _strip_wholesale(sd_dict),
+            }
 
     # 4) Compose messages
     system_prompt = _load_prompt("response_writer_v1")

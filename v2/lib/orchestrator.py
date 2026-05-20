@@ -36,6 +36,9 @@ from . import redactor
 # NB: page_post_context is imported lazily inside _build_planning_context to
 # keep import-time deps minimal and avoid surprising side effects in tests that
 # stub the supabase fake before importing the orchestrator.
+# NB: selected_departure_planning is imported lazily inside
+# _build_selected_departure_planning so the unit test that asserts
+# "no live network during unit run" never triggers an unintended import.
 
 logger = logging.getLogger("v2.orchestrator")
 
@@ -65,12 +68,23 @@ class Orchestrator:
     """
 
     def __init__(self, supabase, redis, llm: LLMClient, *,
-                 enable_llm_intent: bool = False):
+                 enable_llm_intent: bool = False,
+                 http_client: Optional[Any] = None,
+                 detail_fetch_ttl_s: int = 300):
         self.supabase = supabase
         self.redis = redis
         self.memory = MemoryService(supabase, redis)
         self.llm = llm
         self.enable_llm_intent = enable_llm_intent  # opt-in upgrade path; off in tests
+        # Optional injected HTTP client for detail-page enrichment. When
+        # ``None`` the orchestrator never triggers a live fetch — DB rows
+        # remain the only source. Tests pass a FakeHttp instance.
+        self.http_client = http_client
+        # Memory-backed guard window for repeat detail fetches of the same
+        # web_code. The DB row is the source of truth; this guard prevents
+        # the orchestrator from re-fetching the same page within the window
+        # when DB rows are already present.
+        self.detail_fetch_ttl_s = int(detail_fetch_ttl_s)
 
     def handle_turn(
         self, *,
@@ -193,6 +207,7 @@ class Orchestrator:
         # signal evaluation BEFORE the LLM. The planner is no-op-safe for
         # silent states (silent path skips write_response entirely).
         planning = None
+        selected_departure = None
         if not is_silent_state(state_after):
             planning = self._build_planning_context(
                 psid=psid, conv=conv,
@@ -200,6 +215,11 @@ class Orchestrator:
                 source_post_id=source_post_id,
                 source_type=source_type,
                 source_platform=source_platform,
+                trace_id=trace_id,
+            )
+            selected_departure = self._build_selected_departure_planning(
+                psid=psid, conv=conv, accumulated=tool_results,
+                intent=intent, text=text, state_after=state_after,
                 trace_id=trace_id,
             )
 
@@ -213,6 +233,7 @@ class Orchestrator:
                 tool_results=tool_results, customer_memory=cmem,
                 llm=self.llm,
                 planning=planning,
+                selected_departure=selected_departure,
             )
 
         # 11) Persist conversation_turns (inbound + outbound)
@@ -385,6 +406,345 @@ class Orchestrator:
             logger.warning("[%s] planning: build failed: %s", trace_id, e)
             return None
 
+    # ------------------------------------------------------------------
+    # Sprint 5 Package H: selected departure detail planning
+    # ------------------------------------------------------------------
+
+    # Intents that NEVER trigger a detail-page enrichment (these are
+    # universal/greeting/payment/decline shapes that don't ask anything
+    # row-specific).
+    _NON_ENRICHING_INTENTS: frozenset[str] = frozenset({
+        "greeting", "send_attachment", "ask_human", "payment_keyword",
+        "decline_final", "off_topic_strong", "off_topic",
+    })
+
+    # Intents that always trigger when a candidate exists — these are
+    # explicit follow-ups on the selected tour.
+    _ENRICHING_INTENTS: frozenset[str] = frozenset({
+        "select_tour", "select_departure", "ask_fee", "ask_tour_detail",
+        "confirm_booking", "ask_pax", "ask_period",
+    })
+
+    @dataclass
+    class _DepartureCandidate:
+        web_code: str = ""
+        tour_code_real: Optional[str] = None
+        tour_id: Optional[str] = None
+        name: Optional[str] = None
+        airline: Optional[str] = None
+        source: str = "none"   # 'just_locked' / 'memory_locked' / 'intent_code' /
+                               # 'in_turn_detail' / 'option_index' / 'none'
+        is_locked: bool = False
+
+    def _resolve_selected_departure_candidate(
+        self, *, psid: str, conv: dict, accumulated: dict, intent: Intent,
+    ) -> "Orchestrator._DepartureCandidate":
+        """
+        Resolve the candidate the response planner should evaluate.
+
+        Priority order (per CURRENT_DEV_TASK.md):
+          1. just-selected tour from the current turn
+             (``accumulated['lock_selected_tour']``)
+          2. existing locked selected tour in memory
+             (``self.memory.get_selected_tour(psid)``)
+          3. explicit web_code or tour_code_real in customer text
+             (``intent.selected_code``)
+          4. current detail result if already fetched in the turn
+             (``accumulated['get_tour_detail']``)
+          5. recent top options — only when the customer selects by
+             option number (``intent.selected_index`` against the latest
+             offer snapshot).
+
+        Returns ``_DepartureCandidate`` with ``web_code=""`` when no
+        candidate is in scope. Missing fields (``tour_id`` / ``airline``)
+        are filled from ``tours_canonical`` when the row exists.
+        """
+        cand = Orchestrator._DepartureCandidate()
+
+        # Priority 1 — just-selected tour from current turn.
+        locked = (accumulated or {}).get("lock_selected_tour")
+        if isinstance(locked, dict) and not locked.get("error"):
+            cand.web_code = locked.get("web_code") or ""
+            cand.tour_code_real = locked.get("tour_code_real")
+            cand.tour_id = locked.get("tour_id")
+            cand.name = locked.get("name")
+            cand.source = "just_locked"
+            cand.is_locked = True
+
+        # Priority 2 — existing locked selected tour in memory.
+        if not cand.web_code:
+            try:
+                existing = self.memory.get_selected_tour(psid)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("planning: get_selected_tour failed: %s", e)
+                existing = None
+            if existing:
+                cand.web_code = existing.web_code or ""
+                cand.tour_code_real = existing.tour_code_real
+                cand.tour_id = existing.tour_id
+                cand.name = existing.name or cand.name
+                cand.source = "memory_locked"
+                cand.is_locked = True
+
+        # Priority 3 — explicit web_code or tour_code_real in text.
+        if not cand.web_code and intent and intent.selected_code:
+            code = intent.selected_code
+            # The classifier sets selected_code from either a web_code
+            # (e.g. ap242455) or a tour_code_real (e.g. BCCKG27-HU). The
+            # lookups below handle both shapes without ever collapsing
+            # the two fields together.
+            wc_lookup = self.supabase.table("tours_canonical").select_one(
+                {"web_code": code.lower()}
+            )
+            if wc_lookup:
+                cand.web_code = wc_lookup.get("web_code") or ""
+                cand.tour_code_real = wc_lookup.get("tour_code_real")
+                cand.tour_id = wc_lookup.get("id")
+                cand.name = wc_lookup.get("name") or cand.name
+                cand.airline = wc_lookup.get("airline") or cand.airline
+                cand.source = "intent_code"
+            else:
+                tcr_lookup = self.supabase.table("tours_canonical").select_one(
+                    {"tour_code_real": code}
+                )
+                if tcr_lookup:
+                    cand.web_code = tcr_lookup.get("web_code") or ""
+                    cand.tour_code_real = tcr_lookup.get("tour_code_real")
+                    cand.tour_id = tcr_lookup.get("id")
+                    cand.name = tcr_lookup.get("name") or cand.name
+                    cand.airline = tcr_lookup.get("airline") or cand.airline
+                    cand.source = "intent_code"
+
+        # Priority 4 — current detail fetched in the same turn.
+        if not cand.web_code:
+            detail = (accumulated or {}).get("get_tour_detail")
+            if isinstance(detail, dict):
+                cand.web_code = detail.get("web_code") or ""
+                cand.tour_code_real = detail.get("tour_code_real")
+                cand.tour_id = detail.get("id")
+                cand.name = detail.get("name") or cand.name
+                cand.airline = detail.get("airline") or cand.airline
+                cand.source = "in_turn_detail"
+
+        # Priority 5 — option index against the latest offer snapshot.
+        if not cand.web_code and intent and intent.selected_index:
+            try:
+                snap = self.memory.get_latest_offer_snapshot(psid)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("planning: get_latest_offer_snapshot failed: %s", e)
+                snap = None
+            if snap and snap.tour_list:
+                for opt in snap.tour_list:
+                    if opt.rank == intent.selected_index:
+                        cand.web_code = opt.web_code
+                        cand.tour_code_real = opt.tour_code_real
+                        cand.name = opt.name or cand.name
+                        cand.airline = opt.airline or cand.airline
+                        cand.source = "option_index"
+                        break
+
+        # Backfill tour_id / airline from tours_canonical when missing.
+        if cand.web_code and (cand.tour_id is None or cand.airline is None):
+            row = self.supabase.table("tours_canonical").select_one(
+                {"web_code": cand.web_code}
+            )
+            if row:
+                cand.tour_id = cand.tour_id or row.get("id")
+                cand.airline = cand.airline or row.get("airline")
+                cand.tour_code_real = cand.tour_code_real or row.get("tour_code_real")
+                cand.name = cand.name or row.get("name")
+
+        return cand
+
+    def _should_trigger_detail_enrichment(
+        self, *, intent: Intent, text: str,
+        candidate: "Orchestrator._DepartureCandidate",
+    ) -> bool:
+        """
+        Decide whether the per-turn flow should consult detail enrichment.
+
+        Generic greeting, broad country ask, and other top-of-funnel
+        intents must NOT trigger a detail fetch. Selected-tour follow-up
+        intents and parseable date phrases always do. With a memory-locked
+        tour, any non-greeting follow-up triggers — the row data may be
+        needed to answer correctly.
+        """
+        if not candidate.web_code:
+            return False
+        if intent.type in self._NON_ENRICHING_INTENTS:
+            return False
+        if intent.type in self._ENRICHING_INTENTS:
+            return True
+        # Late import to keep module load light + isolated from network deps.
+        from .selected_departure_match import parse_customer_date_phrase
+        if parse_customer_date_phrase(text or ""):
+            return True
+        # Memory-locked tour + a non-trivial follow-up = treat as in-scope.
+        if candidate.is_locked and (text or "").strip():
+            return True
+        return False
+
+    # Redis key prefix for the detail-fetch guard.
+    _DETAIL_FETCH_KEY = "detail_fetched:{web_code}"
+
+    def _recently_fetched_detail(self, web_code: str) -> bool:
+        """Return True when a recent fetch guard is set for ``web_code``.
+
+        The guard is best-effort. Any Redis failure is treated as "no
+        guard" so the orchestrator stays safe rather than silently
+        skipping a needed fetch.
+        """
+        if not web_code or self.redis is None:
+            return False
+        try:
+            val = self.redis.get(self._DETAIL_FETCH_KEY.format(web_code=web_code))
+            return val is not None
+        except Exception:
+            return False
+
+    def _mark_detail_fetched(self, web_code: str) -> None:
+        if not web_code or self.redis is None:
+            return
+        try:
+            if hasattr(self.redis, "setex"):
+                self.redis.setex(
+                    self._DETAIL_FETCH_KEY.format(web_code=web_code),
+                    self.detail_fetch_ttl_s, "1",
+                )
+            else:
+                self.redis.set(
+                    self._DETAIL_FETCH_KEY.format(web_code=web_code),
+                    "1", ex=self.detail_fetch_ttl_s,
+                )
+        except Exception:
+            pass
+
+    def _get_or_fetch_departure_rows(
+        self, *, web_code: str, tour_id: Optional[str], trace_id: Optional[str],
+    ):
+        """
+        Return the parsed DeparturePriceRow list for ``web_code``.
+
+        Strategy (DB-first, then HTTP fallback):
+          1. Read ``tour_departures`` rows for the web_code from the DB.
+             If any rows exist, convert and return them — no HTTP fetch.
+          2. If DB is empty AND the redis guard is hot, return [] (we
+             tried recently and there's nothing new — don't hammer).
+          3. Otherwise, if an injected http_client exists, run
+             ``enrich_tour_detail`` (fetch + parse + idempotent upsert)
+             and return the freshly-parsed rows. Mark the guard.
+          4. If no http_client is available, return [] (graceful no-op).
+
+        Never raises — returns ``[]`` on any failure so the planner can
+        still produce a safe note.
+        """
+        from .selected_departure_planning import row_dict_to_departure_price_row
+        if not web_code:
+            return []
+
+        try:
+            db_rows = self.supabase.table("tour_departures").select_all(
+                {"web_code": web_code}
+            ) or []
+        except Exception as e:
+            logger.warning("[%s] departure_rows DB read failed: %s", trace_id, e)
+            db_rows = []
+
+        if db_rows:
+            parsed = []
+            for d in db_rows:
+                try:
+                    parsed.append(
+                        row_dict_to_departure_price_row(d, default_web_code=web_code)
+                    )
+                except Exception as e:  # pragma: no cover - defensive
+                    logger.warning(
+                        "[%s] departure_rows convert failed wc=%s err=%s",
+                        trace_id, web_code, e,
+                    )
+            return parsed
+
+        if self._recently_fetched_detail(web_code):
+            return []
+
+        if self.http_client is None:
+            return []
+
+        try:
+            from v2.scraper.detail_enrichment import enrich_tour_detail
+            result = enrich_tour_detail(
+                web_code,
+                http=self.http_client,
+                supabase=self.supabase,
+                tour_id=tour_id,
+            )
+        except Exception as e:
+            logger.warning("[%s] enrich_tour_detail failed wc=%s err=%s",
+                           trace_id, web_code, e)
+            self._mark_detail_fetched(web_code)
+            return []
+
+        # Mark fetch attempted regardless of outcome — that's the whole
+        # point of the guard (don't re-fetch on every message).
+        self._mark_detail_fetched(web_code)
+
+        if not result.parsed:
+            return []
+        return list(result.rows)
+
+    def _build_selected_departure_planning(
+        self, *, psid: str, conv: dict, accumulated: dict, intent: Intent,
+        text: str, state_after: State, trace_id: Optional[str],
+    ):
+        """
+        Build the compact, LLM-safe planning bundle the response writer
+        uses to (a) keep the selected tour visible to the LLM and
+        (b) match the customer's date phrase to a deterministic row.
+
+        Never raises — returns ``None`` on failure so the orchestrator
+        can still produce a reply via the other paths.
+        """
+        try:
+            candidate = self._resolve_selected_departure_candidate(
+                psid=psid, conv=conv, accumulated=accumulated, intent=intent,
+            )
+        except Exception as e:
+            logger.warning("[%s] selected_departure: resolve failed: %s", trace_id, e)
+            return None
+        if not candidate.web_code:
+            return None
+
+        if not self._should_trigger_detail_enrichment(
+            intent=intent, text=text, candidate=candidate,
+        ):
+            return None
+
+        rows = self._get_or_fetch_departure_rows(
+            web_code=candidate.web_code, tour_id=candidate.tour_id, trace_id=trace_id,
+        )
+
+        try:
+            from .selected_departure_planning import build_selected_departure_planning
+            planning = build_selected_departure_planning(
+                rows=rows,
+                customer_text=text or "",
+                selected_tour={
+                    "web_code": candidate.web_code,
+                    "tour_code_real": candidate.tour_code_real,
+                    "airline": candidate.airline,
+                    "name": candidate.name,
+                },
+            )
+            logger.info(
+                "[%s] selected_departure: candidate=%s wc=%s status=%s confidence=%s",
+                trace_id, candidate.source, candidate.web_code,
+                planning.match_status, planning.confidence,
+            )
+            return planning
+        except Exception as e:
+            logger.warning("[%s] selected_departure: build failed: %s", trace_id, e)
+            return None
+
     @staticmethod
     def _intent_to_sm(intent: Intent) -> SMIntent:
         return SMIntent(
@@ -535,24 +895,6 @@ class Orchestrator:
         Get fees for currently-locked tour, surfacing per-field confidence and the
         asked-field hint so response writer can apply field-level policy
         (Sprint 4 follow-up).
-
-        Returns a dict with shape:
-          {
-            "is_complete": bool,
-            "fees": <fee_row dict or None>,
-            "confidence": float,              # row-level extraction_confidence
-            "field_confidences": {
-                "tip_confidence": ..., "deposit_confidence": ...,
-                "single_supplement_confidence": ..., "visa_confidence": ...,
-            },
-            "needs_handoff": bool,
-            "handoff_reason": str | None,
-            "asked_field": str,               # detected from customer text
-            "pdf_hash": str | None,           # for on-demand vision cache key
-            "pdf_url": str | None,            # for on-demand vision fetch
-            "tour_id": str | None,
-            "needs_on_demand_extraction": bool,
-          }
         """
         # Local import to avoid hard dependency at module load
         from .fee_answer_policy import detect_asked_field, decide_fee_answer
@@ -586,9 +928,6 @@ class Orchestrator:
         confidence = float(fees_row.get("extraction_confidence", 0) or 0)
         is_complete = required_ok and visa_ok and confidence >= 0.7
 
-        # Decide whether on-demand extraction would help. Trigger when:
-        #   - asked_field is specific (not "any") AND
-        #   - field value is missing OR per-field confidence is below threshold.
         from .fee_answer_policy import decide_fee_answer as _decide
         d = _decide(fees_row, asked_field)
         needs_on_demand = d.decision in (
@@ -625,20 +964,7 @@ class Orchestrator:
         """
         Trigger on-demand Vision/OCR for the locked tour when the policy says we
         cannot answer the asked field from the existing DB row.
-
-        Returns the new fee_info dict (same shape as `_get_tour_fees`) with the
-        updated DB row, or None on graceful failure.
-
-        Hard rules:
-          - Vision/OCR is gated by `vision_available()` — graceful skip if not.
-          - Max 3 candidate pages per PDF (per spec).
-          - Cache keyed by `pdf_hash + extraction_version` — second call free.
-          - Persisted back to `tour_fees` via existing `upsert_tour_fees`
-            (idempotent on tour_id + pdf_hash + confidence improvement).
-          - Bot never gets a value below the per-field threshold — that is the
-            response writer's job; this method only refreshes the data.
         """
-        # Local imports to avoid hard runtime dependency at module load
         from ..scraper.ondemand_vision import (
             extract_fees_on_demand, EXTRACTION_VERSION,
         )
@@ -651,10 +977,7 @@ class Orchestrator:
         pdf_hash = fee_info.get("pdf_hash")
         asked_field = fee_info.get("asked_field") or "any"
 
-        # If we don't have a pdf_url at all, we can't fetch — graceful no-op.
         if not pdf_url and tour_id:
-            # try lookup on tours_canonical for the tour's pdf_url (some flows
-            # store it there before the first fee extraction).
             tour_row = self.supabase.table("tours_canonical").select_one({"id": tour_id})
             if tour_row:
                 pdf_url = tour_row.get("pdf_url") or pdf_url
@@ -662,8 +985,6 @@ class Orchestrator:
             logger.info("on_demand: no pdf_url available for tour %s — skipping", tour_id)
             return None
 
-        # Resolve a local PDF path (download + hash). The downloader has its
-        # own cache by URL; we rely on its sha256 as the canonical pdf_hash.
         pdf_path: Optional[str] = None
         try:
             from ..scraper.download_pdf import download_pdf
@@ -678,9 +999,6 @@ class Orchestrator:
         if not pdf_path or not pdf_hash:
             return None
 
-        # Build a `prior` ExtractionResult from the existing DB row so the
-        # vision-bump can lift its per-field confidences instead of starting
-        # from scratch (which would lose the regex match).
         prior_row = (fee_info.get("fees") or {})
         prior: Optional[ExtractionResult] = None
         if prior_row:
@@ -714,21 +1032,15 @@ class Orchestrator:
             extraction_version=EXTRACTION_VERSION,
         )
 
-        # If OCR is unavailable, we keep the existing fee_info unchanged
-        # (downstream response_writer issues canned handoff — same as today).
         if not od.ocr_available:
             logger.info("on_demand: OCR unavailable (%s) — graceful handoff",
                          od.skipped_reason)
-            # Annotate the fee_info so audit log captures the attempt.
             out = dict(fee_info)
             out["on_demand"] = {"attempted": True, "skipped_reason": od.skipped_reason,
                                  "cache_hit": False, "vision_pages_used": 0,
                                  "ocr_available": False}
             return out
 
-        # Persist updated extraction back to tour_fees. upsert_tour_fees is
-        # idempotent on tour_id and only updates when pdf_hash changed OR
-        # extraction_confidence improved — so cache-hit + no-lift = no DB write.
         if tour_id:
             try:
                 upsert_tour_fees(
@@ -738,19 +1050,16 @@ class Orchestrator:
                     pdf_url=pdf_url, pdf_hash=pdf_hash,
                     result=od.result,
                 )
-                # Backfill extraction_version on the row (upsert_tour_fees doesn't
-                # know about it; do a targeted update).
                 try:
                     self.supabase.table("tour_fees").update(
                         {"tour_id": tour_id},
                         {"extraction_version": EXTRACTION_VERSION},
                     )
                 except Exception:
-                    pass  # column may be absent in fakes — fine
+                    pass
             except Exception as e:
                 logger.warning("on_demand: upsert_tour_fees failed: %s", e)
 
-        # Re-read the row + re-run policy gating so the caller has fresh data.
         refreshed_row = self.supabase.table("tour_fees").select_one({"tour_id": tour_id}) if tour_id else None
         d = decide_fee_answer(refreshed_row, asked_field)
 
@@ -773,7 +1082,7 @@ class Orchestrator:
             "pdf_hash": pdf_hash,
             "pdf_url": pdf_url,
             "tour_id": tour_id,
-            "needs_on_demand_extraction": False,  # already ran
+            "needs_on_demand_extraction": False,
             "on_demand": {
                 "attempted": True,
                 "cache_hit": od.cache_hit,
