@@ -1,36 +1,48 @@
 {
   "controller": "Codex",
   "role": "Controller",
-  "status": "STAGING_MIGRATION_APPLIED",
-  "verdict": "GO_WITH_NOTES",
-  "current_dev_task": "DEV-2026-05-20-015",
-  "current_qa_task": "QA-2026-05-20-015",
+  "status": "DEV_TASK_OPEN",
+  "verdict": null,
+  "current_dev_task": "DEV-2026-05-20-016",
+  "current_qa_task": "QA-2026-05-20-016",
   "branch": "v2/s4-followup-vision-ondemand",
-  "base_commit": "85a4f65",
-  "commit": "862cd9a",
-  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
-  "updated_at": "2026-05-20T15:13:34+07:00",
-  "next_action": "OPEN_OPERATOR_RUNBOOK_OR_STAGING_PREFLIGHT",
+  "base_commit": "dc684a9",
+  "commit": null,
+  "report_path": null,
+  "updated_at": "2026-05-20T15:45:00+07:00",
+  "next_action": "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
   "blocked_reason": null,
-  "controller_action": {
-    "action": "APPLY_MIGRATION_022_TO_STAGING",
-    "project_id": "mbcihtcdwfofagkxphcu",
-    "project_name": "tourfiremai-v2-staging",
-    "migration": "v2/supabase/migrations/20260520_022_departure_refreshed_at.sql",
-    "applied_via": "Supabase MCP apply_migration",
-    "result": "success",
-    "verified": [
-      "tour_departures.refreshed_at exists as nullable timestamp with time zone",
-      "idx_dep_refreshed_at exists as partial btree index where refreshed_at is not null",
-      "24/24 staging tour_departures rows have refreshed_at after backfill"
-    ],
-    "not_applied": [
-      "v2/supabase/migrations/_pending_023_departure_unique.sql.proposal"
+  "controller_context": {
+    "business_goal": "Prepare V2 staging for safe admin-only real Messenger testing.",
+    "migration_022": {
+      "status": "applied_to_staging",
+      "project_id": "mbcihtcdwfofagkxphcu",
+      "verified": [
+        "tour_departures.refreshed_at exists",
+        "idx_dep_refreshed_at exists",
+        "24/24 staging departure rows have refreshed_at"
+      ]
+    },
+    "duplicate_audit_023": {
+      "status": "passed_zero_rows",
+      "not_applied": "_pending_023_departure_unique.sql.proposal"
+    },
+    "admin_only_smoke": {
+      "status": "passed",
+      "results": [
+        "test_admin_only_runtime_smoke.py: 9 passed",
+        "webhook/source/line/dashboard runtime group: 40 passed"
+      ]
+    },
+    "hard_limits": [
+      "V2 staging only",
+      "No production Meta webhook change",
+      "No customer-wide traffic",
+      "No customer-facing V2 outbound replies",
+      "No V1",
+      "No Make.com",
+      "No secrets",
+      "No live paid-provider calls"
     ]
-  },
-  "remaining_risks": [
-    "UNIQUE promotion remains gated behind duplicate audit and has not been applied.",
-    "Operator runbook / wrapper for scheduled refresher is still needed before real-chat testing.",
-    "Production go-live still requires explicit Tiw approval."
-  ]
+  }
 }

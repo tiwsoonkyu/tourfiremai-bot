@@ -1,8 +1,8 @@
-# QA-2026-05-20-015 — Sprint 5 Package I Review
+# QA-2026-05-20-016 — Sprint 5 Package J Review
 
 ## Title
 
-Review departure-row freshness, canonical tour URL fix, and uniqueness readiness.
+Review admin-only staging real-chat preflight and operator runbook finalization.
 
 ## Status
 
@@ -22,11 +22,11 @@ Codex
 
 ## Depends On
 
-`DEV-2026-05-20-015`
+`DEV-2026-05-20-016`
 
 ## Review Goal
 
-Verify that Dev safely improved V2 data freshness and URL correctness without changing production behavior, applying migrations, or inventing tour facts.
+Verify that Dev made V2 staging ready for a safe admin-only real Messenger test without enabling customer-wide processing or outbound customer replies.
 
 ## Required Reading
 
@@ -38,6 +38,7 @@ Read:
 4. `docs/tasks/TASK_LOG.md`
 5. `docs/tasks/DEV_REPORT_CURRENT.md`
 6. `docs/tasks/AGENT_STATUS.json`
+7. `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`
 
 Then inspect the relevant diff and tests.
 
@@ -47,36 +48,34 @@ Then inspect the relevant diff and tests.
 
 1. No V1 files touched.
 2. No Make.com / Cloudflare / production Meta webhook settings touched.
-3. No secrets added or printed.
+3. No secrets added, printed, or committed.
 4. No live LINE / Meta / OpenAI / OCR / paid-provider calls in tests.
 5. No Supabase migration applied from Dev.
-6. No customer-wide outbound behavior enabled.
+6. No customer-wide traffic enabled.
+7. No customer-facing V2 outbound reply enabled.
 
-### B. Canonical URL Correctness
+### B. Admin-Only Runtime Safety
 
-7. `tours_canonical.url` generation uses `/tour/<web_code>`.
-8. No V2 canonical tour URL path uses `/intertourdetail/` after this patch.
-9. `web_code`, `tour_code_real`, and airline remain separate.
+8. Non-allowlisted PSIDs are filtered before customer/conversation state mutation.
+9. Allowlisted admin/test PSIDs can pass the gate.
+10. Runtime-config endpoint reports only safe configured/missing statuses.
+11. Runtime-config endpoint never returns raw secrets or raw PSIDs.
+12. Dashboard-safe read APIs mask PSIDs.
+13. LINE/admin command mutation is allowlist-gated.
+14. Source attribution does not trust user-typed post IDs.
 
-### C. Freshness / Refresh Behavior
+### C. Runbook Quality
 
-10. Departure rows have a clear freshness field or equivalent policy.
-11. Fresh rows do not trigger unnecessary HTTP detail fetches.
-12. Stale rows trigger a bounded refresh path.
-13. Refresh failure fails closed and does not quote final price/seat availability.
-14. No unbounded repeated fetch loop is introduced.
-15. Dry-run refresher does not write to DB.
+15. Runbook is executable by an operator without guessing.
+16. Runbook includes env checklist, runtime check, smoke tests, admin PSID allowlist setup, non-allowlisted negative test, first 30-minute watch, and rollback.
+17. Runbook states that V2 is not approved for production webhook or customer outbound.
+18. Runbook records migration 022 applied and duplicate audit zero rows.
+19. Runbook states UNIQUE proposal is not applied.
 
-### D. Uniqueness Readiness
+### D. Tests
 
-16. Duplicate-audit query/helper uses the intended logical key.
-17. Any proposed uniqueness migration is gated/safe and not applied by Dev.
-18. No destructive data cleanup or row deletion is performed.
-
-### E. Tests
-
-19. Required targeted tests pass.
-20. Broad non-live V2 suite passes, or Dev clearly documents an environment-only failure and reruns with safe local tmp settings.
+20. Required targeted tests pass.
+21. Broad non-live V2 suite passes, or Dev documents a legitimate environment-only reason with enough targeted evidence.
 
 ## Verdict Options
 
@@ -91,19 +90,19 @@ Use one:
 
 Write `docs/tasks/QA_REPORT_CURRENT.md` with:
 
-1. Verdict
-2. Scope reviewed
-3. Test results
-4. Findings, ordered by severity
-5. Required fixes, if any
-6. Notes / residual risks
-7. Recommendation to Codex
+1. Verdict.
+2. Scope reviewed.
+3. Test results.
+4. Findings, ordered by severity.
+5. Required fixes, if any.
+6. Notes / residual risks.
+7. Recommendation to Codex.
 
 Update `docs/tasks/AGENT_STATUS.json` with:
 
 - `status`: `QA_GO`, `QA_GO_WITH_NOTES`, `QA_NO_GO`, or `QA_BLOCKED`
-- `current_dev_task`: `DEV-2026-05-20-015`
-- `current_qa_task`: `QA-2026-05-20-015`
+- `current_dev_task`: `DEV-2026-05-20-016`
+- `current_qa_task`: `QA-2026-05-20-016`
 - `next_action`: `WAITING_FOR_CODEX`
 
 Then stop.

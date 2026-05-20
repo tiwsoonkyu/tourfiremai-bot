@@ -1,8 +1,8 @@
-# DEV-2026-05-20-015 — Sprint 5 Package I
+# DEV-2026-05-20-016 — Sprint 5 Package J
 
 ## Title
 
-Departure-row freshness, canonical tour URL fix, and uniqueness readiness.
+Admin-only staging real-chat preflight and operator runbook finalization.
 
 ## Status
 
@@ -22,138 +22,147 @@ Codex
 
 ## Background
 
-QA-2026-05-20-014 returned `GO_WITH_NOTES` for selected departure planning. No P0/P1 issues remain, but QA identified three data-quality risks that should be closed before admin-only real-chat testing depends on departure rows:
+Tiw wants to test V2 with a real Messenger/admin chat as soon as possible. The previous package (`DEV/QA-2026-05-20-015`) returned `GO_WITH_NOTES`. Codex has already applied migration 022 to V2 Supabase staging and verified:
 
-1. `tour_departures` rows can become stale because the orchestrator currently uses DB-first reads indefinitely once any row exists.
-2. Listing scraper canonical URLs still use legacy `/intertourdetail/<code>` instead of the real `/tour/<web_code>` path.
-3. `idx_dep_full_row` is still non-unique. It should become a true idempotency guarantee only after a duplicate/backfill audit.
+- `tour_departures.refreshed_at` exists.
+- `idx_dep_refreshed_at` exists.
+- `24/24` staging departure rows have `refreshed_at`.
+- The duplicate audit for the future UNIQUE key returned zero rows.
+- Admin-only smoke tests passed locally:
+  - `v2/tests/test_admin_only_runtime_smoke.py`: 9 passed.
+  - Webhook/source/LINE/dashboard runtime group: 40 passed.
+
+The remaining business need is a safe, executable preflight package for admin-only real Messenger testing. This package must make it hard to accidentally process real customers or send customer-facing replies.
 
 ## Business Goal
 
-Make V2 departure-row data reliable enough for admin-only chat testing:
+Prepare V2 staging for a controlled real-chat test with Tiw/admin only:
 
-- detail-page rows should have a freshness policy;
-- stale rows should be refreshed deterministically, not guessed;
-- customer/admin-facing links should point to the real website URL;
-- duplicate departure rows should be prevented only after a safe audit path.
+- only allowlisted admin/test PSIDs may be processed;
+- non-allowlisted Messenger traffic must be filtered;
+- V2 must remain silent/no customer outbound unless a future task explicitly enables response delivery;
+- admin operators must have a clear runbook, watch checklist, and rollback path.
 
 ## Scope
 
-Implement this as one integration package. Do not stop after each small subtask unless a P0 risk appears.
+Implement this as one integrated preflight package. Do not stop after each small subtask unless a P0 risk appears.
 
-### 1. Canonical Listing URL Fix
+### 1. Finalize Admin-Only Real Chat Runbook
 
-Fix the V2 listing scraper so `tours_canonical.url` uses the real detail URL:
+Update `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md` so an operator can execute it without guessing.
 
-- Expected: `https://www.tourfiremai.com/tour/<web_code>`
-- Not allowed: `/intertourdetail/<code>`
+Required sections:
 
-Requirements:
+1. Staging-only warning.
+2. Required env vars with safe descriptions, no values.
+3. Runtime-config check and expected safe statuses.
+4. Exact local smoke commands.
+5. Exact signed Meta webhook local/staging smoke procedure, if the codebase already has a safe helper; otherwise document the missing helper as a Dev note.
+6. Staging Meta webhook verification steps.
+7. Admin PSID allowlist setup and verification.
+8. Non-allowlisted PSID negative test.
+9. First 30-minute watch checklist.
+10. Immediate rollback / disable steps.
+11. Explicit "not approved yet" list.
 
-- Keep `web_code`, `tour_code_real`, and airline separate.
-- Do not change V1 scraper or V1 production code.
-- Add/update tests proving `tours_canonical.url` is `/tour/<web_code>`.
-- Add a regression test proving no V2 customer/admin link path uses `/intertourdetail/` for canonical tour URLs.
+### 2. Verify / Harden Admin-Only Runtime Safety
 
-### 2. Departure Row Freshness
+Inspect existing V2 code paths for:
 
-Add a freshness mechanism for `tour_departures` rows.
+- webhook admin-only gate;
+- runtime-config admin endpoint;
+- source attribution adapter;
+- LINE admin allowlist adapter;
+- dashboard-safe admin read API.
 
-Requirements:
+If a small code or test patch is needed to make preflight safer, it may be added under `v2/` only. Keep changes minimal and deterministic.
 
-- Inspect existing migration 021 schema first.
-- If needed, create an additive migration 022 that adds a nullable `refreshed_at timestamptz` or equivalent freshness field to `tour_departures`.
-- Do not apply the migration from Claude Dev.
-- Update detail-enrichment/upsert logic so newly parsed rows write the freshness timestamp.
-- Update orchestrator/detail-row read logic so stale rows can trigger a refresh according to a configurable TTL.
-- Default TTL should be conservative for tour pricing, e.g. 6 hours for normal staging use, but testable via parameter/env/config.
-- If refresh fails, fail closed: do not invent availability or final price; keep existing handoff/confirmation behavior.
-- Add tests covering fresh rows, stale rows, refresh success, refresh failure, and no unbounded repeated fetches.
+Required safety invariants:
 
-### 3. Scheduled Refresher Foundation
+- Non-allowlisted PSIDs are filtered before customer/conversation state mutation.
+- No V2 customer outbound response is sent by this package.
+- Admin runtime-config output never includes raw secrets or raw PSIDs.
+- Dashboard-safe read APIs mask PSIDs.
+- LINE/admin command mutation remains allowlist-gated.
+- Source attribution never trusts user-typed post IDs.
 
-Add a small offline-safe scheduler/CLI foundation for refreshing departure rows for selected tours.
+### 3. Record Staging Data Readiness
 
-Requirements:
+Add the following controller-verified facts to the runbook or Dev report:
 
-- A CLI or callable function may be added under `v2/tools/` or `v2/scraper/`.
-- It must be safe by default and support dry-run mode.
-- It should refresh by `web_code` list or recently-used/selected tours when a DB client is provided.
-- Unit tests must use fakes/mocks only; no live network or Supabase calls.
+- Migration 022 applied to staging.
+- Duplicate audit returned zero rows.
+- `_pending_023_departure_unique.sql.proposal` is not applied.
+- Applying the UNIQUE proposal is still out of scope for this task.
 
-### 4. Uniqueness Readiness
+### 4. Tests
 
-Prepare, but do not dangerously force, DB uniqueness.
-
-Requirements:
-
-- Add a duplicate-audit SQL query or helper that finds duplicate logical rows for the intended `idx_dep_full_row` key.
-- Add a migration or documented SQL block for the future UNIQUE index only if safe, or clearly gate it behind the audit returning zero duplicates.
-- Do not drop rows or mutate existing data in this task.
-- Do not apply migrations from Claude Dev.
-
-### 5. Tests
-
-Add focused tests for the package.
-
-Required cases:
-
-1. Listing scraper canonical URL is `/tour/<web_code>`.
-2. No V2 canonical tour URL uses `/intertourdetail/`.
-3. Upserted departure rows carry freshness metadata.
-4. Fresh DB rows do not trigger HTTP detail fetch.
-5. Stale DB rows trigger one bounded refresh.
-6. Refresh failure does not quote final price/availability and does not loop endlessly.
-7. Dry-run refresher does not write to DB.
-8. Duplicate-audit helper identifies duplicates with the intended logical key.
-9. Proposed uniqueness migration is additive/safe and not applied in tests.
-10. Broad non-live V2 suite remains green.
-
-Run at minimum:
+Run targeted tests at minimum:
 
 ```bash
-pytest v2/tests/test_detail_enrichment.py v2/tests/test_selected_departure_planning.py -q
-pytest v2/tests --ignore=integration --ignore=live --ignore=v2/tests/test_live_openai_health.py --basetemp=.pytest_tmp -p no:cacheprovider -q
+pytest v2/tests/test_admin_only_runtime_smoke.py -q
+pytest \
+  v2/tests/test_webhook.py \
+  v2/tests/test_webhook_source_attribution.py \
+  v2/tests/test_line_admin_runtime.py \
+  v2/tests/test_admin_dashboard_runtime.py \
+  v2/tests/test_admin_only_runtime_smoke.py \
+  -q
 ```
+
+Run the broad non-live V2 suite if feasible:
+
+```bash
+pytest v2/tests \
+  --ignore=v2/tests/test_integration_staging.py \
+  --ignore=v2/tests/test_live_openai_health.py \
+  --ignore=v2/tests/test_phase2_live_followup.py \
+  -q
+```
+
+If broad suite is blocked by local environment only, document the exact reason and the targeted pass results.
 
 ## Out of Scope
 
+- Do not touch V1.
+- Do not touch Make.com.
 - Do not deploy.
-- Do not modify V1.
-- Do not modify Make.com.
-- Do not change production Meta webhook settings.
-- Do not apply Supabase migrations.
-- Do not add live paid provider calls.
-- Do not run live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- Do not modify production Meta webhook settings.
 - Do not enable customer-wide traffic.
-- Do not build dashboard UI in this task.
-- Do not alter fee policy thresholds.
+- Do not enable customer-facing V2 outbound replies.
+- Do not apply Supabase migrations.
+- Do not apply `_pending_023_departure_unique.sql.proposal`.
+- Do not run live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- Do not write or expose secrets.
+- Do not build a full dashboard UI in this task.
 
 ## Deliverables
 
-- V2-only code/tests/migrations as needed.
-- `docs/tasks/DEV_REPORT_CURRENT.md`
-- `docs/tasks/AGENT_STATUS.json`
+- Updated `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`.
+- V2-only tests/code if needed.
+- `docs/tasks/DEV_REPORT_CURRENT.md`.
+- `docs/tasks/AGENT_STATUS.json`.
 
 ## Required Dev Report
 
 Write `docs/tasks/DEV_REPORT_CURRENT.md` with:
 
-1. Summary
-2. Files changed
-3. Implementation details
-4. Migration notes, if any, including "not applied"
-5. Test results
-6. Safety / scope guard verification
-7. Known notes / risks
-8. Exact QA focus areas
-9. Recommendation: `GO`, `GO_WITH_NOTES`, or `NO_GO`
+1. Summary.
+2. Files changed.
+3. Runbook changes.
+4. Runtime safety verification.
+5. Staging readiness facts.
+6. Test results.
+7. Safety / scope guard verification.
+8. Known notes / risks.
+9. Exact QA focus areas.
+10. Recommendation: `GO`, `GO_WITH_NOTES`, or `NO_GO`.
 
 Update `docs/tasks/AGENT_STATUS.json` to:
 
 - `status`: `READY_FOR_QA`
-- `current_dev_task`: `DEV-2026-05-20-015`
-- `current_qa_task`: `QA-2026-05-20-015`
+- `current_dev_task`: `DEV-2026-05-20-016`
+- `current_qa_task`: `QA-2026-05-20-016`
 - `next_action`: `CLAUDE_QA_RUN_CURRENT_QA_TASK`
 
 Then stop.

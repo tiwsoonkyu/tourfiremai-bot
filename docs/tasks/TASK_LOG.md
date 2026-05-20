@@ -791,3 +791,99 @@ Next action:
 
 Open the next Controller task for the departure refresher operator runbook / staging preflight, then run duplicate audit before considering the UNIQUE proposal.
 
+### Controller Action — `DUPLICATE-AUDIT-2026-05-20-023`
+
+Status: `PASSED_ZERO_ROWS`
+
+Goal:
+
+Run the read-only duplicate audit for the future `tour_departures` logical UNIQUE key before any consideration of `_pending_023_departure_unique.sql.proposal`.
+
+Result:
+
+- Ran the duplicate audit on Supabase staging project `tourfiremai-v2-staging` (`mbcihtcdwfofagkxphcu`) using the same logical key proposed by `_pending_023_departure_unique.sql.proposal`:
+  - `tour_id`
+  - `departure_start`
+  - `departure_end`
+  - `COALESCE(bus, 0)`
+- Result returned `0` duplicate groups.
+- Did not apply `_pending_023_departure_unique.sql.proposal`.
+- Did not mutate data.
+- Did not touch V1, Make.com, production webhook, deployments, secrets, live paid providers, or customer-facing traffic.
+
+Next action:
+
+Keep UNIQUE promotion gated for a separate explicit approval/task. Continue with admin-only staging real-chat preflight.
+
+### Controller Action — `ADMIN-ONLY-SMOKE-2026-05-20`
+
+Status: `PASSED`
+
+Goal:
+
+Verify existing admin-only runtime smoke coverage before opening the real-chat preflight package.
+
+Result:
+
+- Ran `v2/tests/test_admin_only_runtime_smoke.py`: `9 passed`.
+- Ran the targeted runtime group:
+  - `v2/tests/test_webhook.py`
+  - `v2/tests/test_webhook_source_attribution.py`
+  - `v2/tests/test_line_admin_runtime.py`
+  - `v2/tests/test_admin_dashboard_runtime.py`
+  - `v2/tests/test_admin_only_runtime_smoke.py`
+- Targeted runtime group result: `40 passed`.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- Did not touch V1, Make.com, production webhook, deployments, secrets, migrations, or customer-facing traffic.
+
+Next action:
+
+Open `DEV-2026-05-20-016` / `QA-2026-05-20-016` as the integrated admin-only staging real-chat preflight package.
+
+### `DEV-2026-05-20-016`
+
+Status: `PENDING`
+
+Goal:
+
+Finalize the admin-only staging real-chat runbook and verify runtime safety so Tiw can test V2 with a real Messenger/admin chat without processing customer-wide traffic or enabling V2 customer outbound.
+
+Expected deliverables:
+
+- Updated `docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md`.
+- V2-only code/tests if needed.
+- `docs/tasks/DEV_REPORT_CURRENT.md`.
+- `docs/tasks/AGENT_STATUS.json`.
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No Supabase migration apply from Claude Dev.
+- No customer-wide traffic.
+- No customer-facing V2 outbound replies.
+
+### `QA-2026-05-20-016`
+
+Status: `PENDING`
+
+Goal:
+
+Review `DEV-2026-05-20-016` as one integrated admin-only real-chat preflight package.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`.
+- `docs/tasks/AGENT_STATUS.json`.
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`
+- `BLOCKED`
+
