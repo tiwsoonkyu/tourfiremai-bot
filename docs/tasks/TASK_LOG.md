@@ -702,3 +702,49 @@ Result:
   - Fix listing scraper canonical URLs from `/intertourdetail/<code>` to `/tour/<web_code>`.
 - Next action: open DEV/QA-015 as an integrated data-freshness and canonical-url hardening package before real-chat testing.
 
+
+
+### `DEV-2026-05-20-015`
+
+Status: `PENDING`
+
+Goal:
+
+Implement Sprint 5 Package I: departure-row freshness, canonical `/tour/<web_code>` URL fix, and uniqueness readiness before admin-only real-chat testing.
+
+Expected deliverables:
+
+- V2-only code/tests/migrations as needed.
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No Supabase migration apply from Claude Dev.
+- No customer-wide traffic.
+
+### `QA-2026-05-20-015`
+
+Status: `PENDING`
+
+Goal:
+
+Review DEV-2026-05-20-015 as one integrated data-freshness and canonical-url hardening package.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`
+- `BLOCKED`

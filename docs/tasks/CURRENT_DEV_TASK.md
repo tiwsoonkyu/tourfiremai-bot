@@ -1,8 +1,8 @@
-# DEV-2026-05-20-014 — Sprint 5 Package H
+# DEV-2026-05-20-015 — Sprint 5 Package I
 
 ## Title
 
-Wire selected departure detail planning into the V2 orchestrator and response writer.
+Departure-row freshness, canonical tour URL fix, and uniqueness readiness.
 
 ## Status
 
@@ -22,120 +22,98 @@ Codex
 
 ## Background
 
-DEV-2026-05-20-012 added the detail-page departure price table parser.
+QA-2026-05-20-014 returned `GO_WITH_NOTES` for selected departure planning. No P0/P1 issues remain, but QA identified three data-quality risks that should be closed before admin-only real-chat testing depends on departure rows:
 
-DEV-2026-05-20-013 wired parser output into detail enrichment and selected departure matching:
-
-- `v2/scraper/detail_enrichment.py`
-- `v2/lib/selected_departure_match.py`
-
-QA-2026-05-20-013 returned `GO_WITH_NOTES`.
-
-The next user-facing quality gap is that the orchestrator/response layer still does not reliably use the selected departure row after the customer selects a tour/date/pax. The bot must stop forgetting the selected tour and must avoid asking the customer to restart when enough context already exists.
+1. `tour_departures` rows can become stale because the orchestrator currently uses DB-first reads indefinitely once any row exists.
+2. Listing scraper canonical URLs still use legacy `/intertourdetail/<code>` instead of the real `/tour/<web_code>` path.
+3. `idx_dep_full_row` is still non-unique. It should become a true idempotency guarantee only after a duplicate/backfill audit.
 
 ## Business Goal
 
-When a customer has selected a tour and gives a date or passenger count, V2 should use deterministic detail enrichment and departure-row matching before replying.
+Make V2 departure-row data reliable enough for admin-only chat testing:
 
-The bot should:
-
-- lock and reuse the selected tour;
-- match the selected departure row when confidence is high;
-- use exact row data for planning when available;
-- ask a precise clarification when confidence is not high enough;
-- never guess prices, fees, status, or availability;
-- never mix `web_code`, `tour_code_real`, and airline.
+- detail-page rows should have a freshness policy;
+- stale rows should be refreshed deterministically, not guessed;
+- customer/admin-facing links should point to the real website URL;
+- duplicate departure rows should be prevented only after a safe audit path.
 
 ## Scope
 
 Implement this as one integration package. Do not stop after each small subtask unless a P0 risk appears.
 
-### 1. Orchestrator Wiring
+### 1. Canonical Listing URL Fix
 
-Update `v2/lib/orchestrator.py` so the per-turn flow can use detail enrichment and selected departure matching.
+Fix the V2 listing scraper so `tours_canonical.url` uses the real detail URL:
 
-Requirements:
-
-- Use existing selected-tour memory/lock if present.
-- Resolve the candidate in this priority order:
-  1. just-selected tour from the current turn;
-  2. existing locked selected tour in memory;
-  3. explicit web code or real tour code in customer text;
-  4. current detail result if already fetched in the turn;
-  5. recent top options only when the customer selects by option number.
-- Call detail enrichment only when needed:
-  - customer selected a tour;
-  - customer gives or asks for a date, passenger count, price, fee, tip, deposit, visa, single supplement, booking summary, or details;
-  - customer asks follow-up on the selected tour.
-- Do not call detail enrichment on generic greeting, broad search, or country discovery.
-- Add a small in-turn or memory-backed guard so the same detail page is not fetched repeatedly for every message.
-- Keep all unit tests offline. Network-dependent reads must be mocked.
-
-### 2. Departure Matching
-
-Use `v2/lib/selected_departure_match.py` for customer date phrases and selected tour rows.
+- Expected: `https://www.tourfiremai.com/tour/<web_code>`
+- Not allowed: `/intertourdetail/<code>`
 
 Requirements:
 
-- High-confidence exact match: expose selected departure row to response planning.
-- Medium/low confidence: ask a concise confirmation question and do not quote exact row price as final.
-- No match: show available date choices from the selected tour and ask the customer to choose.
-- Past dates must not be treated as valid matches.
-- `-` or missing values must remain `None`, never `0`.
-- Do not infer sold-out from contact-button text. Availability overrides remain the source of truth for full/sold-out blocking.
+- Keep `web_code`, `tour_code_real`, and airline separate.
+- Do not change V1 scraper or V1 production code.
+- Add/update tests proving `tours_canonical.url` is `/tour/<web_code>`.
+- Add a regression test proving no V2 customer/admin link path uses `/intertourdetail/` for canonical tour URLs.
 
-### 3. Response Planning
+### 2. Departure Row Freshness
 
-Update the response layer only as needed so it can use selected departure planning data.
+Add a freshness mechanism for `tour_departures` rows.
 
 Requirements:
 
-- Pass a compact, safe planning object or note into `write_response`.
-- Include only fields needed for the answer:
-  - selected tour name;
-  - `web_code`;
-  - `tour_code_real`;
-  - airline;
-  - departure date range;
-  - adult price;
-  - child price when present;
-  - infant price when present;
-  - single supplement when present;
-  - joinland when present;
-  - group size when present;
-  - status text as raw signal only, not final availability.
-- If fee data is missing or below policy threshold, keep the current handoff behavior.
-- Do not confirm seat availability or final price.
-- Do not mention wholesale partner names.
+- Inspect existing migration 021 schema first.
+- If needed, create an additive migration 022 that adds a nullable `refreshed_at timestamptz` or equivalent freshness field to `tour_departures`.
+- Do not apply the migration from Claude Dev.
+- Update detail-enrichment/upsert logic so newly parsed rows write the freshness timestamp.
+- Update orchestrator/detail-row read logic so stale rows can trigger a refresh according to a configurable TTL.
+- Default TTL should be conservative for tour pricing, e.g. 6 hours for normal staging use, but testable via parameter/env/config.
+- If refresh fails, fail closed: do not invent availability or final price; keep existing handoff/confirmation behavior.
+- Add tests covering fresh rows, stale rows, refresh success, refresh failure, and no unbounded repeated fetches.
 
-### 4. Tests
+### 3. Scheduled Refresher Foundation
 
-Add focused tests for the new integration.
+Add a small offline-safe scheduler/CLI foundation for refreshing departure rows for selected tours.
+
+Requirements:
+
+- A CLI or callable function may be added under `v2/tools/` or `v2/scraper/`.
+- It must be safe by default and support dry-run mode.
+- It should refresh by `web_code` list or recently-used/selected tours when a DB client is provided.
+- Unit tests must use fakes/mocks only; no live network or Supabase calls.
+
+### 4. Uniqueness Readiness
+
+Prepare, but do not dangerously force, DB uniqueness.
+
+Requirements:
+
+- Add a duplicate-audit SQL query or helper that finds duplicate logical rows for the intended `idx_dep_full_row` key.
+- Add a migration or documented SQL block for the future UNIQUE index only if safe, or clearly gate it behind the audit returning zero duplicates.
+- Do not drop rows or mutate existing data in this task.
+- Do not apply migrations from Claude Dev.
+
+### 5. Tests
+
+Add focused tests for the package.
 
 Required cases:
 
-1. Generic greeting or broad country ask does not fetch detail page.
-2. Customer selects a tour then asks for details: orchestrator enriches detail once and locks candidate.
-3. Customer selects date and pax after selecting tour: high-confidence row is passed to response planning.
-4. Customer asks fee/tip/deposit after selected tour: selected tour is not lost.
-5. Ambiguous date phrase asks a confirmation instead of guessing.
-6. No matching date asks the customer to choose from available dates.
-7. `web_code`, `tour_code_real`, and airline stay separate in planning.
-8. Missing row values remain `None`, not `0`.
-9. Sold-out/full overrides still block the candidate before LLM response.
-10. No live network, OpenAI, LINE, Meta, OCR, or Supabase calls in unit tests.
+1. Listing scraper canonical URL is `/tour/<web_code>`.
+2. No V2 canonical tour URL uses `/intertourdetail/`.
+3. Upserted departure rows carry freshness metadata.
+4. Fresh DB rows do not trigger HTTP detail fetch.
+5. Stale DB rows trigger one bounded refresh.
+6. Refresh failure does not quote final price/availability and does not loop endlessly.
+7. Dry-run refresher does not write to DB.
+8. Duplicate-audit helper identifies duplicates with the intended logical key.
+9. Proposed uniqueness migration is additive/safe and not applied in tests.
+10. Broad non-live V2 suite remains green.
 
 Run at minimum:
 
 ```bash
-pytest v2/tests/test_orchestrator_planning.py v2/tests/test_detail_enrichment.py v2/tests/test_selected_departure_match.py -q
-pytest v2/tests --ignore=integration --ignore=live -q
-```
-
-If Windows temp permissions fail, rerun with:
-
-```bash
-pytest v2/tests --ignore=integration --ignore=live --basetemp=.pytest_tmp -p no:cacheprovider -q
+pytest v2/tests/test_detail_enrichment.py v2/tests/test_selected_departure_planning.py -q
+pytest v2/tests --ignore=integration --ignore=live --ignore=v2/tests/test_live_openai_health.py --basetemp=.pytest_tmp -p no:cacheprovider -q
 ```
 
 ## Out of Scope
@@ -146,13 +124,14 @@ pytest v2/tests --ignore=integration --ignore=live --basetemp=.pytest_tmp -p no:
 - Do not change production Meta webhook settings.
 - Do not apply Supabase migrations.
 - Do not add live paid provider calls.
-- Do not implement real customer-wide traffic.
-- Do not build the dashboard UI in this task.
-- Do not implement new OCR providers in this task.
+- Do not run live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- Do not enable customer-wide traffic.
+- Do not build dashboard UI in this task.
+- Do not alter fee policy thresholds.
 
 ## Deliverables
 
-- V2-only code/tests.
+- V2-only code/tests/migrations as needed.
 - `docs/tasks/DEV_REPORT_CURRENT.md`
 - `docs/tasks/AGENT_STATUS.json`
 
@@ -163,17 +142,18 @@ Write `docs/tasks/DEV_REPORT_CURRENT.md` with:
 1. Summary
 2. Files changed
 3. Implementation details
-4. Test results
-5. Safety / scope guard verification
-6. Known notes / risks
-7. Exact QA focus areas
-8. Recommendation: `GO`, `GO_WITH_NOTES`, or `NO_GO`
+4. Migration notes, if any, including "not applied"
+5. Test results
+6. Safety / scope guard verification
+7. Known notes / risks
+8. Exact QA focus areas
+9. Recommendation: `GO`, `GO_WITH_NOTES`, or `NO_GO`
 
 Update `docs/tasks/AGENT_STATUS.json` to:
 
 - `status`: `READY_FOR_QA`
-- `current_dev_task`: `DEV-2026-05-20-014`
-- `current_qa_task`: `QA-2026-05-20-014`
+- `current_dev_task`: `DEV-2026-05-20-015`
+- `current_qa_task`: `QA-2026-05-20-015`
 - `next_action`: `CLAUDE_QA_RUN_CURRENT_QA_TASK`
 
 Then stop.
