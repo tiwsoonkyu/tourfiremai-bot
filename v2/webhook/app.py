@@ -37,8 +37,11 @@ from ..lib import idempotency, redactor
 from ..lib.cache import make_redis
 from ..lib.db import make_supabase_from_config
 from ..lib.intent import classify
+from ..lib.llm import make_llm_client
+from ..lib.meta_sender import MetaMessengerSender
+from ..lib.orchestrator import Orchestrator
 from ..lib.source_attribution import extract_source
-from .test_mode_gate import should_process_inbound
+from .test_mode_gate import admin_only_enabled, admin_test_psids, should_process_inbound
 from ..lib.state_machine import (
     State, StateContext, transition, allowed_tools, is_silent_state,
 )
@@ -51,7 +54,9 @@ logger = logging.getLogger("v2.webhook")
 def create_app(*, test_config=None, test_supabase=None, test_redis=None,
                 test_admin_allow_list=None, test_admin_token=None,
                 test_memory=None, test_admin_only_mode=None,
-                test_admin_test_psids=None) -> Flask:
+                test_admin_test_psids=None, test_meta_sender=None,
+                test_llm=None, test_http_client=None,
+                test_admin_outbound_enabled=None) -> Flask:
     """
     Flask app factory. test_config + injected dependencies for unit tests.
 
@@ -85,6 +90,13 @@ def create_app(*, test_config=None, test_supabase=None, test_redis=None,
     app.config["V2_MEMORY"] = test_memory
     app.config["V2_ADMIN_ALLOW_LIST"] = test_admin_allow_list
     app.config["V2_ADMIN_TOKEN"] = test_admin_token
+    app.config["V2_LLM_CLIENT"] = test_llm
+    app.config["V2_HTTP_CLIENT"] = test_http_client
+    app.config["V2_META_SENDER"] = (
+        test_meta_sender if test_meta_sender is not None
+        else MetaMessengerSender(getattr(config, "fb_page_access_token", None))
+    )
+    app.config["V2_ADMIN_OUTBOUND_ENABLED"] = test_admin_outbound_enabled
     if test_admin_only_mode is not None:
         app.config["V2_ADMIN_ONLY_TEST_MODE"] = test_admin_only_mode
     if test_admin_test_psids is not None:
@@ -116,6 +128,88 @@ def _verify_meta_signature(body_bytes: bytes, signature_header: str, app_secret:
 
 def _redacted_event_for_log(event: dict) -> dict:
     return redactor.redact_event(event)
+
+
+def _truthy_env(name: str, *, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _admin_outbound_enabled(app: Flask, psid: str) -> bool:
+    """Allow outbound only during admin-only testing and only to allowlisted PSIDs."""
+    explicit = app.config.get("V2_ADMIN_OUTBOUND_ENABLED")
+    if explicit is None:
+        explicit = _truthy_env("V2_STAGING_ADMIN_OUTBOUND_ENABLED", default=False)
+    if not explicit:
+        return False
+    if not admin_only_enabled(config=app.config):
+        return False
+    allowed = set(admin_test_psids(config=app.config))
+    if not psid or str(psid) not in allowed:
+        return False
+    return True
+
+
+def _get_llm_client(app: Flask):
+    client = app.config.get("V2_LLM_CLIENT")
+    if client is None:
+        client = make_llm_client(app.config["V2_CONFIG"])
+        app.config["V2_LLM_CLIENT"] = client
+    return client
+
+
+def _process_event_admin_outbound(app: Flask, event: dict, full_message_id: str,
+                                  trace_id: str) -> None:
+    """Run the V2 orchestrator and send one Messenger reply for admin-only tests."""
+    supabase = app.config["V2_SUPABASE"]
+    redis_ = app.config["V2_REDIS"]
+    sender = event.get("sender") or {}
+    psid = sender.get("id")
+    msg = event.get("message") or {}
+    text = msg.get("text") or ""
+    attachments = msg.get("attachments") or []
+
+    attr_kwargs: dict[str, Any] = {}
+    try:
+        attr = extract_source(event, supabase)
+        if attr:
+            attr_kwargs = attr.to_orchestrator_kwargs()
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("[%s] source attribution skipped: %s", trace_id, e)
+
+    orchestrator = Orchestrator(
+        supabase,
+        redis_,
+        _get_llm_client(app),
+        http_client=app.config.get("V2_HTTP_CLIENT"),
+    )
+    result = orchestrator.handle_turn(
+        psid=psid,
+        text=text,
+        attachments=attachments,
+        meta_message_id=full_message_id,
+        platform="fb",
+        trace_id=trace_id,
+        **attr_kwargs,
+    )
+    if not result.reply_text:
+        logger.info("[%s] admin-only orchestrator returned silent decision=%s", trace_id, result.decision)
+        return
+
+    meta_sender = app.config.get("V2_META_SENDER")
+    if meta_sender is None:
+        logger.error("[%s] Meta sender not configured", trace_id)
+        return
+    send_result = meta_sender.send_text(psid, result.reply_text)
+    if send_result.ok:
+        logger.info("[%s] admin-only Messenger reply sent status=%s", trace_id, send_result.status_code)
+    else:
+        logger.error(
+            "[%s] admin-only Messenger reply failed status=%s error=%s",
+            trace_id, send_result.status_code, send_result.error,
+        )
 
 
 # --- Background processing ----------------------------------------------------
@@ -276,6 +370,10 @@ def _process_event(app, event: dict, full_message_id: str, trace_id: str) -> Non
         return
 
     try:
+        if _admin_outbound_enabled(app, psid):
+            _process_event_admin_outbound(app, event, full_message_id, trace_id)
+            return
+
         # Conversation row
         conv = _get_or_create_conversation(supabase, psid)
         state_before = State(conv["state"])
@@ -400,7 +498,7 @@ def _register_routes(app: Flask) -> None:
                 or os.getenv("RAILWAY_GIT_COMMIT")
                 or os.getenv("GIT_COMMIT")
             ),
-            "runtime_marker": "v2-jsonb-db-adapter-20260521",
+            "runtime_marker": "v2-admin-outbound-20260521",
             "has_redis": config.has_redis,
             "has_llm": config.has_llm,
             "has_line": config.has_line,

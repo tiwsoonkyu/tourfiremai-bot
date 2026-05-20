@@ -123,7 +123,9 @@ def load_config(*, strict: bool = True) -> Config:
         supabase_anon_key=_env("SUPABASE_ANON_KEY"),
         redis_url=_env("REDIS_URL"),
         fb_app_secret=_env("FB_APP_SECRET"),
-        fb_page_access_token=_env("FB_PAGE_ACCESS_TOKEN"),
+        # Railway's source scan suggested FB_PAGE_TOKEN in one staging setup;
+        # keep FB_PAGE_ACCESS_TOKEN primary but accept the prefixed alias too.
+        fb_page_access_token=_env("FB_PAGE_ACCESS_TOKEN") or _env("FB_PAGE_TOKEN"),
         fb_verify_token=_env("FB_VERIFY_TOKEN"),
         openai_api_key=_env("OPENAI_API_KEY"),
         openai_response_model=_env("OPENAI_RESPONSE_MODEL", "gpt-5.1"),

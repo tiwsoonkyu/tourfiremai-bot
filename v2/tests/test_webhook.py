@@ -69,6 +69,16 @@ def _event(psid: str, text: str, mid: str = "m_test_1") -> dict:
     }
 
 
+class _FakeMetaSender:
+    def __init__(self):
+        self.sent = []
+
+    def send_text(self, psid, text):
+        from v2.lib.meta_sender import MetaSendResult
+        self.sent.append({"psid": psid, "text": text})
+        return MetaSendResult(ok=True, status_code=200, response_text="{}")
+
+
 class TestVerification:
     def test_verify_handshake_success(self, client):
         resp = client.get("/webhook", query_string={
@@ -147,3 +157,63 @@ class TestProcessing:
         # Should only have processed once
         turns = supabase.table("conversation_turns").select_all({"psid": "PSID_DUP_1"})
         assert len(turns) == 1
+
+
+class TestAdminOnlyOutbound:
+    def test_allowlisted_admin_gets_messenger_reply(self, fake_config, supabase, redis):
+        from v2.lib.llm import MockLLMClient
+        from v2.webhook.app import create_app
+
+        sender = _FakeMetaSender()
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+            test_admin_only_mode=True,
+            test_admin_test_psids=["PSID_ADMIN"],
+            test_admin_outbound_enabled=True,
+            test_meta_sender=sender,
+            test_llm=MockLLMClient(fake_config),
+        )
+        client = app.test_client()
+        body = json.dumps(_event("PSID_ADMIN", "ขอทัวร์ญี่ปุ่น งบ 30000", mid="m_admin_1")).encode()
+
+        resp = client.post("/webhook", data=body, headers={
+            "X-Hub-Signature-256": _sign(body, "test-app-secret"),
+            "Content-Type": "application/json",
+        })
+        assert resp.status_code == 200
+        assert resp.get_json()["scheduled"] == 1
+        time.sleep(0.5)
+
+        assert len(sender.sent) == 1
+        assert sender.sent[0]["psid"] == "PSID_ADMIN"
+        assert sender.sent[0]["text"]
+        turns = supabase.table("conversation_turns").select_all({"psid": "PSID_ADMIN"})
+        assert [t["direction"] for t in turns] == ["inbound", "outbound"]
+
+    def test_non_allowlisted_psid_is_filtered_before_outbound(self, fake_config, supabase, redis):
+        from v2.webhook.app import create_app
+
+        sender = _FakeMetaSender()
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+            test_admin_only_mode=True,
+            test_admin_test_psids=["PSID_ADMIN"],
+            test_meta_sender=sender,
+        )
+        client = app.test_client()
+        body = json.dumps(_event("PSID_OTHER", "ขอทัวร์ญี่ปุ่น", mid="m_admin_2")).encode()
+
+        resp = client.post("/webhook", data=body, headers={
+            "X-Hub-Signature-256": _sign(body, "test-app-secret"),
+            "Content-Type": "application/json",
+        })
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {"filtered": 1, "scheduled": 0, "status": "accepted"}
+        time.sleep(0.2)
+        assert sender.sent == []
+        assert supabase.table("customers").select_one({"psid": "PSID_OTHER"}) is None
