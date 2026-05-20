@@ -1,25 +1,88 @@
 {
   "controller": "Codex",
-  "role": "Claude Dev",
-  "status": "READY_FOR_QA",
-  "verdict": null,
+  "role": "Claude QA",
+  "status": "QA_GO_WITH_NOTES",
+  "verdict": "GO_WITH_NOTES",
   "current_dev_task": "DEV-2026-05-20-014",
   "current_qa_task": "QA-2026-05-20-014",
   "branch": "v2/s4-followup-vision-ondemand",
   "base_commit": "4ef8114",
   "commit": "4ef8114",
-  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-20T11:05:00+07:00",
-  "next_action": "CLAUDE_QA_RUN_CURRENT_QA_TASK",
+  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
+  "updated_at": "2026-05-20T11:55:00+07:00",
+  "next_action": "WAITING_FOR_CODEX",
   "blocked_reason": null,
-  "notes": [
-    "DEV-2026-05-20-014 implemented as one integration package per CURRENT_DEV_TASK.md.",
-    "Added v2/lib/selected_departure_planning.py (deterministic, no LLM/network/DB/OCR).",
-    "Wired orchestrator candidate resolver, enrichment trigger gate, DB-first row fetch with Redis guard, and selected_departure planning bundle into handle_turn.",
-    "Wired response_writer to inject selected_departure_planning into the LLM payload AFTER _strip_wholesale; page-post sold-out canned block still wins before the LLM.",
-    "16 new tests in v2/tests/test_selected_departure_planning.py cover all 10 required cases plus candidate-resolution priority and row-dict round-trip.",
-    "Test results: targeted 71/71 passed, broad non-live V2 suite 783 passed / 40 skipped (flask-only) / 0 failed.",
-    "Hard rules honored: no V1, no Make.com, no deploy, no production webhook changes, no secrets, no live Meta/LINE/OpenAI/OCR/paid provider calls, no Supabase migrations.",
-    "Customer-facing production behavior unchanged. Recommendation from Dev: GO."
-  ]
+  "files_reviewed": [
+    "v2/lib/orchestrator.py",
+    "v2/lib/response_writer.py",
+    "v2/lib/selected_departure_planning.py",
+    "v2/tests/test_selected_departure_planning.py",
+    "docs/tasks/DEV_REPORT_CURRENT.md",
+    "docs/tasks/AGENT_STATUS.json"
+  ],
+  "qa_evidence": {
+    "targeted_dev014_suite": "71 passed in 0.51s (test_selected_departure_planning.py + test_orchestrator_planning.py + test_detail_enrichment.py + test_selected_departure_match.py)",
+    "orchestrator_response_adjacency": "70 passed in 0.37s (test_orchestrator.py + test_response_writer.py + test_orchestrator_planning.py + test_selected_departure_planning.py — 16 new + 54 existing, no regressions)",
+    "broad_non_live_v2_suite_linux_tmpdir": "787 passed / 40 skipped / 0 failed in 2.44s (deselected: test_integration_staging.py, test_live_openai_health.py, test_phase2_live_followup.py; --basetemp=/tmp/pytest_tmp_qa to avoid OneDrive permission issues)",
+    "broad_suite_onedrive_tmpdir_note": "First attempt with --basetemp=.pytest_tmp on the OneDrive mount hit ~47 PermissionError on tmp cleanup — matches the Windows/OneDrive scenario Dev report §4 anticipates. Re-run with a Linux-native tmpdir is clean.",
+    "hard_rules_compliance": "verified — no V1 (app.py mtime 2026-05-09, webhook_proxy.py mtime 2026-05-06), no Make.com (newest blueprint mtime 2026-05-08), no new migrations, listing scraper untouched (mtime 2026-05-18), production webhook/Cloudflare/Railway untouched, no secret reads, no live LLM/OCR/Meta/LINE/OpenAI/Anthropic/paid-provider calls, no Supabase migration apply, no customer-facing outbound, no wholesale leakage",
+    "forbidden_import_grep": "no openai/anthropic/requests/psycopg/supabase/httpx/boto3 imports in selected_departure_planning.py or test_selected_departure_planning.py (matches only appear as negative-assertion strings in TestNoLiveProviderImports)",
+    "wholesale_grep": "only appearance of 'wholesale' in new code is a docstring at selected_departure_planning.py:194 describing that wholesale is excluded — not a leak",
+    "page_post_block_ordering": "verified structurally in response_writer.py L201–218: replacement_needed canned reply returns BEFORE _strip_wholesale and BEFORE the LLM payload is built; asserted end-to-end by TestSoldOutOverrideStillBlocks (decision == 'canned_blocked', llm.response_calls == [])",
+    "fee_check_required_path": "unchanged — response_writer.py L167–193 still uses decide_fee_answer + CANNED_HANDOFF_FEE_INCOMPLETE on low confidence / missing data; the new selected_departure kwarg does not touch this branch",
+    "source_of_truth": "Cowork workspace mirror used; no .git in workspace so commit 4ef8114 not directly verified — Codex should re-run pytest on the local clone post-commit"
+  },
+  "qa_acceptance_checks": {
+    "no_v1_modified": true,
+    "no_make_com_modified": true,
+    "no_cloudflare_or_production_webhook_settings_change": true,
+    "no_secrets_added_or_printed": true,
+    "no_live_line_meta_openai_ocr_paid_provider_calls_in_tests": true,
+    "no_supabase_migration_applied_from_dev": true,
+    "greeting_or_broad_country_does_not_fetch_detail": true,
+    "selected_tour_followup_uses_memory_not_reset": true,
+    "detail_enrichment_called_only_on_followup_intents_or_dates": true,
+    "repeated_messages_do_not_trigger_unbounded_fetches": true,
+    "high_confidence_row_passed_to_response_planning": true,
+    "ambiguous_or_low_confidence_asks_confirmation": true,
+    "no_matching_date_offers_available_dates": true,
+    "past_dates_explicitly_rejected": true,
+    "missing_values_and_dash_remain_none_never_zero": true,
+    "web_code_tour_code_real_airline_kept_separate": true,
+    "contact_button_status_never_treated_as_sold_out": true,
+    "availability_override_blocks_full_or_sold_out_before_llm": true,
+    "fee_tip_deposit_still_follows_policy_and_handoff": true,
+    "no_wholesale_partner_name_in_new_runtime_or_fixtures": true,
+    "targeted_tests_pass": true,
+    "broad_non_live_suite_passes": true
+  },
+  "qa_findings": {
+    "p0_blocking": [],
+    "p1_pre_wiring": [],
+    "p2_next_package": [
+      "P2-1 (carry-over from QA-013): idx_dep_full_row on tour_departures is still non-unique. Tighten to UNIQUE after a one-time backfill audit so the idempotency key is load-bearing at the storage layer.",
+      "P2-2 (carry-over from QA-013): listing scraper still writes tours_canonical.url = '{BASE_URL}/intertourdetail/{code}' (v2/scraper/scrape_tours.py:255). Orchestrator builds its own URL via build_detail_url() so the new path is safe, but external consumers clicking the listing card hit the broken legacy URL. Should be a tightly-scoped fix task.",
+      "P2-3 (new): DB-first strategy in _get_or_fetch_departure_rows means once tour_departures has any row, the orchestrator never re-runs the HTTP fetch (Redis guard is only consulted on empty-DB branch). Stale rows can serve indefinitely between scheduled refreshes. Add a per-row refreshed_at TTL + scheduled refresher in the next package.",
+      "P2-4 (new, low): _should_trigger_detail_enrichment falls through to 'memory-locked + any non-trivial text triggers'. Once a tour is locked, almost any follow-up turn builds a planning bundle. DB-first keeps HTTP cost at zero on hot cycles, but per-turn parsing/matching cost is paid every time. Flag for post-wiring perf review."
+    ],
+    "p3_nits": [
+      "P3-1: _NON_ENRICHING_INTENTS is a hand-rolled frozenset of exact intent-type strings. If the classifier introduces a new top-of-funnel type (e.g. ask_country), it won't be excluded unless explicitly added. Add to next intent-classifier diff's review checklist.",
+      "P3-2: _recently_fetched_detail returns False on any Redis exception (fail-open). Under sustained Redis outage, repeat customers on tours with empty tour_departures could trigger repeated HTTP fetches. Low impact; DB-first covers any tour where enrichment succeeded at least once.",
+      "P3-3: _FakeHttp in the new test file uses fixed body via FIXTURE_DETAIL_HTML; no slow-response/timeout simulation. Trigger gate has no timeout-related tests. Consider adding under the scheduler/perf task.",
+      "P3-4 (carry-over from QA-013): three pre-existing tests fail when pytest is invoked from v2/ (test_admin_only_preflight, two TestNoSecretOrWholesaleLeakage). Hygiene fix to pathlib.Path(__file__).resolve().parents[...]. Not introduced by this task."
+    ],
+    "ctr_process": [
+      "CTR-1: TASK_LOG.md still ends at QA-2026-05-20-013. Codex should append DEV-2026-05-20-014 (accepted) and QA-2026-05-20-014 (GO_WITH_NOTES) entries when committing this artefact."
+    ]
+  },
+  "remaining_risks": [
+    "Customer-facing production behaviour does not change with this merge — production Meta webhook gate is still off and admin-only posture is preserved.",
+    "DB-first reads can serve stale rows between refreshes (P2-3). Operational mitigation: scheduled refresher is the next package's most important deliverable.",
+    "HTML class-name drift remains the structural risk for the parser pipeline (carry-over from QA-012). DEV-012 CLI is still the only drift sentinel.",
+    "Redis is an operational dependency for the trigger guard. Sustained outage allows repeat fetches on tours with empty tour_departures (P3-2). Acceptable at current throughput.",
+    "Listing scraper URL still says /intertourdetail/ (P2-2) — external consumers of tours_canonical.url remain broken until fixed.",
+    "idx_dep_full_row UNIQUE tightening still deferred (P2-1)."
+  ],
+  "next_recommended_step": "1) Codex commits the four files (v2/lib/orchestrator.py, v2/lib/response_writer.py, v2/lib/selected_departure_planning.py, v2/tests/test_selected_departure_planning.py) + this QA artefact + updated AGENT_STATUS.json from a local clone on v2/s4-followup-vision-ondemand, and appends TASK_LOG.md entries for DEV-014 (accepted) and QA-014 (GO_WITH_NOTES). 2) (Optional) Codex/Tiw runs the DEV-012 live smoke CLI against ap242455 ap232919 ap183598 from a local clone to capture a drift baseline before any operator test exercises enrich_tour_detail end-to-end. 3) Open the next Dev task focused on: (a) per-row refreshed_at TTL + scheduled detail refresher (closes P2-3), (b) UNIQUE tightening of idx_dep_full_row after backfill audit (closes P2-1 from QA-013), (c) listing scraper URL fix to /tour/<web_code> in a separate tight task (closes P2-2 from QA-013). 4) Production go-live still requires Tiw's explicit approval; this QA does not unlock public webhook traffic or customer-wide replies.",
+  "notes": "QA-2026-05-20-014 verdict: GO_WITH_NOTES. All 22 internal acceptance checks (A-E) pass. QA re-ran 71 targeted + 70 orchestrator/response adjacency + 787 broad-non-live tests in the Cowork workspace (no network, no live providers, no secrets, no migration apply). Hard-rule compliance verified by file inspection and mtime comparison: V1 (app.py 2026-05-09, webhook_proxy.py 2026-05-06), Make.com (≤2026-05-08), listing scraper (2026-05-18), migrations (021 from prior cycle), production webhook/Cloudflare/Railway/secrets all untouched. No P0/P1 findings. Two carry-over P2 (UNIQUE tightening, listing URL) + two new P2 (DB-first staleness, trigger-gate breadth) — all deferred-by-design or operational hygiene. Four P3 nits including three carry-overs. One charter-process note (CTR-1) for TASK_LOG.md rotation. Verdict does NOT approve customer-facing outbound, production webhook changes, new migration apply, or production go-live."
 }

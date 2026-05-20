@@ -1,4 +1,4 @@
-# Task Log
+﻿# Task Log
 
 This file tracks coordination between Codex and Claude Cowork.
 
@@ -686,3 +686,19 @@ Verdict options:
 - `GO_WITH_NOTES`
 - `NO_GO`
 - `BLOCKED`
+
+Result:
+
+- QA verdict: `GO_WITH_NOTES`
+- Controller outcome: `DEV-2026-05-20-014` accepted, `QA-2026-05-20-014` accepted with notes.
+- Codex synced and committed the DEV-014 implementation and QA status:
+  - `a1be370` - `feat(v2): wire selected departure planning`
+- Codex verification on local clone:
+  - Targeted/adjoining selected-departure suite: `71 passed`
+  - Broad non-live V2 suite: `830 passed / 4 skipped / 0 failed` with live OpenAI health excluded because this local environment had a staging key set but no live OpenAI package path for non-live testing.
+- QA carry-over / next-package notes:
+  - Add freshness TTL / scheduled refresh for stored departure rows.
+  - Tighten departure-row uniqueness after backfill audit.
+  - Fix listing scraper canonical URLs from `/intertourdetail/<code>` to `/tour/<web_code>`.
+- Next action: open DEV/QA-015 as an integrated data-freshness and canonical-url hardening package before real-chat testing.
+
