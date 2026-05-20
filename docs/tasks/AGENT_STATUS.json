@@ -1,26 +1,93 @@
 {
   "controller": "Codex",
-  "role": "Claude Dev",
-  "status": "READY_FOR_QA",
-  "verdict": null,
+  "role": "Claude QA",
+  "status": "QA_GO_WITH_NOTES",
+  "verdict": "GO_WITH_NOTES",
   "current_dev_task": "DEV-2026-05-20-015",
   "current_qa_task": "QA-2026-05-20-015",
   "branch": "v2/s4-followup-vision-ondemand",
   "base_commit": "4ef8114",
   "commit": "4ef8114",
-  "report_path": "docs/tasks/DEV_REPORT_CURRENT.md",
-  "updated_at": "2026-05-20T13:10:00+07:00",
-  "next_action": "CLAUDE_QA_RUN_CURRENT_QA_TASK",
+  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
+  "updated_at": "2026-05-20T14:05:00+07:00",
+  "next_action": "WAITING_FOR_CODEX",
   "blocked_reason": null,
-  "notes": [
-    "DEV-2026-05-20-015 implemented as one integration package per CURRENT_DEV_TASK.md.",
-    "Canonical URL fix: v2/scraper/scrape_tours.py + conftest fixture now emit /tour/<web_code>.",
-    "Freshness wiring: migration 022 (NOT applied) adds refreshed_at; departure_price_table + detail_enrichment stamp it; orchestrator gains detail_freshness_ttl_s + stale-row gate with fail-closed refresh.",
-    "Scheduled refresher: v2/tools/refresh_departure_rows.py supports --web-codes / --selected-tours / --stale-only with default dry-run; CLI deliberately does not auto-wire live clients.",
-    "Uniqueness readiness: v2/tools/departure_duplicate_audit.py + DUPLICATE_AUDIT_SQL; docs/V2_DEPARTURE_UNIQUENESS_PROPOSAL.md; _pending_023_departure_unique.sql.proposal is deliberately not a .sql file so no glob applies it.",
-    "20 new tests in v2/tests/test_departure_freshness_and_audit.py cover all 10 required cases plus regression guards.",
-    "Test results: targeted 62/62 passed, broad non-live V2 suite 807 passed / 40 skipped (flask-only) / 0 failed (run with --basetemp=/tmp/pyt to avoid OneDrive temp permission errors).",
-    "Hard rules honored: no V1, no Make.com, no deploy, no production webhook changes, no secrets, no live Meta/LINE/OpenAI/OCR/paid-provider calls, no Supabase migrations applied.",
-    "Customer-facing production behavior unchanged. Recommendation from Dev: GO."
-  ]
+  "files_reviewed": [
+    "v2/scraper/scrape_tours.py",
+    "v2/scraper/departure_price_table.py",
+    "v2/scraper/detail_enrichment.py",
+    "v2/lib/orchestrator.py",
+    "v2/supabase/migrations/20260520_022_departure_refreshed_at.sql",
+    "v2/supabase/migrations/_pending_023_departure_unique.sql.proposal",
+    "v2/tools/refresh_departure_rows.py",
+    "v2/tools/departure_duplicate_audit.py",
+    "v2/tests/conftest.py",
+    "v2/tests/test_departure_freshness_and_audit.py",
+    "docs/tasks/DEV_REPORT_CURRENT.md",
+    "docs/tasks/AGENT_STATUS.json"
+  ],
+  "qa_evidence": {
+    "targeted_dev015_suite": "62 passed in 0.91s (test_detail_enrichment.py 26 + test_selected_departure_planning.py 16 + test_departure_freshness_and_audit.py 20)",
+    "broad_non_live_v2_suite_linux_tmpdir": "807 passed / 40 skipped / 0 failed in 2.44s (deselected: test_integration_staging.py, test_live_openai_health.py, test_phase2_live_followup.py; --basetemp=/tmp/pyt_qa_broad to avoid OneDrive permission issues)",
+    "hard_rules_compliance": "verified — no V1 (app.py mtime 2026-05-09, webhook_proxy.py mtime 2026-05-06), no Make.com (newest blueprint mtime 2026-05-08), production webhook/Cloudflare/Railway untouched, no secret reads, no live LLM/OCR/Meta/LINE/OpenAI/Anthropic/paid-provider calls, no Supabase migration apply (022 authored but not applied), no customer-facing outbound, no wholesale leakage",
+    "forbidden_import_grep": "no openai/anthropic/requests/psycopg/supabase/httpx/boto3 imports in v2/tools/refresh_departure_rows.py, v2/tools/departure_duplicate_audit.py, or v2/tests/test_departure_freshness_and_audit.py",
+    "canonical_url_fix_verified": "v2/scraper/scrape_tours.py:255 writes f'{BASE_URL}/tour/{code}' (was /intertourdetail/). TOUR_LINK_RE / TOUR_LINK_ALT_RE still recognize /intertourdetail/ in incoming listing HTML — deliberate parser-only behavior, documented in Dev report §3.1 and verified by tests.",
+    "migration_022_safety": "ADD COLUMN IF NOT EXISTS + CREATE INDEX IF NOT EXISTS + three NULL-safe DO $$ EXCEPTION WHEN undefined_column $$ backfills. No DROP/RENAME/TRUNCATE. Header comment forbids Claude Dev applying. Test asserts no UNIQUE keyword in DDL.",
+    "uniqueness_proposal_gating": "File suffix .sql.proposal not .sql — ls v2/supabase/migrations/*.sql confirmed no _pending_023 match. test_uniqueness_proposal_is_not_a_sql_file enforces this. SQL block is transactional (BEGIN/COMMIT), partial UNIQUE on (tour_id, departure_start, departure_end, COALESCE(bus,0)) WHERE departure_start IS NOT NULL, with CONCURRENTLY variant documented.",
+    "refresher_cli_offline_safe": "v2.tools.refresh_departure_rows main() never auto-wires Supabase or HTTP client — prints stderr instruction telling operator to write a wrapper. Dry-run is the default; --no-dry-run is the explicit opt-in. The CLI is a no-op safety net.",
+    "duplicate_audit_read_only": "Both find_duplicates() and DUPLICATE_AUDIT_SQL use SELECT only. No INSERT/UPDATE/DELETE/CREATE/DROP. NULL departure_start excluded to match the partial UNIQUE predicate.",
+    "fail_closed_refresh_path_verified_end_to_end": "test_refresh_failure_falls_back_to_stale_no_loop asserts ConnectionError on refresh HTTP keeps bot replying (silent=False), one refresh attempt only, second turn does NOT re-attempt HTTP (Redis guard prevents loop). Satisfies charter C-13 + C-14.",
+    "source_of_truth": "Cowork workspace mirror used; no .git in workspace so commit 4ef8114 not directly verified — Codex should re-run pytest on the local clone post-commit"
+  },
+  "qa_acceptance_checks": {
+    "no_v1_modified": true,
+    "no_make_com_modified": true,
+    "no_cloudflare_or_production_webhook_settings_change": true,
+    "no_secrets_added_or_printed": true,
+    "no_live_line_meta_openai_ocr_paid_provider_calls_in_tests": true,
+    "no_supabase_migration_applied_from_dev": true,
+    "no_customer_wide_outbound_behavior_enabled": true,
+    "tours_canonical_url_uses_tour_path": true,
+    "no_v2_canonical_url_uses_intertourdetail": true,
+    "web_code_tour_code_real_airline_kept_separate": true,
+    "departure_rows_have_freshness_field_or_policy": true,
+    "fresh_rows_skip_unnecessary_http_fetch": true,
+    "stale_rows_trigger_bounded_refresh": true,
+    "refresh_failure_fails_closed_no_price_quote": true,
+    "no_unbounded_repeated_fetch_loop": true,
+    "dry_run_refresher_does_not_write_to_db": true,
+    "duplicate_audit_uses_intended_logical_key": true,
+    "proposed_uniqueness_migration_gated_and_not_applied": true,
+    "no_destructive_data_cleanup_or_row_deletion": true,
+    "targeted_tests_pass": true,
+    "broad_non_live_suite_passes": true
+  },
+  "qa_findings": {
+    "p0_blocking": [],
+    "p1_pre_wiring": [],
+    "p2_next_package": [
+      "P2-1 (carry-over from QA-013/QA-014): idx_dep_full_row still non-unique. This package adds the audit helper + .sql.proposal but does not apply UNIQUE. Closure requires Codex/Tiw to apply migration 022, run the duplicate audit on staging, then rename the proposal to a real .sql migration only after safe_for_unique_index == True.",
+      "P2-2 (new): Migration 022 authored but NOT applied. Until Codex/Tiw applies it on tourfiremai-v2-staging (mbcihtcdwfofagkxphcu), the freshness gate is inert (_rows_are_stale treats NULL refreshed_at as fresh — intentional for pre-022 compatibility). Operational ordering: apply 022 → run refresh_departure_rows --stale-only --no-dry-run to backfill → gate becomes load-bearing.",
+      "P2-3 (new, low): Scheduled refresher CLI is intentionally inert (no auto-wired Supabase/HTTP client) — operator must write a one-line wrapper. Right safety posture but creates an operator-runbook prerequisite. Document the wrapper-script pattern in docs/S5_ADMIN_ONLY_REAL_CHAT_RUNBOOK.md before scheduling."
+    ],
+    "p3_nits": [
+      "P3-1: TOUR_LINK_RE / TOUR_LINK_ALT_RE still match /intertourdetail/ patterns — deliberate for parsing incoming production listing HTML (not for writing canonical URLs). Explained in Dev report §3.1 and verified by tests. Regression guard could be tightened to assert no f-string or string concatenation builds an /intertourdetail/ URL.",
+      "P3-2: _rows_are_stale returns True if ANY row in the result set has an old refreshed_at. Fine today (enrich_tour_detail refreshes all rows together) but could over-trigger if a future code path upserts a single row outside the enrichment pipeline. Flag for review if the refresher evolves into a per-row scheduler.",
+      "P3-3: safe_planning_note copy is unchanged from DEV-014 even when the data being planned over is known-stale. Consider adding a stronger 'ข้อมูลรอบล่าสุด อาจไม่ตรงกับหน้าเว็บ — ทีมงานเช็กให้ค่ะ' branch for the served-stale case.",
+      "P3-4 (carry-over from QA-013): three pre-existing tests fail when pytest is invoked from v2/ (test_admin_only_preflight, two TestNoSecretOrWholesaleLeakage). Hygiene fix to pathlib.Path(__file__).resolve().parents[...]. Not introduced by this task."
+    ],
+    "ctr_process": [
+      "CTR-1: TASK_LOG.md ends at QA-2026-05-20-014. Codex should append entries for DEV-2026-05-20-015 (accepted) and QA-2026-05-20-015 (GO_WITH_NOTES) when committing this artefact."
+    ]
+  },
+  "remaining_risks": [
+    "Freshness gate is inert until migration 022 is applied on staging (P2-2). Apply order matters: apply 022 → backfill via refresher → gate becomes load-bearing.",
+    "UNIQUE promotion still deferred behind the duplicate audit (P2-1). Proposal file is correctly gated by the .sql.proposal suffix; no automation can apply it.",
+    "Scheduled refresher needs an operator wrapper script (P2-3); the CLI is intentionally a no-op safety net.",
+    "Customer-facing production behaviour does not change with this merge — production Meta webhook gate is still off and admin-only posture is preserved.",
+    "Stale-served path uses the DEV-014 safe_planning_note (no stronger 'data may be outdated' copy yet — P3-3). The LLM is still instructed not to confirm price/seat, so this is a copy refinement, not a safety hole.",
+    "HTML class-name drift remains the structural risk for the parser pipeline (carry-over from QA-012). DEV-012 CLI is still the only drift sentinel."
+  ],
+  "next_recommended_step": "1) Codex commits the ten files (v2/scraper/scrape_tours.py, v2/scraper/departure_price_table.py, v2/scraper/detail_enrichment.py, v2/lib/orchestrator.py, v2/supabase/migrations/20260520_022_departure_refreshed_at.sql, v2/supabase/migrations/_pending_023_departure_unique.sql.proposal, v2/tools/refresh_departure_rows.py, v2/tools/departure_duplicate_audit.py, v2/tests/conftest.py, v2/tests/test_departure_freshness_and_audit.py) + this QA artefact + updated AGENT_STATUS.json from a local clone on v2/s4-followup-vision-ondemand, and appends TASK_LOG.md entries for DEV-015 (accepted) and QA-015 (GO_WITH_NOTES). 2) Apply migration 022 on tourfiremai-v2-staging via the standard pipeline; verify refreshed_at column + idx_dep_refreshed_at partial index exist. 3) Backfill refreshed_at by running an operator wrapper around refresh_departure_rows.refresh_departure_rows(dry_run=False) with the --stale-only source. 4) Run v2.tools.departure_duplicate_audit.find_duplicates on staging. If safe_for_unique_index == True, rename _pending_023_departure_unique.sql.proposal to a timestamped .sql migration and apply via the standard pipeline; otherwise open a manually-approved triage task. 5) Open the next Dev task to document the scheduled-refresher operator wrapper in the admin-only runbook (closes P2-3). 6) Production go-live still requires Tiw's explicit approval.",
+  "notes": "QA-2026-05-20-015 verdict: GO_WITH_NOTES. All 21 internal acceptance checks (A-E) pass. QA re-ran 62 targeted + 807 broad-non-live tests in the Cowork workspace (no network, no live providers, no secrets, no migration apply). Hard-rule compliance verified by file inspection and mtime comparison: V1 (app.py 2026-05-09, webhook_proxy.py 2026-05-06), Make.com (≤2026-05-08), production webhook/Cloudflare/Railway/secrets all untouched. No P0/P1 findings. Three P2 items: one carry-over (UNIQUE promotion still gated), one new (migration 022 not yet applied so the freshness gate is inert until then), one new low (refresher operator runbook needed). Four P3 nits including one carry-over. One charter-process note (CTR-1) for TASK_LOG.md rotation. The package closes QA-014 P2-2 (canonical URL) and QA-014 P2-3 (DB-first staleness) and adds a gated path toward closing QA-013 P2-2 (UNIQUE promotion). Refresh-failure path verified fail-closed end-to-end. Verdict does NOT approve applying migration 022, applying the UNIQUE proposal, customer-facing outbound, production webhook changes, or production go-live."
 }

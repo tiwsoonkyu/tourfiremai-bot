@@ -748,3 +748,25 @@ Verdict options:
 - `GO_WITH_NOTES`
 - `NO_GO`
 - `BLOCKED`
+
+Result:
+
+- QA verdict: `GO_WITH_NOTES`
+- Controller outcome: `DEV-2026-05-20-015` accepted, `QA-2026-05-20-015` accepted with notes.
+- Codex synced and committed the DEV-015 implementation and QA status:
+  - `85a4f65` - `feat(v2): add departure row freshness controls`
+- Codex verification on local clone:
+  - Targeted freshness/detail suite: `62 passed`
+  - Broad non-live V2 suite: `850 passed / 4 skipped / 0 failed`
+- QA verification:
+  - Canonical URL now stores `/tour/<web_code>`.
+  - Migration 022 is additive and NOT applied.
+  - UNIQUE proposal remains `.sql.proposal`, not an executable migration.
+  - Refresh failure fails closed and avoids fetch loops.
+  - Refresher CLI is operator-driven and dry-run by default.
+- QA notes:
+  - Migration 022 still needs explicit controller/Tiw approval before applying to staging.
+  - UNIQUE promotion remains gated behind duplicate audit.
+  - Operator runbook for refresher still needed.
+- Next action: Codex/Tiw decides whether to apply migration 022 to V2 staging, then open the next task for operator runbook / staging preflight.
+
