@@ -1,4 +1,4 @@
-﻿# Task Log
+# Task Log
 
 This file tracks coordination between Codex and Claude Cowork.
 
@@ -769,4 +769,25 @@ Result:
   - UNIQUE promotion remains gated behind duplicate audit.
   - Operator runbook for refresher still needed.
 - Next action: Codex/Tiw decides whether to apply migration 022 to V2 staging, then open the next task for operator runbook / staging preflight.
+
+### Controller Action — `MIGRATION-2026-05-20-022`
+
+Status: `APPLIED_TO_STAGING`
+
+Goal:
+
+Apply `20260520_022_departure_refreshed_at.sql` to V2 Supabase staging after `QA-2026-05-20-015` returned `GO_WITH_NOTES` and Tiw explicitly approved staging application.
+
+Result:
+
+- Applied migration 022 to Supabase staging project `tourfiremai-v2-staging` (`mbcihtcdwfofagkxphcu`) via Supabase MCP `apply_migration`.
+- Verified `public.tour_departures.refreshed_at` exists as nullable `timestamp with time zone`.
+- Verified partial index `idx_dep_refreshed_at` exists on `tour_departures(refreshed_at) WHERE refreshed_at IS NOT NULL`.
+- Verified staging backfill result: `24/24` `tour_departures` rows have `refreshed_at` populated.
+- Did not apply `_pending_023_departure_unique.sql.proposal`.
+- Did not touch V1, Make.com, production webhook, deployments, secrets, live paid providers, or customer-facing traffic.
+
+Next action:
+
+Open the next Controller task for the departure refresher operator runbook / staging preflight, then run duplicate audit before considering the UNIQUE proposal.
 
