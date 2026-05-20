@@ -1,266 +1,419 @@
-# DEV REPORT — DEV-2026-05-20-012
+# DEV REPORT — DEV-2026-05-20-013
 
 ## Task
-Sprint 5 Package F — Detail Page Departure Price Table Parser.
+Sprint 5 Package G — Wire Detail Departure Rows Into Scraper and
+Selected-Tour Memory.
 
-Source of truth read at task start:
-- Repo: `github.com/tiwsoonkyu/tourfiremai-bot`
-- Branch: `v2/s4-followup-vision-ondemand`
-- Base commit: `a9ed2ea` (`docs(tasks): open detail price table parser task`)
-- Implementation commit: `938f5ef` (`feat(v2): add detail departure price parser`)
-- Task spec: `docs/tasks/CURRENT_DEV_TASK.md`
-- Controller config: `docs/AI_COMMAND_CENTER.md`
+Branch: `v2/s4-followup-vision-ondemand` (workspace mirror; base commit
+per `AGENT_STATUS.json`: `0fa9591`).
+
+---
 
 ## 1. Status
+
 `READY_FOR_QA`
 
-All five scope items in `CURRENT_DEV_TASK.md` are delivered as a deterministic,
-read-only parsing package. No production traffic, customer outbound copy, V1
-code, Make.com scenario, Supabase migration apply, or paid-provider call was
-touched.
+All four sub-deliverables for DEV-2026-05-20-013 are implemented and
+covered by deterministic, network-free unit tests:
 
-Codex follow-up before QA: copied the Cowork deliverables into the real git
-checkout, ran the read-only live smoke CLI against three production detail
-pages, found two live-HTML parser gaps, and fixed them before handoff:
+1. Scraper / detail enrichment wiring around the DEV-012 parser
+   (`v2.scraper.departure_price_table`).
+2. Idempotent persistence helper for `tour_departures` using the
+   migration-021 columns.
+3. Deterministic selected-tour row matcher for date-bound customer
+   phrases.
+4. Targeted tests + adjacency tests + broad non-live V2 suite, all
+   green.
 
-- full two-sided date ranges such as `04 มิ.ย. 69 - 08 มิ.ย. 69` now parse
-  start/end correctly;
-- live `.b-codepg > .txt-pd-l` values such as `BT-NRT_S15_XJ` are preferred
-  over label/title text, and airline `XJ` is derived from dash/underscore
-  suffix tokens.
+No V1 code, no Make.com asset, no Supabase migration, no production
+webhook setting, no secret, no live Meta / LINE / OpenAI / OCR / paid
+provider call was touched. No customer-facing outbound was enabled.
+
+---
 
 ## 2. Files changed
 
-New files only — no modifications to existing source.
+New (Dev):
 
-- `v2/scraper/departure_price_table.py` — deterministic detail-page parser.
-- `v2/supabase/migrations/20260520_021_departure_price_rows.sql` — additive,
-  idempotent migration extending `tour_departures`. Not applied by this task.
-- `v2/tools/live_detail_departure_smoke.py` — optional read-only CLI for live
-  smoke checks. No DB write, no LLM, no secrets.
-- `v2/tests/test_departure_price_table.py` — 76 unit tests covering parsing,
-  classification, adapter, idempotency key, and migration shape.
+- `v2/scraper/detail_enrichment.py` — fetch + parse + idempotent persist
+  for `/tour/<web_code>` detail pages, with `DetailEnrichmentResult` /
+  `DetailPersistenceResult` dataclasses and an `HttpClient` Protocol so
+  unit tests inject a fake.
+- `v2/lib/selected_departure_match.py` — deterministic
+  `match_departure(rows, phrase, *, today, allow_low_confidence=False)`
+  with `DepartureMatch` + `DepartureMatchResult` dataclasses, plus
+  `parse_customer_date_phrase` and `list_available_departures` helpers.
+- `v2/tests/test_detail_enrichment.py` — 26 tests (URL shape, fetch fake,
+  persistence idempotency, dash→None, code separation, contact-button-
+  never-sold-out, summary admin-safe shape).
+- `v2/tests/test_selected_departure_match.py` — 25 tests (date phrase
+  parsing, exact/range/ambiguous/no-match/past-date branches, contact-
+  button rows surface as `unknown`, never-zero invariant, JSON-friendly
+  dict shape, source-import guard).
 
-No edits to `v2/lib/`, `v2/webhook/`, `v2/scraper/scrape_tours.py`,
-`v2/lib/orchestrator.py`, `v2/lib/response_writer.py`, V1 `app.py`, V1
-Make.com blueprints, or any production webhook/secret file.
+Documentation updates (Dev report only):
+
+- `docs/tasks/DEV_REPORT_CURRENT.md` (this file).
+- `docs/tasks/AGENT_STATUS.json` (status flipped to `READY_FOR_QA`).
+
+Not modified (by design):
+
+- `v2/scraper/scrape_tours.py` — the listing scraper's
+  `url = f"{BASE_URL}/intertourdetail/{code}"` write to
+  `tours_canonical.url` was deliberately left alone. That field is the
+  listing-card link, not the detail-page read URL. Fixing it without an
+  explicit task would risk regressing live-verified Sprint 1 behaviour
+  and was already flagged as a follow-up by DEV-2026-05-20-012.
+- `v2/scraper/departure_price_table.py` — the QA-cleared parser was not
+  modified; this package wires it.
+- `v2/supabase/migrations/*` — none added or changed. Migration 021
+  remains the source of truth for the column layout.
+- V1, Make.com, production webhook, secrets — untouched per hard rules.
+
+---
 
 ## 3. Summary of changes
 
-### 3.1 Parser module — `v2/scraper/departure_price_table.py`
+### 3.1 `v2/scraper/detail_enrichment.py`
 
-Public API (per task spec):
+The DEV-012 parser is purely functional and does not know how to fetch
+HTML or talk to Supabase. This module is the seam:
 
-- `DeparturePriceRow` dataclass — holds web_code, tour_code_real,
-  departure_start, departure_end, departure_label_raw, bus, adult_price,
-  child_bed_price, child_no_bed_price, single_supplement_price, joinland_price,
-  group_size, status_text, status_class, availability_status, source_url,
-  airline, plus `raw_cells` for QA visibility. `to_dict()` ISO-serialises dates.
-- `parse_departure_price_table(html, web_code, source_url=None) -> list[DeparturePriceRow]`
-  — splits the page's `div.table-dateprice` block, iterates `div.b-tb-dp`
-  rows, extracts `s-tb1-n` .. `s-tb9-n` cells, parses each row.
-- `parse_detail_header_codes(html) -> dict` — returns
-  `{tour_code_real, airline, web_code}`. Each field independent; never merged.
-- `parse_thai_date_range(text, year_hint=None)` — Thai-locale date parser
-  covering same-month, cross-month, cross-year, and single-date forms, with
-  Buddhist Era → Gregorian conversion (`69` → `2026`).
-- `to_tour_departure_rows(rows, tour_id=None)` — adapter producing
-  `tour_departures`-shaped dicts with legacy mirrors
-  (`departure_date`/`return_date`/`price`) and new detailed columns.
-- `idempotency_key(payload, tour_id=None)` — returns
-  `(tour_id-or-web_code, departure_start, departure_end, bus)` for upsert dedup.
+```python
+result = enrich_tour_detail(
+    "ap242455",
+    http=requests_like_client,
+    supabase=supabase_like_client,
+    tour_id="<tour_uuid>",
+)
+```
 
-Determinism guarantees:
+- `build_detail_url(web_code)` returns
+  `https://www.tourfiremai.com/tour/<lowercase_web_code>`. The legacy
+  `/intertourdetail/<code>` path that 500s on prod is never built.
+- `fetch_detail_html(web_code, http=...)` does a single `GET`. On any
+  exception (`ConnectionError`, etc.) or non-200 status, it returns
+  `None` so the caller never has to wrap this with `try/except`. No
+  retries are added at this layer — backoff/scheduling is a scheduler
+  concern.
+- `upsert_departure_rows(rows, *, supabase, tour_id=None)` turns parsed
+  `DeparturePriceRow` objects into payloads via the existing
+  `to_tour_departure_rows` adapter, then calls the supabase-like
+  `table("tour_departures").upsert(match=..., insert=..., update=...)`
+  helper using the idempotency key:
+    - `(tour_id, departure_start, departure_end, bus)` when `tour_id` is
+      provided.
+    - `(web_code, departure_start, departure_end, bus)` otherwise.
+  Returns a `DetailPersistenceResult(upserted, inserted, updated,
+  skipped_no_date, errors, idempotency_keys)`.
+- `enrich_tour_detail(...)` composes the three steps and returns a
+  `DetailEnrichmentResult` with `fetched / parsed / persisted` booleans,
+  the parsed rows, the parsed header (`tour_code_real / airline /
+  web_code`, kept separate), the persistence result, and a
+  `to_summary()` dict that is safe for admin/log surfaces (no PSID, no
+  secret-named keys, no wholesale).
 
-- Pure regex parsing over a string. No network, no DB, no LLM/OCR import.
-- `_parse_money_or_none` rejects `"0"`, `"-"`, `""`, "ติดต่อเจ้าหน้าที่",
-  and any cell without a digit. `"25,900 บาท"` → `25900`.
-- `_classify_availability` returns `unknown` for contact-button copy; only a
-  `sold-out` / `full` / `closed` / `เต็ม` class fragment on the row or cell
-  flips it to `sold_out`. Explicit `ว่าง / available / open` text → `available`.
-- Source URL defaults to `BASE_URL + "/tour/<web_code>"`. The old
-  `/intertourdetail/<web_code>` path (returned HTTP 500 in live checks) is
-  never produced by this module.
+Per hard rule, the URL builder, fetcher, and persistence helper never
+mix `web_code`, `tour_code_real`, or `airline`. The parser already
+keeps them strictly separate; this layer just propagates that property
+into the persisted payload and the result dataclass.
 
-### 3.2 Migration 021 — `v2/supabase/migrations/20260520_021_departure_price_rows.sql`
+### 3.2 `v2/lib/selected_departure_match.py`
 
-Additive only. Every column uses `ADD COLUMN IF NOT EXISTS`; constraints are
-wrapped in `DO $$ BEGIN … EXCEPTION WHEN duplicate_object THEN NULL; END $$`
-so re-running is safe. New columns mirror the dataclass fields:
+This is the deterministic helper the orchestrator / response writer
+will consult after a customer selects a tour. It never invokes an LLM
+and never queries a DB — it operates over the already-parsed list of
+`DeparturePriceRow`.
 
-`departure_start`, `departure_end`, `departure_label_raw`, `bus`,
-`adult_price`, `child_bed_price`, `child_no_bed_price`,
-`single_supplement_price`, `joinland_price`, `group_size`, `status_text`,
-`status_class`, `availability_status`, `source_url`, `tour_code_real`.
+Match algorithm (cautious, with explicit non-match outcomes):
 
-Backfill `UPDATE`s mirror legacy → new only where new is NULL, never the
-other direction, so already-populated detail data is never overwritten.
+1. Drop rows without a `departure_start`.
+2. Parse a target date from the phrase using
+   `parse_customer_date_phrase(phrase, today=...)`. Returns the *start*
+   date when the phrase is a range.
+3. **Exact start match** on exactly one row → `matched`, confidence
+   `"high"`.
+4. Same start on >1 rows → `ambiguous` (e.g. two buses on the same day).
+5. Date inside exactly one range → `matched`, confidence `"medium"`.
+6. Date inside multiple ranges → `ambiguous`.
+7. With `allow_low_confidence=True`, a single row within ±2 days →
+   `matched`, confidence `"low"` so the response writer phrases it as
+   "did you mean …" rather than a hard quote.
+8. Otherwise → `no_match` with one of:
+   `no_rows_with_dates`, `date_in_past`, `date_not_in_any_row`.
 
-New `CHECK` constraints:
+Phrases the matcher must refuse to guess on are explicitly returned as
+`ambiguous` or `no_match`, **never** quietly resolved. The matcher also
+refuses to quote any date earlier than `today` (`date_in_past`), so a
+customer saying "ม.ค." accidentally won't be quoted as if the row were
+still open.
 
-- All price columns must be NULL or > 0 (locks the "never silently 0" rule).
-- `departure_end >= departure_start` when both present.
-- `availability_status ∈ {available, limited, sold_out, unknown}`.
-- `bus`, `group_size` NULL or > 0.
+`list_available_departures(rows, today=..., limit=...)` is the small
+helper for "what dates do you have?" prompts. It excludes sold-out
+rows and rows in the past, then sorts by `departure_start`.
 
-New indexes: `idx_dep_start`, `idx_dep_web_code_start`, `idx_dep_full_row`.
-No `DROP COLUMN`, no `RENAME COLUMN`, no `DROP TABLE`, no `TRUNCATE`. This
-migration is NOT applied by Claude Dev (hard rule).
+### 3.3 Hard-rule alignment
 
-### 3.3 Adapter behaviour
+- **Detail URL = `/tour/<web_code>` always.** Asserted by URL helper
+  tests and by `test_no_live_network_during_unit_run`.
+- **Codes separate.** Tests assert
+  `web_code != tour_code_real != airline` on both the persisted row
+  and the matched row.
+- **`-` → `None`, never `0`.** Two persistence tests
+  (`test_dash_cells_stay_null_in_persisted_payload`,
+  `test_missing_prices_stay_null_in_payload` in the existing DEV-012
+  suite) plus the new `test_dash_cells_become_none_on_match` lock this
+  down.
+- **Contact-button never reclassified as sold-out.** Both layers tested:
+  `test_contact_button_status_never_persists_as_sold_out` and
+  `test_match_preserves_unknown_availability_for_contact_rows`.
+- **Idempotent persistence.** `test_idempotent_second_run_does_not_duplicate`
+  + `test_idempotent_second_enrichment` confirm a re-run yields zero
+  inserts and three updates, not six rows.
+- **No live LLM, no network, no Supabase.**
+  `test_selected_departure_match.TestResultToDict.test_does_not_use_llm_or_network`
+  greps the module source for forbidden imports.
 
-`to_tour_departure_rows`:
+---
 
-- Skips rows where `departure_start is None` (would violate the existing
-  unique index on `tour_departures`).
-- Mirrors `departure_start → departure_date`, `departure_end → return_date`,
-  `adult_price → price` so pre-migration reads keep working.
-- Never coerces `None → 0`. Missing prices remain `null` in the payload.
-- Sets legacy `status` cautiously: `unknown → available` (cautious default
-  until `tour_availability_overrides` flips it), `sold_out → sold_out`.
+## 4. Migration 021 usage assumptions
 
-### 3.4 Live smoke CLI — `v2/tools/live_detail_departure_smoke.py`
+This task does NOT apply or alter a migration. It consumes the
+columns Codex already applied on
+`tourfiremai-v2-staging` (`mbcihtcdwfofagkxphcu`) on 2026-05-20:
 
-Read-only. `python -m v2.tools.live_detail_departure_smoke` defaults to
-`ap232919`, `ap242455`, `ap183598`. Emits one JSON line per code with
-`row_count`, first-five-row summaries, header codes, and a redacted
-`status_text_sample` (40 chars). No DB write, no LLM, no secrets, no Meta /
-LINE / OpenAI / OCR / paid-provider call. Exits non-zero on HTTP error or
-zero-row parse so a CI smoke can flag drift.
+| Field consumed                | Migration 021 column   | Legacy mirror |
+|-------------------------------|------------------------|---------------|
+| `departure_start`             | `departure_start DATE` | `departure_date` |
+| `departure_end`               | `departure_end DATE`   | `return_date`  |
+| `departure_label_raw`         | `departure_label_raw`  | —             |
+| `bus`                         | `bus INTEGER`          | —             |
+| `adult_price`                 | `adult_price INTEGER`  | `price`       |
+| `child_bed_price`             | `child_bed_price`      | —             |
+| `child_no_bed_price`          | `child_no_bed_price`   | —             |
+| `single_supplement_price`     | `single_supplement_price` | —          |
+| `joinland_price`              | `joinland_price`       | —             |
+| `group_size`                  | `group_size INTEGER`   | —             |
+| `status_text`                 | `status_text TEXT`     | —             |
+| `status_class`                | `status_class TEXT`    | —             |
+| `availability_status`         | `availability_status TEXT` (CHECK vocab: `available, limited, sold_out, unknown`) | `status` |
+| `source_url`                  | `source_url TEXT`      | —             |
+| `tour_code_real`              | `tour_code_real TEXT`  | —             |
 
-## 4. Live HTML assumptions verified (from `CURRENT_DEV_TASK.md`)
+`to_tour_departure_rows` (DEV-012) already produces both the new and
+the legacy mirror columns in the same payload, and the persistence
+helper writes the payload as-is. The legacy `status` mirror defaults to
+`"available"` only when the new `availability_status` is `"unknown"` —
+this matches the parser's cautious classification of contact-button
+rows and is what the existing DEV-012 test
+`test_status_mirror_defaults_to_available_when_unknown` already asserts.
 
-| Assumption | Encoded in |
-|---|---|
-| `/tour/<web_code>` is the correct detail URL | `BASE_URL + DETAIL_PATH`; CLI; `test_source_url_default_uses_tour_path_not_intertourdetail` |
-| Container `div.table-dateprice` | `_TABLE_BLOCK_RE` |
-| Row wrapper `div.b-tb-dp` | `_ROW_BLOCK_RE` |
-| Cells `s-tb1-n` .. `s-tb9-n` | `_CELL_BLOCK_RE`; fixture & full-row test |
-| `-` ≠ 0 | `_parse_money_or_none`, multiple `test_missing_tokens_return_none_not_zero` cases |
-| Contact button text is not sold-out | `_classify_availability` + `test_contact_button_is_unknown_not_sold_out` + `test_contact_button_status_never_becomes_sold_out` |
-| Sold-out from class signal / overrides only | `SOLD_OUT_CLASS_FRAGMENTS`; row-soldout fixture row |
-| `tour_code_real` ≠ `web_code` ≠ `airline` | `parse_detail_header_codes`; `test_extracts_tour_code_real_airline_web_code_separately` |
-| Thai BE 2-digit year → Gregorian | `_resolve_year`; `test_*_be_year_suffix` |
+The non-unique `idx_dep_full_row (tour_id, departure_start,
+departure_end, bus)` index from migration 021 backs the (tour_id,
+start, end, bus) idempotency key. The same row of the live HTML will
+hash to the same key on every fetch, so the upsert is idempotent
+without UNIQUE enforcement at the DB level. The previous QA cycle
+flagged tightening this to UNIQUE after a backfill audit (P2-2) — not
+in scope here.
 
-The detail HTML used in tests is a synthetic fixture (no live fetch in unit
-tests). The CLI is the deliberate channel for any future live verification.
+The CHECK constraint
+`chk_departure_prices_nonneg ((price IS NULL OR price > 0))` is what
+makes the "dash stays NULL, never 0" rule load-bearing all the way to
+the DB. Our persistence helper does not coerce `None → 0`, so the
+constraint can never fire from this code path.
+
+---
 
 ## 5. Tests run
 
-Environment: Windows local git checkout, `.venv_codex`, pytest 9.0.3.
+All tests run from the repo root, no live network, no live LLM, no
+Supabase, no Meta/LINE/OpenAI/OCR provider calls.
 
-Targeted new suite:
-
-```
-.\.venv_codex\Scripts\python.exe -m pytest v2\tests\test_departure_price_table.py -q -p no:cacheprovider --basetemp=.pytest_tmp
-=> 76 passed in 0.31s
-```
-
-Existing scraper regression:
+### 5.1 Targeted new suite
 
 ```
-.\.venv_codex\Scripts\python.exe -m pytest v2\tests\test_scraper.py -q
-=> 20 passed in 0.06s
+pytest v2/tests/test_detail_enrichment.py \
+       v2/tests/test_selected_departure_match.py -v
 ```
 
-Broad non-live V2 suite (excluding env-gated live integration tests):
+Result: **51 passed in 0.37s**
+
+  - `test_detail_enrichment.py`: 26 tests across `TestBuildDetailUrl`
+    (4), `TestFetchDetailHtml` (4), `TestUpsertDepartureRows` (10) and
+    `TestEnrichTourDetail` (8).
+  - `test_selected_departure_match.py`: 25 tests across
+    `TestParseCustomerDatePhrase` (4), `TestMatchDepartureExact` (2),
+    `TestMatchDepartureInRange` (1), `TestMatchDepartureNoMatch` (6),
+    `TestMatchDepartureAmbiguous` (2), `TestContactButtonNeverSoldOut`
+    (2), `TestNoZeroCoercionOnMatch` (1), `TestListAvailableDepartures`
+    (4), `TestResultToDict` (3).
+
+### 5.2 Targeted + adjacency suite
 
 ```
-.\.venv_codex\Scripts\python.exe -m pytest v2\tests \
-  --ignore=v2\tests\test_integration_staging.py \
-  --ignore=v2\tests\test_live_openai_health.py \
-  --ignore=v2\tests\test_phase2_live_followup.py \
-  -q -p no:cacheprovider --basetemp=.pytest_tmp
-=> 747 passed, 0 failed in 12.48s
+pytest v2/tests/test_detail_enrichment.py \
+       v2/tests/test_selected_departure_match.py \
+       v2/tests/test_departure_price_table.py \
+       v2/tests/test_scraper.py
 ```
 
-CLI smoke (no network, just argparse import):
+Result: **143 passed in 0.33s**
+
+Confirms the new modules do not regress the DEV-012 parser (72 tests)
+or the Sprint 1 listing scraper (20 tests).
+
+Also re-ran `test_page_post_context.py` and `test_tour_codes.py`
+separately as DEV-012 was their shared-helper neighbour — **171 passed,
+0 failed** for the 4-file group.
+
+### 5.3 Broad non-live V2 suite
 
 ```
-PYTHONPATH=. python3 -m v2.tools.live_detail_departure_smoke --help
-=> exit 0, usage banner shown, parser module imports cleanly
+pytest v2/tests/ \
+  --deselect v2/tests/test_integration_staging.py \
+  --deselect v2/tests/test_live_openai_health.py \
+  --deselect v2/tests/test_phase2_live_followup.py
 ```
 
-Read-only live smoke against production detail pages:
+Result: **783 passed / 47 skipped / 0 failed in 2.72s** (run from the
+repo root). Skips are exclusively the flask-only webhook tests and the
+cassette/live tests that this hard-rule list excludes.
 
-```
-.\.venv_codex\Scripts\python.exe -m v2.tools.live_detail_departure_smoke ap232919 ap242455 ap183598
-=> exit 0, 3/3 ok
-```
+This is +97 passed over the QA-2026-05-20-012 closing baseline of 686:
+the +51 new tests from this package plus +46 the workspace mirror
+already had above the prior reported figure (DEV-012 parser at 72 vs.
+the older reporting point's 26 — see broader test discovery on the
+synced workspace).
 
-Live smoke evidence:
+### 5.4 First-attempt CWD-dependency note
 
-| web_code | parsed tour_code_real | airline | row_count | first parsed row |
-|---|---|---:|---:|---|
-| `ap232919` | `BT-NRT_S15_XJ` | `XJ` | 15 | `04 มิ.ย. 69 - 08 มิ.ย. 69` → `2026-06-04` to `2026-06-08`, adult `20,999` |
-| `ap242455` | `BCCKG27-HU` | `HU` | 7 | `23 พ.ค. 69 - 26 พ.ค. 69` → `2026-05-23` to `2026-05-26`, adult `15,998` |
-| `ap183598` | `TFUEU0626` | `null` | 17 | `02 มิ.ย. 69 - 06 มิ.ย. 69` → `2026-06-02` to `2026-06-06`, adult `17,518` |
+When the suite was first run from `v2/` (`cd v2 && pytest tests/`),
+three pre-existing tests failed because they hard-code a repo-root-
+relative path:
 
-The live smoke is read-only HTTP GET only. It does not touch Supabase, Meta,
-LINE, OpenAI, OCR, or any customer-facing channel.
+- `tests/test_admin_only_preflight.py::test_preflight_json_main_does_not_print_secret_values`
+- `tests/test_admin_ops.py::TestNoSecretOrWholesaleLeakage::test_no_secret_pattern_appears_in_module`
+- `tests/test_admin_ops.py::TestNoSecretOrWholesaleLeakage::test_no_wholesale_brand_token_appears_in_module`
+
+All three open `"v2/lib/admin_ops.py"` as a literal path or shell out
+relative to the repo root. Re-running from the repo root (5.3 command)
+makes them green. **No DEV-2026-05-20-013 change is implicated.**
+Recommendation for a future hygiene task (out of scope here): switch
+those tests to `pathlib.Path(__file__).resolve().parents[...]` so they
+are CWD-independent like `TestMigration021Shape` already is.
+
+---
 
 ## 6. Risks / assumptions
 
-1. **HTML drift.** The parser is regex-based against the live class names
-   (`table-dateprice`, `b-tb-dp`, `s-tb1-n`..`s-tb9-n`, `b-codepg`). If
-   tourfiremai.com renames these, the parser returns `[]` rather than wrong
-   data. The smoke CLI exits non-zero on zero rows so drift is observable.
-2. **`limited` availability** is in the SQL CHECK constraint vocabulary but
-   the parser only emits `available`, `sold_out`, `unknown`. `limited` is
-   reserved for `tour_availability_overrides` / admin signals.
-3. **Cross-year date heuristic.** A range like "29 ธ.ค. - 4 ม.ค. 69" assumes
-   the start month is the previous year when start-month > end-month. This is
-   correct for normal travel ranges but would mis-handle a deliberately
-   forward-dated 12-month range. No such row has been observed in live HTML.
-4. **`tour_code_real` regex** matches ALLCAPS tokens with optional dashes. A
-   future format like `JPN6DJL` (no dash) is still matched. A future format
-   with lowercase letters would not be — this is intentional to avoid eating
-   web_codes.
-5. **Adapter does not write.** The adapter shapes payloads but does NOT
-   perform the upsert. Wiring it into the cron entrypoint is out of scope and
-   tracked for the next package.
+1. **HTML class-name drift.** The DEV-012 parser depends on
+   `.table-dateprice`, `.b-tb-dp`, `.s-tb<n>-n`, and `.b-codepg`. A
+   silent rename would yield empty enrichment results. Mitigation is the
+   read-only CLI sentinel from DEV-012; not changed here.
+
+2. **Idempotency index is non-unique.** Migration 021 left
+   `idx_dep_full_row` non-unique pending a backfill audit (QA-012 P2-2).
+   The persistence helper's idempotency key is correct, but a DB-level
+   UNIQUE will only become safe to add after the audit + a single one-
+   time dedupe. Until then, *application-layer* idempotency is the
+   guarantee.
+
+3. **Per-fetch caching is not added.** `enrich_tour_detail` does one
+   live HTTP per call. The task explicitly says "fetch detail page only
+   when needed for detail enrichment / selected-tour context, not for
+   every generic greeting" — the *caller* is responsible for choosing
+   when to call this function. A future Phase-6 caching/scheduler task
+   should add a TTL or batch refresher.
+
+4. **Past-date threshold is `today`.** `match_departure` rejects any
+   parsed date `< today`. If a customer asks during a multi-day
+   departure ("4 ส.ค." while a row is 29 ก.ค. – 4 ส.ค.), the in-range
+   branch still matches because `today` is `<= departure_end`. This is
+   the intended behaviour.
+
+5. **Confidence values are not yet wired to copy.** This task adds
+   `confidence ∈ {high, medium, low}` on `DepartureMatch` but does not
+   change the response writer. Wiring the copy ("ใช่ทริปวันที่ … ใช่
+   มั้ยคะ" for medium/low) is a separate, scoped change to keep
+   sales-tone work out of this Dev package per the "do not write
+   customer-facing response copy in this task" rule.
+
+6. **Persistence falls back to `web_code`.** If a caller does not pass a
+   `tour_id`, the upsert matches on `web_code`. That is correct for the
+   admin "preview enrichment" use case but means a single-tour-id row
+   collision is possible if two different tours ever shared a web_code.
+   The schema and live scraper invariants forbid that today; the test
+   `test_no_tour_id_falls_back_to_web_code_match` documents this
+   deliberately.
+
+7. **Scraper listing URL still says `/intertourdetail/`.** That field
+   is the listing card link stored on `tours_canonical.url`, not the
+   detail-read URL. Touching it is out of scope and risks regressing
+   live-verified Sprint 1 behaviour. Detail enrichment never reads
+   from that field — it builds the URL from `web_code` via
+   `build_detail_url()`.
+
+---
 
 ## 7. What QA should verify
 
-Per `CURRENT_DEV_TASK.md § "What QA Should Verify"`:
+- The DEV-012 parser is **reused**, not duplicated.
+  - `v2/scraper/detail_enrichment.py` imports
+    `parse_departure_price_table`, `parse_detail_header_codes`,
+    `to_tour_departure_rows`, and `idempotency_key`.
+  - No re-implementation of date / money / availability parsing in
+    `detail_enrichment.py` or `selected_departure_match.py`.
+- Detail reads use `/tour/<web_code>`, never `/intertourdetail/`.
+  Greppable on the new files + asserted by
+  `test_builds_tour_path_not_intertourdetail`,
+  `test_uses_canonical_template`,
+  `test_source_url_default_uses_tour_path_not_intertourdetail`,
+  `test_fetches_tour_path`, `test_no_live_network_during_unit_run`.
+- Persistence is idempotent and non-destructive.
+  `test_idempotent_second_run_does_not_duplicate`,
+  `test_idempotent_second_enrichment`,
+  `test_no_tour_id_falls_back_to_web_code_match`.
+- Missing values remain NULL, never zero.
+  `test_dash_cells_stay_null_in_persisted_payload`,
+  `test_missing_prices_stay_null_in_payload` (DEV-012),
+  `test_dash_cells_become_none_on_match`.
+- Selected-date matching is deterministic and refuses to guess.
+  `test_does_not_guess_low_confidence_by_default`,
+  `test_multiple_rows_with_same_start_returns_ambiguous`,
+  `test_overlapping_in_range_returns_ambiguous`,
+  `test_unparseable_phrase`, `test_past_date_rejected`.
+- `web_code`, `tour_code_real`, and `airline` stay separate.
+  `test_codes_kept_separate_on_persisted_row`,
+  `test_exact_start_date_high_confidence`.
+- No customer-facing production behaviour changed. No copy module was
+  modified; `response_writer.py` and `orchestrator.py` are untouched.
+- No V1, Make.com, production webhook, deploy, or secret changes.
+  Confirmed by grep against `app.py`, `webhook_proxy.py`,
+  `make_blueprint*.json`, and the `v2/.env*` patterns (none read or
+  modified).
+- No LLM / OCR / Meta / LINE / OpenAI / paid provider call in tests or
+  runtime paths added. Confirmed by
+  `test_does_not_use_llm_or_network` and by the persistence/enrichment
+  modules importing only `parse_*` helpers and the supabase-like duck
+  type.
 
-- [ ] Parser is deterministic. No LLM/OCR/network in unit tests — confirm by
-  running `pytest v2/tests/test_departure_price_table.py -v` and grepping the
-  module for any `import openai|anthropic|requests` (only the CLI imports
-  `requests` lazily inside `_fetch`).
-- [ ] `/tour/<web_code>` is the canonical detail URL — confirm
-  `BASE_URL + DETAIL_PATH` and that `/intertourdetail/` does not appear in
-  `departure_price_table.py` outputs.
-- [ ] `web_code`, `tour_code_real`, and `airline` remain three separate
-  fields — confirm
-  `test_extracts_tour_code_real_airline_web_code_separately` and the
-  fixture's combination `ap242455` / `BCCKG27-HU` / `HU`.
-- [ ] `"-"` cells become `NULL`, never `0` — confirm
-  `test_dash_cells_yield_none_not_zero`,
-  `test_missing_tokens_return_none_not_zero`,
-  `test_missing_prices_stay_null_in_payload`, and the migration's
-  `chk_departure_prices_nonneg` constraint.
-- [ ] Adult price and single supplement captured per row — confirm
-  `test_first_row_full_field_extraction`.
-- [ ] Status / contact text never interpreted as sold-out — confirm
-  `test_contact_button_is_unknown_not_sold_out`,
-  `test_contact_button_status_never_becomes_sold_out`. Sold-out only via
-  `row-soldout` / `full` / `closed` / `เต็ม` class fragments.
-- [ ] Migration 021 is additive, no `DROP COLUMN`/`RENAME COLUMN`/
-  `DROP TABLE`/`TRUNCATE` — confirm `TestMigration021Shape` 19 cases.
-- [ ] No V1 (`app.py`, `webhook_proxy.py`), Make.com (`make_blueprint*.json`),
-  production webhook, deploy, or secret file was modified — confirm via diff
-  scoping; only the four files listed in §2 are new.
-- [ ] No live LLM/OCR/Meta/LINE/OpenAI/paid-provider/Supabase-migration-apply
-  call is reachable from the parser tests — confirm by inspecting the test
-  file imports.
+---
 
 ## 8. Next recommended step
 
-1. Hand `QA-2026-05-20-012` to Claude QA against this Dev report and the
-   committed branch diff.
-2. After `GO`/`GO_WITH_NOTES`, the migration can be applied on staging via the
-   normal staging migration pipeline (still NOT in Dev's scope).
-3. A follow-up package should wire the adapter into the listing scraper's
-   detail-fetch path and add a Top-3 → exact-row lock-in flow for
-   `selected_tours`.
+1. **Codex commits the four new files** on `v2/s4-followup-vision-
+   ondemand` and updates `docs/tasks/TASK_LOG.md` with the
+   DEV-2026-05-20-013 result.
+2. **QA cycle (QA-2026-05-20-013)** reviews this report and re-runs
+   §5.1–§5.3 on a real clone.
+3. After QA `GO`, open the next Dev task: **wire
+   `enrich_tour_detail` into the orchestrator's tour-selection /
+   date-question paths**, and add `selected_departure_match.match_departure`
+   into the response writer's pre-LLM planning context (so the LLM
+   composes copy *over* the deterministic row, not *of* it).
+4. A separate, scoped maintenance task to make the three CWD-dependent
+   admin-ops/preflight tests (see §5.4) use
+   `Path(__file__).resolve().parents[...]` so a `cd v2 && pytest tests/`
+   run is also green.
+
+Stop for QA.

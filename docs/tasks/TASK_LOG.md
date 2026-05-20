@@ -484,6 +484,19 @@ Verdict options:
 
 Result:
 
+- Dev status: `READY_FOR_QA`
+- QA verdict: `GO_WITH_NOTES`
+- Reports synced from Cowork workspace into the controller repo by Codex.
+- Codex verification on local clone:
+  - Targeted new suite: `51 passed`
+  - Adjacency suite: `147 passed`
+  - Broad non-live V2 suite: `798 passed / 4 skipped / 0 failed` using `--basetemp=.pytest_tmp -p no:cacheprovider`
+- Note: an initial broad-suite run failed because Windows denied access to the default pytest temp directory (`AppData\Local\Temp\pytest-of-supak`), not because of code failures. Re-run with repo-local basetemp passed.
+- Controller outcome: `DEV-2026-05-20-013` accepted, `QA-2026-05-20-013` accepted with notes.
+- Next action: commit/push the DEV-013 code + QA artefacts, then open the next wiring task for orchestrator/response-writer integration and follow-up database/index cleanup.
+
+Result:
+
 - QA verdict: `GO`
 - Reported by Tiw from Claude QA session.
 - Codex note: detailed QA report was not pasted into this repo at the time of controller update, so this log records owner-reported QA status.
