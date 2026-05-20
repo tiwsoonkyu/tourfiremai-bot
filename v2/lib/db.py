@@ -19,6 +19,18 @@ from typing import Any, Iterator, Optional
 logger = logging.getLogger("v2.db")
 
 
+def _adapt_sql_value(value: Any) -> Any:
+    if isinstance(value, (dict, list)):
+        from psycopg.types.json import Jsonb
+
+        return Jsonb(value)
+    return value
+
+
+def _adapt_sql_values(values: list[Any]) -> list[Any]:
+    return [_adapt_sql_value(v) for v in values]
+
+
 class PgTable:
     def __init__(self, conn_factory, name: str):
         self._conn_factory = conn_factory
@@ -42,7 +54,7 @@ class PgTable:
                 parts.append(f'"{k}" IS NULL')
             else:
                 parts.append(f'"{k}" = %s')
-                vals.append(v)
+                vals.append(_adapt_sql_value(v))
         return " AND ".join(parts) if parts else "TRUE", vals
 
     def _row_to_dict(self, cur, row) -> Optional[dict]:
@@ -65,13 +77,19 @@ class PgTable:
             )
             return self._row_to_dict(cur, cur.fetchone())
 
+    def select_all(self, where: dict) -> list[dict]:
+        clause, vals = self._build_where(where)
+        with self._cursor() as cur:
+            cur.execute(f'SELECT * FROM "{self.name}" WHERE {clause}', vals)
+            return [self._row_to_dict(cur, row) for row in cur.fetchall()]
+
     def insert(self, row: dict) -> dict:
         cols = ", ".join(f'"{k}"' for k in row.keys())
         placeholders = ", ".join(["%s"] * len(row))
         with self._cursor() as cur:
             cur.execute(
                 f'INSERT INTO "{self.name}" ({cols}) VALUES ({placeholders}) RETURNING *',
-                list(row.values()),
+                _adapt_sql_values(list(row.values())),
             )
             return self._row_to_dict(cur, cur.fetchone())
 
@@ -83,7 +101,7 @@ class PgTable:
         with self._cursor() as cur:
             cur.execute(
                 f'UPDATE "{self.name}" SET {set_clause} WHERE {clause}',
-                list(patch.values()) + w_vals,
+                _adapt_sql_values(list(patch.values())) + w_vals,
             )
             return cur.rowcount
 
