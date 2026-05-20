@@ -17,6 +17,9 @@ DASH_TOKEN = "dashboard-token-do-not-leak"
 LINE_ID = "U_line_admin_do_not_leak"
 REDIS_URL = "redis://secret-user:secret-pass@example.invalid:6379/0"
 SUPABASE_URL = "https://mbcihtcdwfofagkxphcu.supabase.co"
+DB_HOST = "aws-1-ap-southeast-1.pooler.supabase.com"
+DB_USER = "postgres.mbcihtcdwfofagkxphcu"
+DB_PASSWORD = "db-password-do-not-leak"
 
 
 def _ready_env() -> dict[str, str]:
@@ -26,6 +29,9 @@ def _ready_env() -> dict[str, str]:
         "V2_STAGING_DASHBOARD_TOKEN": DASH_TOKEN,
         "V2_STAGING_LINE_ADMIN_ALLOW_LIST": LINE_ID,
         "V2_STAGING_SUPABASE_URL": SUPABASE_URL,
+        "V2_STAGING_DB_HOST": DB_HOST,
+        "V2_STAGING_DB_USER": DB_USER,
+        "V2_STAGING_DB_PASSWORD": DB_PASSWORD,
         "V2_STAGING_SUPABASE_SERVICE_ROLE_KEY": SECRET,
         "V2_STAGING_REDIS_URL": REDIS_URL,
         "V2_STAGING_FB_APP_SECRET": SECRET,
@@ -50,6 +56,9 @@ def test_build_preflight_report_ready_is_secret_safe():
     assert report["checks"]["admin_only_test_mode"] == "enabled"
     assert report["checks"]["admin_test_psid_allow_list_count"] == 1
     assert report["checks"]["redis_url"] == "configured"
+    assert report["checks"]["supabase_db_host"] == "configured"
+    assert report["checks"]["supabase_db_user"] == "configured"
+    assert report["checks"]["supabase_db_password"] == "configured"
     assert report["checks"]["supabase_service_role_key"] == "configured"
     assert report["optional_checks"]["openai_api_key"] == "not_required"
     assert SECRET not in dumped
@@ -58,6 +67,9 @@ def test_build_preflight_report_ready_is_secret_safe():
     assert LINE_ID not in dumped
     assert REDIS_URL not in dumped
     assert SUPABASE_URL not in dumped
+    assert DB_HOST not in dumped
+    assert DB_USER not in dumped
+    assert DB_PASSWORD not in dumped
 
 
 def test_disabled_admin_only_mode_fails_even_if_other_vars_exist():
@@ -86,6 +98,9 @@ def test_missing_storage_envs_are_reported_without_values():
     env = _ready_env()
     env.pop("V2_STAGING_REDIS_URL")
     env.pop("V2_STAGING_SUPABASE_SERVICE_ROLE_KEY")
+    env.pop("V2_STAGING_DB_HOST")
+    env.pop("V2_STAGING_DB_USER")
+    env.pop("V2_STAGING_DB_PASSWORD")
 
     report = build_preflight_report(env)
     dumped = _dump(report)
@@ -93,9 +108,25 @@ def test_missing_storage_envs_are_reported_without_values():
     assert report["ok"] is False
     assert "redis_url" in report["missing"]
     assert "supabase_service_role_key" in report["missing"]
+    assert "supabase_db_host" in report["missing"]
+    assert "supabase_db_user" in report["missing"]
+    assert "supabase_db_password" in report["missing"]
     assert "REDIS_URL" not in dumped
     assert REDIS_URL not in dumped
     assert SECRET not in dumped
+    assert DB_HOST not in dumped
+    assert DB_USER not in dumped
+    assert DB_PASSWORD not in dumped
+
+
+def test_supabase_service_key_alias_is_accepted():
+    env = _ready_env()
+    env["V2_STAGING_SUPABASE_SERVICE_KEY"] = env.pop("V2_STAGING_SUPABASE_SERVICE_ROLE_KEY")
+
+    report = build_preflight_report(env)
+
+    assert report["ok"] is True
+    assert report["checks"]["supabase_service_role_key"] == "configured"
 
 
 def test_cli_json_ready_returns_zero_and_redacts_values():
@@ -111,6 +142,9 @@ def test_cli_json_ready_returns_zero_and_redacts_values():
     assert PSID not in output
     assert REDIS_URL not in output
     assert SUPABASE_URL not in output
+    assert DB_HOST not in output
+    assert DB_USER not in output
+    assert DB_PASSWORD not in output
 
 
 def test_cli_text_missing_returns_one_and_lists_missing_keys():

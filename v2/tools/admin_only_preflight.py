@@ -28,7 +28,13 @@ from v2.webhook.test_mode_gate import runtime_config_status
 
 
 _EXTRA_REQUIRED_ENV = {
-    "supabase_service_role_key": ("V2_STAGING_SUPABASE_SERVICE_ROLE_KEY",),
+    "supabase_db_host": ("V2_STAGING_DB_HOST",),
+    "supabase_db_user": ("V2_STAGING_DB_USER",),
+    "supabase_db_password": ("V2_STAGING_DB_PASSWORD",),
+    "supabase_service_role_key": (
+        "V2_STAGING_SUPABASE_SERVICE_ROLE_KEY",
+        "V2_STAGING_SUPABASE_SERVICE_KEY",
+    ),
     "redis_url": ("V2_STAGING_REDIS_URL",),
 }
 
@@ -44,6 +50,9 @@ _REQUIRED_CONFIGURED = (
     "dashboard_admin_token",
     "line_admin_allow_list",
     "supabase_staging_url",
+    "supabase_db_host",
+    "supabase_db_user",
+    "supabase_db_password",
     "fb_app_secret",
     "fb_verify_token",
     "supabase_service_role_key",

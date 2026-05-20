@@ -34,7 +34,13 @@ Set values only in the staging service secret store. **Never commit values. Neve
 | `V2_STAGING_LINE_ADMIN_ALLOW_LIST` | Comma-separated LINE admin user/group IDs that may issue admin commands. |
 | `V2_STAGING_LINE_ADMIN_USER_OR_GROUP_ID` | (Optional alias for a single ID.) |
 | `V2_STAGING_SUPABASE_URL` | Staging Supabase URL. |
-| `V2_STAGING_SUPABASE_SERVICE_ROLE_KEY` | Staging service-role key. |
+| `V2_STAGING_DB_HOST` | Staging Supabase Postgres pooler host. Required at app boot. |
+| `V2_STAGING_DB_USER` | Staging Supabase Postgres pooler user, usually `postgres.<project-ref>`. Required at app boot. |
+| `V2_STAGING_DB_PASSWORD` | Staging Supabase database password. Required at app boot. |
+| `V2_STAGING_DB_PORT` | Optional Postgres pooler port. Defaults to `6543`. |
+| `V2_STAGING_DB_NAME` | Optional database name. Defaults to `postgres`. |
+| `V2_STAGING_SUPABASE_SERVICE_ROLE_KEY` | Staging service-role key for admin tooling/preflight. |
+| `V2_STAGING_SUPABASE_SERVICE_KEY` | Optional alias for the same staging service-role key. |
 | `V2_STAGING_REDIS_URL` | Staging Redis URL. |
 | `V2_STAGING_FB_APP_SECRET` | Meta app secret for the staging app. Used to verify X-Hub-Signature-256. |
 | `V2_STAGING_FB_VERIFY_TOKEN` | Meta verify token for the GET handshake. |
@@ -65,6 +71,11 @@ Expected JSON (status strings only - **no values**):
     "dashboard_admin_token": "configured",
     "line_admin_allow_list": "configured",
     "supabase_staging_url": "configured",
+    "supabase_db_host": "configured",
+    "supabase_db_user": "configured",
+    "supabase_db_password": "configured",
+    "supabase_service_role_key": "configured",
+    "redis_url": "configured",
     "fb_app_secret": "configured",
     "fb_verify_token": "configured"
   }
@@ -76,6 +87,9 @@ Safety rules for the response itself:
 - The response must **never** include any token value, raw PSID, or secret.
 - `admin_test_psid_allow_list_count` must be `>= 1`.
 - If `admin_only_test_mode = enabled` and `admin_test_psid_allow_list = missing`, the webhook will fail closed and filter every inbound - restore the env var before re-testing.
+- If `/healthz` returns Railway `502`, check the three DB env vars first:
+  `V2_STAGING_DB_HOST`, `V2_STAGING_DB_USER`, and `V2_STAGING_DB_PASSWORD`.
+  The V2 Flask app loads these at boot via `v2.lib.config.load_config(strict=True)`.
 
 You can run the same check fully offline (no HTTP) using the preflight CLI:
 
