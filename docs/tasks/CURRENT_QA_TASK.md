@@ -1,82 +1,87 @@
-# CURRENT QA TASK
-
-## Task ID
-QA-2026-05-20-013
+# QA-2026-05-20-014 — Sprint 5 Package H Review
 
 ## Title
-QA Review - Sprint 5 Package G Detail Departure Rows Wiring
+
+Review selected departure detail planning integration.
 
 ## Status
-PENDING
+
+`PENDING`
 
 ## Assigned Role
+
 Claude QA
 
 ## Controller
+
 Codex
 
-## Source of Truth
+## Branch
 
-Use GitHub repo as source of truth:
+`v2/s4-followup-vision-ondemand`
 
-- Repo: `github.com/tiwsoonkyu/tourfiremai-bot`
-- Branch: `v2/s4-followup-vision-ondemand`
+## Depends On
 
-If local workspace lacks git/source files, differs from the GitHub branch, or cannot inspect the changed files, stop and report:
-
-`BLOCKED: source-of-truth repo unavailable`
-
-Do not invent scope from chat memory.
-
-## Trigger
-
-Run this QA task only after Dev writes:
-
-- `docs/tasks/DEV_REPORT_CURRENT.md`
-- `docs/tasks/AGENT_STATUS.json` with `READY_FOR_QA`
+`DEV-2026-05-20-014`
 
 ## Review Goal
 
-Decide whether DEV-2026-05-20-013 safely wires the detail departure parser into scraper/detail enrichment and selected-tour memory without changing production behavior.
+Verify that Dev safely wired detail enrichment and selected departure matching into the V2 orchestrator/response path without changing production behavior or inventing tour facts.
 
-This QA task does not approve production go-live.
+## Required Reading
+
+Read:
+
+1. `docs/AI_COMMAND_CENTER.md`
+2. `docs/tasks/CURRENT_DEV_TASK.md`
+3. `docs/tasks/CURRENT_QA_TASK.md`
+4. `docs/tasks/TASK_LOG.md`
+5. `docs/tasks/DEV_REPORT_CURRENT.md`
+6. `docs/tasks/AGENT_STATUS.json`
+
+Then inspect the relevant diff and tests.
 
 ## Required Checks
 
-Review DEV-2026-05-20-013 as one integrated package.
+### A. Scope Discipline
 
-Verify:
+1. No V1 files touched.
+2. No Make.com / Cloudflare / production Meta webhook settings touched.
+3. No secrets added or printed.
+4. No live LINE / Meta / OpenAI / OCR / paid-provider calls in tests.
+5. No Supabase migration applied from Dev.
 
-1. DEV-012 parser is reused and not reimplemented inconsistently.
-2. Detail reads use `/tour/<web_code>` only, not `/intertourdetail/<web_code>`.
-3. Row persistence/mapping is idempotent and non-destructive.
-4. `-`, empty strings, and non-price placeholders remain `NULL` / `None`, never `0`.
-5. `web_code`, `tour_code_real`, and airline remain distinct.
-6. Selected-date matching is deterministic and refuses to guess on ambiguous/no-match input.
-7. Contact/status text is preserved but not interpreted as sold-out.
-8. No unit tests call live network, LLM, OpenAI, OCR, Meta, LINE, or paid providers.
-9. Broad non-live suite has no regressions, or Dev explains a credible environment limitation.
-10. No V1, Make.com, production webhook, deploy, or secret changes.
+### B. Orchestrator Behavior
 
-## Out of Scope For QA
+6. Generic greeting / broad country discovery does not fetch detail pages.
+7. Selected-tour follow-up uses the selected tour from memory instead of resetting the conversation.
+8. Detail enrichment is called only when the customer asks for details, date, price, fee, tip, deposit, visa, single supplement, booking summary, or similar selected-tour follow-up.
+9. Repeated messages do not trigger unbounded repeated detail-page fetches.
 
-QA must not:
+### C. Departure Matching
 
-- Fix source code.
-- Apply migrations.
-- Deploy anything.
-- Touch V1.
-- Touch Make.com.
-- Touch secrets.
-- Run live paid-provider calls.
-- Approve production customer-wide go-live.
+10. High-confidence selected date/pax row is passed to response planning.
+11. Ambiguous/low-confidence date asks for confirmation and does not guess.
+12. No matching date asks the customer to choose from available dates.
+13. Past dates are not treated as valid matches.
+14. Missing values and `-` remain `None`, never `0`.
 
-## Expected Deliverables
+### D. Data Correctness
 
-- `docs/tasks/QA_REPORT_CURRENT.md`
-- `docs/tasks/AGENT_STATUS.json`
+15. `web_code`, `tour_code_real`, and airline remain separate.
+16. Contact-button/status text is not treated as sold-out or seat availability.
+17. Availability override logic still blocks full/sold-out candidates before LLM response.
+18. Fee/tip/deposit/single supplement answers still follow the fee policy and handoff when confidence is low or data is missing.
+19. No wholesale partner names appear in new runtime files or customer-facing response fixtures.
+
+### E. Tests
+
+20. Required targeted tests pass.
+21. Broad non-live V2 suite passes, or Dev clearly documents an environment-only failure and reruns with repo-local `--basetemp`.
 
 ## Verdict Options
+
+Use one:
 
 - `GO`
 - `GO_WITH_NOTES`
@@ -89,11 +94,17 @@ Write `docs/tasks/QA_REPORT_CURRENT.md` with:
 
 1. Verdict
 2. Scope reviewed
-3. Evidence checked
-4. Findings by severity
-5. Tests verified
-6. Remaining risks
-7. Next recommended step
+3. Test results
+4. Findings, ordered by severity
+5. Required fixes, if any
+6. Notes / residual risks
+7. Recommendation to Codex
 
-Then stop for Codex.
+Update `docs/tasks/AGENT_STATUS.json` with:
 
+- `status`: `QA_GO`, `QA_GO_WITH_NOTES`, `QA_NO_GO`, or `QA_BLOCKED`
+- `current_dev_task`: `DEV-2026-05-20-014`
+- `current_qa_task`: `QA-2026-05-20-014`
+- `next_action`: `WAITING_FOR_CODEX`
+
+Then stop.

@@ -1,77 +1,20 @@
 {
   "controller": "Codex",
-  "role": "QA",
-  "status": "QA_GO_WITH_NOTES",
-  "verdict": "GO_WITH_NOTES",
-  "current_dev_task": "DEV-2026-05-20-013",
-  "current_qa_task": "QA-2026-05-20-013",
+  "role": "Controller",
+  "status": "DEV_TASK_OPEN",
+  "verdict": null,
+  "current_dev_task": "DEV-2026-05-20-014",
+  "current_qa_task": "QA-2026-05-20-014",
   "branch": "v2/s4-followup-vision-ondemand",
-  "base_commit": "0fa9591",
-  "commit": "e3ebe3b",
-  "report_path": "docs/tasks/QA_REPORT_CURRENT.md",
-  "updated_at": "2026-05-20T23:15:00+07:00",
-  "next_action": "CODEX_OPEN_NEXT_WIRING_TASK",
+  "base_commit": "4ef8114",
+  "commit": "4ef8114",
+  "report_path": "docs/tasks/CURRENT_DEV_TASK.md",
+  "updated_at": "2026-05-20T10:17:37+07:00",
+  "next_action": "CLAUDE_DEV_RUN_CURRENT_DEV_TASK",
   "blocked_reason": null,
-  "files_reviewed": [
-    "v2/scraper/detail_enrichment.py",
-    "v2/lib/selected_departure_match.py",
-    "v2/tests/test_detail_enrichment.py",
-    "v2/tests/test_selected_departure_match.py",
-    "docs/tasks/DEV_REPORT_CURRENT.md",
-    "docs/tasks/AGENT_STATUS.json"
-  ],
-  "qa_evidence": {
-    "targeted_new_suite": "51 passed in 0.18s (v2/tests/test_detail_enrichment.py + v2/tests/test_selected_departure_match.py)",
-    "adjacency_suite": "143 passed in 0.37s (new + DEV-012 parser + scrape_tours)",
-    "broad_non_live_v2_suite": "783 passed / 47 skipped / 0 failed in 2.65s (deselected: test_integration_staging.py, test_live_openai_health.py, test_phase2_live_followup.py; skips are flask-only webhook tests + cassette live tests)",
-    "hard_rules_compliance": "verified — no V1 (app.py mtime 2026-05-09, webhook_proxy.py mtime 2026-05-06), no Make.com (newest blueprint mtime 2026-05-08), no new migration added (021 mtime 2026-05-19 18:51 from prior cycle), listing scraper untouched (mtime 2026-05-18 16:10), no deploy, no production webhook settings change, no secret reads, no live LLM/OCR/Meta/LINE/OpenAI/Anthropic/paid-provider calls, no Supabase migration apply, no customer-facing outbound",
-    "forbidden_import_grep": "no openai/anthropic/requests/psycopg/supabase/httpx imports in the four new files (matches only appear as negative assertions inside test_selected_departure_match.py)",
-    "intertourdetail_grep": "appears in new code only inside docstrings/comments explaining the legacy path; never built/fetched; tests assert /intertourdetail/ NOT in any URL",
-    "source_of_truth": "Cowork workspace mirror used; no .git in workspace so commit 0fa9591 not directly verified — Codex should re-run the same pytest commands on the local clone post-commit"
-  },
-  "qa_acceptance_checks": {
-    "dev012_parser_reused_not_duplicated": true,
-    "detail_reads_use_tour_path_not_intertourdetail": true,
-    "row_persistence_idempotent_and_non_destructive": true,
-    "missing_values_stay_null_never_zero": true,
-    "selected_date_matching_is_deterministic": true,
-    "selected_date_matching_refuses_to_guess_by_default": true,
-    "real_tour_code_web_code_and_airline_kept_separate": true,
-    "contact_button_text_never_classified_sold_out": true,
-    "low_confidence_match_is_opt_in_only": true,
-    "past_dates_explicitly_rejected": true,
-    "summary_dict_is_admin_safe_no_secrets_no_psid": true,
-    "no_llm_or_network_in_match_module": true,
-    "no_v1_or_make_or_webhook_changes": true,
-    "no_supabase_migration_added_or_modified": true,
-    "no_secret_read_or_print": true,
-    "no_customer_facing_outbound": true,
-    "broad_non_live_suite_no_regressions": true
-  },
-  "qa_findings": {
-    "p0_blocking": [],
-    "p1_pre_wiring": [],
-    "p2_next_package": [
-      "P2-1: idx_dep_full_row is still non-unique pending a one-time backfill audit (carried over from QA-012 P2-2). Application-layer idempotency in upsert_departure_rows is correct, but DB-level UNIQUE on (tour_id, departure_start, departure_end, bus) should land in the next wiring package.",
-      "P2-2: enrich_tour_detail has no per-fetch caching. The caller decides when to fetch. TTL / batch refresh / generic-greeting-guard is out of scope here and tracked for a future scheduling task. Until then the caller path must not trigger an HTTP fetch on every inbound message.",
-      "P2-3: DepartureMatch.confidence is populated (high/medium/low) but not yet consumed by the response writer. The wiring package must surface medium/low matches as confirmation prompts rather than hard quotes.",
-      "P2-4: Listing scraper still writes tours_canonical.url = '{BASE_URL}/intertourdetail/{code}' (v2/scraper/scrape_tours.py:255). Detail enrichment never reads from that field — it builds URL from web_code via build_detail_url(). But the listing-card URL is wrong for external consumers. Should be a tightly-scoped fix task."
-    ],
-    "p3_nits": [
-      "P3-1: Three pre-existing tests fail when pytest is invoked from v2/ instead of repo root because they open 'v2/lib/admin_ops.py' as a literal path (test_admin_only_preflight, two TestNoSecretOrWholesaleLeakage). Not introduced by this task. Hygiene fix is a one-line switch to pathlib.Path(__file__).resolve().parents[...].",
-      "P3-2: upsert_departure_rows falls back to web_code match when tour_id is None. Schema/scraper invariants forbid web_code collisions today; documented by test_no_tour_id_falls_back_to_web_code_match. Worth a comment in the wiring package's review checklist if web_code collisions ever become possible.",
-      "P3-3: enrich_tour_detail.to_summary() is the only admin-safe surface. Wiring package should decide whether to also log idempotency_keys in admin telemetry or keep them on the result only."
-    ],
-    "ctr_process": []
-  },
-  "remaining_risks": [
-    "Adapter→orchestrator wiring still pending. Until the next Dev task lands, customer-visible behaviour does not change.",
-    "HTML class-name drift remains the structural risk for the parser pipeline; DEV-012 CLI is still the only drift sentinel.",
-    "DB-level UNIQUE on (tour_id, departure_start, departure_end, bus) not yet enforced (P2-1).",
-    "Listing scraper URL still says /intertourdetail/ (P2-4); deliberately out of scope in this Dev task.",
-    "DepartureMatch.confidence values are dataclass-only for now (P2-3); response writer not yet aware.",
-    "Caller responsibility for fetch policy — nothing in enrich_tour_detail prevents per-message fetches (P2-2)."
-  ],
-  "next_recommended_step": "1) Codex commits the four new files + this QA artefact + updated AGENT_STATUS.json from a local clone on v2/s4-followup-vision-ondemand, and appends TASK_LOG.md entries for DEV-013 and QA-013. 2) (Optional but recommended) Codex/Tiw runs the DEV-012 live smoke CLI against ap242455 ap232919 ap183598 from a local clone to capture a drift baseline. 3) Open the next Dev task to (a) wire enrich_tour_detail into the orchestrator's tour-selection/date-question paths with caller-side fetch policy, (b) wire match_departure into the response writer's pre-LLM planning context surfacing medium/low confidence as confirmation prompts, and (c) tighten idx_dep_full_row to UNIQUE after a one-time backfill audit. 4) Separate tight task: fix listing scraper URL to /tour/<web_code> after confirming no V1 path consumes tours_canonical.url. 5) Optional hygiene task: convert the three CWD-dependent admin-ops/preflight tests to Path(__file__).resolve().parents[...].",
-  "notes": "QA-2026-05-20-013 verdict: GO_WITH_NOTES. All 10 charter checks pass and all 17 internal acceptance checks pass. QA re-ran 51 targeted + 143 adjacency + 783 broad-non-live tests in the Cowork workspace (no network, no live providers, no secrets). Hard-rule compliance verified by file inspection and mtime comparison: V1 (app.py 2026-05-09, webhook_proxy.py 2026-05-06), Make.com (≤2026-05-08), listing scraper (2026-05-18), migration 021 (from prior cycle), production webhook/secret files all untouched. No P0/P1 findings. Four P2 items (UNIQUE tightening, caching policy, confidence wiring, listing scraper URL — all explicitly deferred by design) and three P3 nits. No charter-process notes; CURRENT_*_TASK.md files are correctly rotated. Verdict does NOT approve customer-facing outbound, production webhook changes, new migration apply, or production go-live."
+  "notes": [
+    "DEV/QA-013 accepted with notes and committed by Codex.",
+    "DEV-014 is opened as the next integration package: selected departure detail planning into orchestrator and response writer.",
+    "No production deploy, V1, Make.com, production webhook, secrets, or live paid providers are authorized."
+  ]
 }

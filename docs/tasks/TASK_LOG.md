@@ -621,3 +621,68 @@ Verdict options:
 - `GO_WITH_NOTES`
 - `NO_GO`
 - `BLOCKED`
+
+Result:
+
+- QA verdict: `GO_WITH_NOTES`
+- Controller outcome: `DEV-2026-05-20-013` accepted, `QA-2026-05-20-013` accepted with notes.
+- Codex synced and committed the DEV-013 implementation and QA status:
+  - `e3ebe3b` - `feat(v2): wire detail departure enrichment`
+  - `4ef8114` - `docs(tasks): sync dev 013 accepted status`
+- Codex verification on local clone:
+  - Targeted new suite: `51 passed`
+  - Adjacency suite: `147 passed`
+  - Broad non-live V2 suite: `798 passed / 4 skipped / 0 failed` using `--basetemp=.pytest_tmp -p no:cacheprovider`
+- Next action: open DEV/QA-014 to wire selected departure planning into the orchestrator and response writer.
+
+### `DEV-2026-05-20-014`
+
+Status: `PENDING`
+
+Goal:
+
+Wire selected departure detail planning into the V2 orchestrator and response writer:
+
+- use selected-tour memory before replying;
+- enrich detail only when selected-tour follow-up requires it;
+- match customer date/pax text against parsed departure rows;
+- pass exact high-confidence row data to response planning;
+- ask precise confirmation instead of guessing when confidence is low;
+- keep customer-facing production behavior unchanged.
+
+Expected deliverables:
+
+- V2-only orchestrator / response-planning code and tests.
+- `docs/tasks/DEV_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Hard rules:
+
+- No V1.
+- No Make.com.
+- No deploy.
+- No production webhook settings changes.
+- No secrets.
+- No live Meta / LINE / OpenAI / OCR / paid-provider calls.
+- No Supabase migration apply from Claude Dev.
+- No customer-wide traffic.
+
+### `QA-2026-05-20-014`
+
+Status: `PENDING`
+
+Goal:
+
+Review DEV-2026-05-20-014 as one integrated selected departure planning package.
+
+Expected deliverables:
+
+- `docs/tasks/QA_REPORT_CURRENT.md`
+- `docs/tasks/AGENT_STATUS.json`
+
+Verdict options:
+
+- `GO`
+- `GO_WITH_NOTES`
+- `NO_GO`
+- `BLOCKED`
