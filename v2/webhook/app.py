@@ -41,7 +41,12 @@ from ..lib.llm import make_llm_client
 from ..lib.meta_sender import MetaMessengerSender
 from ..lib.orchestrator import Orchestrator
 from ..lib.source_attribution import extract_source
-from .test_mode_gate import admin_only_enabled, admin_test_psids, should_process_inbound
+from .test_mode_gate import (
+    admin_only_enabled,
+    admin_test_psids,
+    llm_runtime_status,
+    should_process_inbound,
+)
 from ..lib.state_machine import (
     State, StateContext, transition, allowed_tools, is_silent_state,
 )
@@ -170,6 +175,14 @@ def _admin_outbound_enabled(app: Flask, psid: str) -> bool:
     return True
 
 
+def _admin_outbound_llm_ready(app: Flask) -> tuple[bool, dict]:
+    status = llm_runtime_status(
+        app_config=app.config,
+        runtime_config=app.config.get("V2_CONFIG"),
+    )
+    return bool(status.get("live_ready")), status
+
+
 def _get_llm_client(app: Flask):
     client = app.config.get("V2_LLM_CLIENT")
     if client is None:
@@ -181,6 +194,16 @@ def _get_llm_client(app: Flask):
 def _process_event_admin_outbound(app: Flask, event: dict, full_message_id: str,
                                   trace_id: str) -> None:
     """Run the V2 orchestrator and send one Messenger reply for admin-only tests."""
+    ready, status = _admin_outbound_llm_ready(app)
+    if not ready:
+        logger.error(
+            "[%s] admin-only outbound blocked: llm_not_live mode=%s api_key=%s",
+            trace_id,
+            status.get("mode"),
+            status.get("api_key"),
+        )
+        return
+
     supabase = app.config["V2_SUPABASE"]
     redis_ = app.config["V2_REDIS"]
     sender = event.get("sender") or {}
@@ -389,8 +412,17 @@ def _process_event(app, event: dict, full_message_id: str, trace_id: str) -> Non
 
     try:
         if _admin_outbound_enabled(app, psid):
-            _process_event_admin_outbound(app, event, full_message_id, trace_id)
-            return
+            ready, llm_status = _admin_outbound_llm_ready(app)
+            if ready:
+                _process_event_admin_outbound(app, event, full_message_id, trace_id)
+                return
+            logger.error(
+                "[%s] admin-only outbound disabled: llm_not_live mode=%s api_key=%s; "
+                "falling back to silent ingest",
+                trace_id,
+                llm_status.get("mode"),
+                llm_status.get("api_key"),
+            )
 
         # Conversation row
         conv = _get_or_create_conversation(supabase, psid)
@@ -516,7 +548,8 @@ def _register_routes(app: Flask) -> None:
                 or os.getenv("RAILWAY_GIT_COMMIT")
                 or os.getenv("GIT_COMMIT")
             ),
-            "runtime_marker": "v2-admin-outbound-20260521",
+            "runtime_marker": "v2-admin-outbound-llm-guard-20260521",
+            "llm": llm_runtime_status(app_config=app.config, runtime_config=config),
             "has_redis": config.has_redis,
             "has_llm": config.has_llm,
             "has_line": config.has_line,

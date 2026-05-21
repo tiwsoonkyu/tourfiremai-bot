@@ -56,6 +56,11 @@ def fake_config():
         fb_verify_token="test-verify",
         openai_api_key=None,
         openai_model="gpt-4o-mini",
+        openai_test_mode="mock",
+        openai_response_model="gpt-5.1",
+        openai_fast_model="gpt-5-nano",
+        openai_vision_model="gpt-4o",
+        openai_max_retries=3,
         line_channel_token=None,
         line_admin_user_or_group_id=None,
         log_level="WARNING",
@@ -284,6 +289,9 @@ class TestAdminRuntimeSmoke:
         assert body["checks"]["admin_only_test_mode"] == "enabled"
         assert body["checks"]["admin_test_psid_allow_list_count"] == 1
         assert body["checks"]["dashboard_admin_token"] == "configured"
+        assert body["llm"]["mode"] == "mock"
+        assert body["llm"]["api_key"] in {"configured", "missing"}
+        assert body["llm"]["live_ready"] is False
         assert ADMIN_TOKEN not in dumped
         assert PSID_ALLOWED not in dumped
         assert "test-app-secret" not in dumped

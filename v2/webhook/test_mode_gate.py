@@ -21,6 +21,11 @@ _ENV_ADMIN_TEST_PSIDS_ALT = "V2_STAGING_ADMIN_TEST_PSIDS"
 _ENV_DASHBOARD_TOKEN = "V2_STAGING_DASHBOARD_TOKEN"
 _ENV_LINE_ALLOW_LIST = "V2_STAGING_LINE_ADMIN_ALLOW_LIST"
 _ENV_LINE_ALLOW_LIST_ALT = "V2_STAGING_LINE_ADMIN_USER_OR_GROUP_ID"
+_ENV_OPENAI_API_KEY = "V2_STAGING_OPENAI_API_KEY"
+_ENV_OPENAI_TEST_MODE = "V2_STAGING_OPENAI_TEST_MODE"
+_ENV_OPENAI_RESPONSE_MODEL = "V2_STAGING_OPENAI_RESPONSE_MODEL"
+_ENV_OPENAI_FAST_MODEL = "V2_STAGING_OPENAI_FAST_MODEL"
+_ENV_OPENAI_VISION_MODEL = "V2_STAGING_OPENAI_VISION_MODEL"
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,12 @@ def _config_get(config: Optional[Mapping], key: str, default=None):
         return config.get(key, default)
     except AttributeError:
         return getattr(config, key, default)
+
+
+def _runtime_attr(runtime_config, name: str, default=None):
+    if runtime_config is None:
+        return default
+    return getattr(runtime_config, name, default)
 
 
 def admin_only_enabled(config: Optional[Mapping] = None, env: Optional[Mapping] = None) -> bool:
@@ -145,6 +156,61 @@ def _presence_status(value) -> str:
     return "configured" if bool(value) else "missing"
 
 
+def llm_runtime_status(*, app_config: Optional[Mapping] = None,
+                       runtime_config=None,
+                       env: Optional[Mapping] = None) -> dict:
+    """
+    Safe LLM readiness view for staging outbound.
+
+    The webhook may ingest admin test messages without a live LLM, but it must
+    not send Messenger replies unless the response writer is explicitly in live
+    mode and a staging OpenAI key is configured.
+    """
+    env = env or os.environ
+    if runtime_config is None:
+        runtime_config = _config_get(app_config, "V2_CONFIG", None)
+
+    mode = (
+        _runtime_attr(runtime_config, "openai_test_mode", None)
+        or _config_get(app_config, "V2_STAGING_OPENAI_TEST_MODE", None)
+        or env.get(_ENV_OPENAI_TEST_MODE)
+        or "mock"
+    )
+    mode = str(mode).strip().lower()
+
+    api_key = (
+        _runtime_attr(runtime_config, "openai_api_key", None)
+        or _config_get(app_config, "V2_STAGING_OPENAI_API_KEY", None)
+        or env.get(_ENV_OPENAI_API_KEY)
+    )
+    response_model = (
+        _runtime_attr(runtime_config, "openai_response_model", None)
+        or _config_get(app_config, "V2_STAGING_OPENAI_RESPONSE_MODEL", None)
+        or env.get(_ENV_OPENAI_RESPONSE_MODEL)
+    )
+    fast_model = (
+        _runtime_attr(runtime_config, "openai_fast_model", None)
+        or _config_get(app_config, "V2_STAGING_OPENAI_FAST_MODEL", None)
+        or env.get(_ENV_OPENAI_FAST_MODEL)
+    )
+    vision_model = (
+        _runtime_attr(runtime_config, "openai_vision_model", None)
+        or _config_get(app_config, "V2_STAGING_OPENAI_VISION_MODEL", None)
+        or env.get(_ENV_OPENAI_VISION_MODEL)
+    )
+
+    live_ready = mode == "live" and bool(api_key)
+    return {
+        "mode": mode,
+        "api_key": _presence_status(api_key),
+        "response_model": response_model or "missing",
+        "fast_model": fast_model or "missing",
+        "vision_model": vision_model or "missing",
+        "live_ready": bool(live_ready),
+        "outbound_safe": bool(live_ready),
+    }
+
+
 def runtime_config_status(*, app_config: Optional[Mapping] = None,
                           runtime_config=None,
                           env: Optional[Mapping] = None) -> dict:
@@ -157,6 +223,7 @@ def runtime_config_status(*, app_config: Optional[Mapping] = None,
     env = env or os.environ
     mode = admin_only_enabled(config=app_config, env=env)
     psids = admin_test_psids(config=app_config, env=env)
+    llm = llm_runtime_status(app_config=app_config, runtime_config=runtime_config, env=env)
 
     dashboard_token = _config_get(app_config, "V2_ADMIN_TOKEN", None) or env.get(_ENV_DASHBOARD_TOKEN)
     line_allow = (
@@ -201,6 +268,7 @@ def runtime_config_status(*, app_config: Optional[Mapping] = None,
         "ok": bool(ready),
         "status": "ok" if ready else "missing",
         "checks": checks,
+        "llm": llm,
     }
 
 
@@ -210,6 +278,7 @@ __all__ = [
     "admin_test_psids",
     "parse_bool",
     "parse_id_list",
+    "llm_runtime_status",
     "runtime_config_status",
     "should_process_inbound",
 ]

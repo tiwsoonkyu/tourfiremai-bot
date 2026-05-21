@@ -32,6 +32,11 @@ def fake_config():
         fb_page_access_token="EAA-test-token",
         fb_verify_token="test-verify",
         openai_api_key=None, openai_model="gpt-4o-mini",
+        openai_test_mode="mock",
+        openai_response_model="gpt-5.1",
+        openai_fast_model="gpt-5-nano",
+        openai_vision_model="gpt-4o",
+        openai_max_retries=3,
         line_channel_token=None, line_admin_user_or_group_id=None,
         log_level="WARNING",
         has_redis=False, has_llm=False, has_line=False,
@@ -104,6 +109,10 @@ class TestHealthz:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["status"] == "ok"
+        assert data["runtime_marker"] == "v2-admin-outbound-llm-guard-20260521"
+        assert data["llm"]["mode"] == "mock"
+        assert data["llm"]["api_key"] in {"configured", "missing"}
+        assert data["llm"]["live_ready"] is False
 
 
 class TestSignature:
@@ -164,6 +173,10 @@ class TestAdminOnlyOutbound:
         from v2.lib.llm import MockLLMClient
         from v2.webhook.app import create_app
 
+        fake_config.openai_test_mode = "live"
+        fake_config.openai_api_key = "sk-test"
+        fake_config.has_llm = True
+
         sender = _FakeMetaSender()
         app = create_app(
             test_config=fake_config,
@@ -191,6 +204,41 @@ class TestAdminOnlyOutbound:
         assert sender.sent[0]["text"]
         turns = supabase.table("conversation_turns").select_all({"psid": "PSID_ADMIN"})
         assert [t["direction"] for t in turns] == ["inbound", "outbound"]
+
+    def test_admin_outbound_blocks_mock_llm_and_silent_ingests(self, fake_config, supabase, redis):
+        from v2.lib.llm import MockLLMClient
+        from v2.webhook.app import create_app
+
+        sender = _FakeMetaSender()
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+            test_admin_only_mode=True,
+            test_admin_test_psids=["PSID_ADMIN_MOCK"],
+            test_admin_outbound_enabled=True,
+            test_meta_sender=sender,
+            test_llm=MockLLMClient(fake_config),
+        )
+        client = app.test_client()
+        body = json.dumps(_event(
+            "PSID_ADMIN_MOCK",
+            "admin mock outbound guard",
+            mid="m_admin_mock",
+        )).encode()
+
+        resp = client.post("/webhook", data=body, headers={
+            "X-Hub-Signature-256": _sign(body, "test-app-secret"),
+            "Content-Type": "application/json",
+        })
+        assert resp.status_code == 200
+        assert resp.get_json()["scheduled"] == 1
+        time.sleep(0.5)
+
+        assert sender.sent == []
+        turns = supabase.table("conversation_turns").select_all({"psid": "PSID_ADMIN_MOCK"})
+        assert len(turns) == 1
+        assert turns[0]["direction"] == "inbound"
 
     def test_non_allowlisted_psid_is_filtered_before_outbound(self, fake_config, supabase, redis):
         from v2.webhook.app import create_app
