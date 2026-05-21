@@ -44,6 +44,12 @@ def is_customer_visible_tour(row: Mapping[str, Any]) -> bool:
     if price is None or price < MIN_CUSTOMER_VISIBLE_PRICE:
         return False
 
+    days_raw = row.get("days")
+    if days_raw is not None:
+        days = _as_int(days_raw)
+        if days is None or days <= 0:
+            return False
+
     return True
 
 

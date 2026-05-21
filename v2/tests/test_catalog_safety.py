@@ -12,6 +12,7 @@ def _tour(**overrides):
         "tour_code_real": "BT-NRT",
         "name": "Tokyo Value",
         "base_price": 18999,
+        "days": 5,
         "url": "https://www.tourfiremai.com/tour/ap232919",
     }
     row.update(overrides)
@@ -36,6 +37,17 @@ def test_rejects_short_fixture_name():
 
 def test_rejects_unrealistically_low_fixture_price():
     assert is_customer_visible_tour(_tour(base_price=1000)) is False
+
+
+def test_rejects_non_positive_days_when_present():
+    assert is_customer_visible_tour(_tour(days=0)) is False
+    assert is_customer_visible_tour(_tour(days=-1)) is False
+
+
+def test_allows_missing_days_for_legacy_rows():
+    row = _tour()
+    row.pop("days")
+    assert is_customer_visible_tour(row) is True
 
 
 def test_filter_preserves_only_customer_visible_rows():

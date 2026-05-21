@@ -1048,14 +1048,31 @@ class Orchestrator:
                 for r in rows
             ]
         items = filter_customer_visible_tours(items)
-        if not items and self._should_use_live_listing_fallback(text):
+        if self._should_use_live_listing_fallback(text) and len(items) < 3:
             fallback_items = self._search_tours_live_listing_fallback(intent)
             if fallback_items:
-                items = fallback_items
-                source = "live_listing"
-            else:
-                source = "none"
-        elif not items:
+                seen_codes = set()
+                merged_items = []
+                for row in [*items, *fallback_items]:
+                    code = str(row.get("web_code") or "").strip().lower()
+                    if not code or code in seen_codes:
+                        continue
+                    seen_codes.add(code)
+                    merged_items.append(row)
+                merged_items = filter_customer_visible_tours(merged_items)
+                merged_items = sorted(
+                    merged_items,
+                    key=lambda row: int(
+                        row.get("base_price") or row.get("price") or 999999999
+                    ),
+                )[:3]
+                if merged_items:
+                    if not items:
+                        source = "live_listing"
+                    elif len(merged_items) > len(items):
+                        source = f"{source}+live_listing"
+                    items = merged_items
+        if not items:
             source = "none"
         top3 = [
             TourOption(
