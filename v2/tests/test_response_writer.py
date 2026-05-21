@@ -16,10 +16,20 @@ class _DummyLLM(MockLLMClient):
     def __init__(self, next_text: str = "(default mock)"):
         super().__init__()
         self.next_text = next_text
+        self.last_user_text = ""
     def chat(self, **kw):
+        messages = kw.get("messages", [])
+        user_msg = next((m for m in messages if m.get("role") == "user"), {})
+        self.last_user_text = str(user_msg.get("content", ""))
         rsp = super().chat(**kw)
         rsp.text = self.next_text
         return rsp
+
+
+class _FailingLLM(MockLLMClient):
+    """LLM that raises so fallback behavior is explicit in tests."""
+    def chat(self, **kw):
+        raise RuntimeError("boom")
 
 
 # --- Utility tests ------------------------------------------------------------
@@ -251,8 +261,8 @@ class TestCannedPaths:
         assert "ap333" in rd.text
         assert "JP-REAL-3" in rd.text
 
-    def test_search_tours_empty_known_country_returns_contextual_reply_no_llm(self):
-        llm = _DummyLLM("LLM fallback should not appear")
+    def test_search_tours_empty_known_country_uses_llm_with_safe_status(self):
+        llm = _DummyLLM("smart safe reply")
         rd = write_response(
             state=State.OPTIONS_PRESENTED,
             intent_type="ask_country",
@@ -265,12 +275,74 @@ class TestCannedPaths:
             customer_memory={},
             llm=llm,
         )
+        assert rd.used_canned is False
+        assert rd.used_llm is True
+        assert rd.decision == "llm_reply"
+        assert rd.text == "smart safe reply"
+        assert len(llm.call_log) == 1
+        sent = llm.last_user_text
+        assert "safe_search_status" in sent
+        assert "no_customer_visible_tours" in sent
+        assert rd.text != CANNED_HANDOFF_GENERIC
+        assert "15" not in rd.text
+
+    def test_search_tours_all_fixture_rows_hidden_from_llm_and_llm_used(self):
+        llm = _DummyLLM("smart safe reply")
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_country",
+            tool_results={
+                "search_tours": {
+                    "tours": [
+                        {
+                            "rank": 1,
+                            "web_code": "ap_itest_lock_a3649c",
+                            "tour_code_real": None,
+                            "name": "T",
+                            "price": 1000,
+                            "days": 5,
+                            "airline": None,
+                            "url": "https://x",
+                        }
+                    ],
+                    "query_echo": {"country_id": 2},
+                }
+            },
+            customer_memory={},
+            llm=llm,
+        )
+        assert rd.used_llm is True
+        assert rd.decision == "llm_reply"
+        assert rd.text == "smart safe reply"
+        sent = llm.last_user_text
+        assert "safe_search_status" in sent
+        assert "unsafe_rows_dropped" in sent
+        assert "ap_itest" not in sent
+        assert "https://x" not in sent
+        assert "1,000" not in sent
+        assert "ap_itest" not in rd.text
+        assert "https://x" not in rd.text
+
+    def test_llm_error_for_empty_known_country_returns_low_risk_fallback_not_handoff(self):
+        llm = _FailingLLM()
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_country",
+            tool_results={
+                "search_tours": {
+                    "tours": [],
+                    "query_echo": {"country_id": 2},
+                }
+            },
+            customer_memory={},
+            llm=llm,
+        )
+        assert rd.decision == "fallback_safe_conversation"
         assert rd.used_canned is True
         assert rd.used_llm is False
-        assert rd.decision == "canned_search_results"
-        assert llm.call_log == []
-        assert "LLM fallback" not in rd.text
-        assert "ทีมงาน" in rd.text
+        assert rd.text != CANNED_HANDOFF_GENERIC
+        assert "15" not in rd.text
+        assert "low_risk_llm_fallback" in rd.notes
 
     def test_search_tours_omits_missing_dash_fields(self):
         llm = _DummyLLM()
@@ -324,12 +396,12 @@ class TestLLMPath:
             customer_memory={}, llm=llm,
         )
         # Look at what we sent to LLM
-        sent = llm.call_log[0]["user_text"]
+        sent = llm.last_user_text
         assert "GS" not in sent
         assert "wholesale" not in sent
 
     def test_brand_leak_in_reply_falls_back_to_canned(self):
-        """If LLM hallucinates wholesale brand → response writer must catch + fallback."""
+        """If LLM hallucinates wholesale brand -> response writer must catch + fallback."""
         llm = _DummyLLM(next_text="ทัวร์นี้ของ TTN เลยค่ะ")  # contains brand!
         rd = write_response(state=State.NEW_LEAD, intent_type="greeting",
                               tool_results={}, customer_memory={}, llm=llm)

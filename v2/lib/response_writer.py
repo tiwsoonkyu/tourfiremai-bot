@@ -213,13 +213,6 @@ def _format_search_tours_reply(tool_results: dict, customer_memory: dict) -> Opt
     tours = search_result.get("tours") or []
     tours = filter_customer_visible_tours(tours)
     if not tours:
-        country = _country_label(search_result, customer_memory)
-        if country:
-            text = (
-                f"มีทัวร์{country}ค่ะ แต่ตอนนี้ระบบยังดึงรายการที่พร้อมแสดงไม่ได้ครบ\n"
-                "เดี๋ยวให้ทีมงานเช็กโปรแกรมล่าสุดให้สักครู่นะคะ 😊"
-            )
-            return _truncate(text, limit=500)
         return None
 
     country = _country_label(search_result, customer_memory)
@@ -239,6 +232,72 @@ def _format_search_tours_reply(tool_results: dict, customer_memory: dict) -> Opt
         logger.warning("Deterministic search reply blocked by brand leak check")
         return None
     return _truncate(text, limit=900)
+
+
+def _sanitize_search_tours_for_llm(tool_results: dict, customer_memory: dict) -> dict:
+    """Remove non-customer-visible tour rows before any LLM call.
+
+    This lets the response model keep a natural conversation going when search
+    has no safe rows, without ever seeing fixture rows, fake prices, or broken
+    URLs that it might accidentally repeat to a customer.
+    """
+    if not isinstance(tool_results, dict):
+        return tool_results
+
+    search_result = tool_results.get("search_tours")
+    if not isinstance(search_result, dict):
+        return tool_results
+
+    original_tours = search_result.get("tours") or []
+    if not isinstance(original_tours, list):
+        original_tours = []
+
+    safe_tours = filter_customer_visible_tours(original_tours)
+    clean_search = {**search_result, "tours": safe_tours}
+    clean_tools = {**tool_results, "search_tours": clean_search}
+
+    if not safe_tours:
+        country = _country_label(search_result, customer_memory)
+        clean_tools["safe_search_status"] = {
+            "status": "no_customer_visible_tours",
+            "country": country or None,
+            "unsafe_rows_dropped": max(0, len(original_tours) - len(safe_tours)),
+            "safe_reply_rule": (
+                "Acknowledge the route and ask exactly one useful preference "
+                "question. Do not list tour names, codes, prices, dates, or URLs."
+            ),
+        }
+
+    return clean_tools
+
+
+def _low_risk_llm_fallback(
+    state: State,
+    intent_type: str,
+    tool_results: dict,
+    customer_memory: dict,
+) -> Optional[str]:
+    """Fallback for low-risk sales chat when LLM is temporarily unavailable."""
+    allowed_states = {State.NEW_LEAD, State.COLLECTING_PREFERENCES, State.OPTIONS_PRESENTED}
+    if state not in allowed_states:
+        return None
+
+    status = tool_results.get("safe_search_status") if isinstance(tool_results, dict) else {}
+    country = ""
+    if isinstance(status, dict):
+        country = status.get("country") or ""
+    country = country or customer_memory.get("latest_country") or customer_memory.get("country") or ""
+
+    if country:
+        return (
+            f"มีทัวร์{country}ค่ะ เดี๋ยวช่วยคัดให้ตรงใจนะคะ\n"
+            "ขอทราบงบต่อคน หรือช่วงเดือนที่อยากเดินทางก่อนค่ะ 😊"
+        )
+
+    return (
+        "ได้เลยค่ะ เดี๋ยวช่วยคัดทัวร์ให้ตรงใจนะคะ\n"
+        "สนใจประเทศไหน หรืออยากได้แนวเที่ยวแบบไหนเป็นพิเศษคะ? 😊"
+    )
 
 
 # --- Main entry ---------------------------------------------------------------
@@ -320,7 +379,10 @@ def write_response(
         )
 
     # 3) Sanitize tool_results before passing to LLM
-    clean_tools = _strip_wholesale(tool_results)
+    clean_tools = _sanitize_search_tours_for_llm(
+        _strip_wholesale(tool_results),
+        customer_memory,
+    )
     search_reply = _format_search_tours_reply(clean_tools, customer_memory)
     if search_reply:
         return ResponseDecision(
@@ -368,6 +430,14 @@ def write_response(
         )
     except Exception as e:
         logger.exception("LLM call failed in response writer: %s", e)
+        fallback = _low_risk_llm_fallback(state, intent_type, clean_tools, customer_memory)
+        if fallback:
+            return ResponseDecision(
+                text=fallback,
+                decision="fallback_safe_conversation",
+                used_canned=True,
+                notes=[f"llm_error: {type(e).__name__}", "low_risk_llm_fallback"],
+            )
         return ResponseDecision(
             text=CANNED_HANDOFF_GENERIC,
             decision="fallback_canned", used_canned=True,
