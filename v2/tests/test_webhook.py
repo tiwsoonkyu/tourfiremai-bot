@@ -217,3 +217,76 @@ class TestAdminOnlyOutbound:
         time.sleep(0.2)
         assert sender.sent == []
         assert supabase.table("customers").select_one({"psid": "PSID_OTHER"}) is None
+
+    def test_message_echo_is_filtered_before_outbound(self, fake_config, supabase, redis):
+        from v2.lib.llm import MockLLMClient
+        from v2.webhook.app import create_app
+
+        sender = _FakeMetaSender()
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+            test_admin_only_mode=True,
+            test_admin_test_psids=["PSID_ADMIN"],
+            test_admin_outbound_enabled=True,
+            test_meta_sender=sender,
+            test_llm=MockLLMClient(fake_config),
+        )
+        client = app.test_client()
+        payload = _event("PSID_ADMIN", "page echo", mid="m_echo")
+        payload["entry"][0]["messaging"][0]["message"]["is_echo"] = True
+        body = json.dumps(payload).encode()
+
+        resp = client.post("/webhook", data=body, headers={
+            "X-Hub-Signature-256": _sign(body, "test-app-secret"),
+            "Content-Type": "application/json",
+        })
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {"filtered": 1, "scheduled": 0, "status": "accepted"}
+        time.sleep(0.2)
+        assert sender.sent == []
+        assert supabase.table("customers").select_one({"psid": "PSID_ADMIN"}) is None
+        assert supabase.table("conversation_turns").select_all({"psid": "PSID_ADMIN"}) == []
+
+    def test_non_message_event_is_filtered_before_outbound(self, fake_config, supabase, redis):
+        from v2.lib.llm import MockLLMClient
+        from v2.webhook.app import create_app
+
+        sender = _FakeMetaSender()
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+            test_admin_only_mode=True,
+            test_admin_test_psids=["PSID_ADMIN"],
+            test_admin_outbound_enabled=True,
+            test_meta_sender=sender,
+            test_llm=MockLLMClient(fake_config),
+        )
+        client = app.test_client()
+        payload = {
+            "object": "page",
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "PSID_ADMIN"},
+                    "recipient": {"id": "PAGE_ID"},
+                    "timestamp": 1736899200000,
+                    "delivery": {"mids": ["m_outbound"]},
+                }]
+            }],
+        }
+        body = json.dumps(payload).encode()
+
+        resp = client.post("/webhook", data=body, headers={
+            "X-Hub-Signature-256": _sign(body, "test-app-secret"),
+            "Content-Type": "application/json",
+        })
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {"filtered": 1, "scheduled": 0, "status": "accepted"}
+        time.sleep(0.2)
+        assert sender.sent == []
+        assert supabase.table("customers").select_one({"psid": "PSID_ADMIN"}) is None
+        assert supabase.table("conversation_turns").select_all({"psid": "PSID_ADMIN"}) == []

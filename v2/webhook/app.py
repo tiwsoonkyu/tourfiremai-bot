@@ -130,6 +130,24 @@ def _redacted_event_for_log(event: dict) -> dict:
     return redactor.redact_event(event)
 
 
+def _should_ignore_meta_event(event: dict) -> tuple[bool, str]:
+    """
+    Filter Meta events that are not customer-originated messages.
+
+    Messenger can send message echoes for messages our Page sends. Processing
+    those echoes as inbound messages creates a reply loop, so this guard runs
+    before admin-only allow-listing, idempotency, or background scheduling.
+    """
+    msg = event.get("message")
+    if not isinstance(msg, dict):
+        return True, "non_message_event"
+    if msg.get("is_echo") is True:
+        return True, "message_echo"
+    if not (msg.get("text") or msg.get("attachments") or msg.get("quick_reply")):
+        return True, "empty_message"
+    return False, ""
+
+
 def _truthy_env(name: str, *, default: bool = True) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -542,6 +560,12 @@ def _register_routes(app: Flask) -> None:
 
         for entry in body.get("entry", []):
             for ev in entry.get("messaging", []):
+                ignored, ignore_reason = _should_ignore_meta_event(ev)
+                if ignored:
+                    filtered += 1
+                    logger.info("Meta event ignored before processing reason=%s", ignore_reason)
+                    continue
+
                 psid = ((ev.get("sender") or {}).get("id"))
                 gate = should_process_inbound(psid, config=app.config)
                 if not gate.allowed:
