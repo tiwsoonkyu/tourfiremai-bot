@@ -43,6 +43,17 @@ from .catalog_safety import filter_customer_visible_tours
 
 logger = logging.getLogger("v2.orchestrator")
 
+COUNTRY_NAMES = {
+    1: "เกาหลี",
+    2: "ญี่ปุ่น",
+    3: "ฮ่องกง",
+    4: "สิงคโปร์",
+    5: "จีน",
+    6: "มาเลเซีย",
+    7: "เวียดนาม",
+    19: "ไต้หวัน",
+}
+
 
 @dataclass
 class TurnResult:
@@ -875,7 +886,7 @@ class Orchestrator:
             return None
 
         if tool_name == "search_tours":
-            result = self._search_tours_simple(intent)
+            result = self._search_tours_simple(intent, text=intent.raw_text)
             tours = result.get("tours") or []
             if tours:
                 try:
@@ -922,8 +933,78 @@ class Orchestrator:
 
     # --- Simplified tool implementations (full versions come in Sprint 4-5) ---
 
-    def _search_tours_simple(self, intent: Intent) -> dict:
+    def _country_name_for_intent(self, intent: Intent) -> str:
+        if intent.country:
+            return str(intent.country)
+        try:
+            return COUNTRY_NAMES.get(int(intent.country_id or 0), "")
+        except (TypeError, ValueError):
+            return ""
+
+    def _should_use_live_listing_fallback(self, text: str) -> bool:
+        """Use live SSR listing only when the user clearly asks for options."""
+        normalized = (text or "").lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "มีทัวร์",
+                "ขอทัวร์",
+                "แนะนำ",
+                "หา",
+                "โปรแกรม",
+                "ทัวร์ไป",
+                "ไปเที่ยว",
+            )
+        )
+
+    def _search_tours_live_listing_fallback(self, intent: Intent) -> list[dict]:
+        """Fetch SSR listing when staging DB has no customer-safe rows."""
+        if not intent.country_id:
+            return []
+        country_name = self._country_name_for_intent(intent)
+        if not country_name:
+            return []
+        try:
+            from ..scraper.scrape_tours import fetch_country_listing
+
+            parsed = fetch_country_listing(
+                int(intent.country_id),
+                country_name,
+                http=self.http_client,
+            )
+        except Exception as exc:  # pragma: no cover - defensive against live-web drift
+            logger.warning(
+                "Live listing fallback failed for country_id=%s: %s",
+                intent.country_id,
+                exc,
+            )
+            return []
+
+        rows = [
+            {
+                "id": None,
+                "web_code": tour.web_code,
+                "tour_code_real": None,
+                "name": tour.name,
+                "price": tour.base_price,
+                "base_price": tour.base_price,
+                "days": tour.days,
+                "airline": tour.airline,
+                "url": tour.url,
+                "country_id": tour.country_id,
+                "country": tour.country,
+            }
+            for tour in parsed
+        ]
+        rows = filter_customer_visible_tours(rows)
+        return sorted(
+            rows,
+            key=lambda row: int(row.get("base_price") or row.get("price") or 999999999),
+        )[:3]
+
+    def _search_tours_simple(self, intent: Intent, text: str = "") -> dict:
         """Query tours_canonical with simple filters. Save snapshot if results > 0."""
+        source = "db"
         # Filter active by country_id if known
         where = {"is_active": True}
         if intent.country_id:
@@ -956,6 +1037,7 @@ class Orchestrator:
                 rows,
                 key=lambda row: int(row.get("base_price") or row.get("price") or 999999999),
             )[:3]
+            source = "memory_db"
         # Normalize cursor returns (psycopg vs fake)
         if rows and isinstance(rows[0], dict):
             items = rows
@@ -966,6 +1048,15 @@ class Orchestrator:
                 for r in rows
             ]
         items = filter_customer_visible_tours(items)
+        if not items and self._should_use_live_listing_fallback(text):
+            fallback_items = self._search_tours_live_listing_fallback(intent)
+            if fallback_items:
+                items = fallback_items
+                source = "live_listing"
+            else:
+                source = "none"
+        elif not items:
+            source = "none"
         top3 = [
             TourOption(
                 rank=i + 1, web_code=row.get("web_code", ""),
@@ -980,7 +1071,12 @@ class Orchestrator:
         return {
             "tours": [t.to_dict() for t in top3],
             "count": len(top3),
-            "query_echo": {"country_id": intent.country_id, "budget": intent.budget},
+            "query_echo": {
+                "country_id": intent.country_id,
+                "country": self._country_name_for_intent(intent),
+                "budget": intent.budget,
+                "source": source,
+            },
         }
 
     def _lock_selected_tour(self, psid: str, conv_id: str, intent: Intent,

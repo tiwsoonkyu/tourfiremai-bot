@@ -169,21 +169,38 @@ def _country_label(search_result: dict, customer_memory: dict) -> str:
     }.get(country_id, "")
 
 
+def _present(value: Any) -> bool:
+    return value is not None and str(value).strip() not in ("", "-")
+
+
 def _format_tour_option_line(tour: dict, fallback_rank: int) -> str:
     rank = tour.get("rank") or fallback_rank
     name = tour.get("name") or "โปรแกรมทัวร์"
-    web_code = tour.get("web_code") or "-"
-    tour_code = tour.get("tour_code_real") or "-"
-    airline = tour.get("airline") or "-"
-    days = tour.get("days") or "-"
+    web_code = tour.get("web_code")
+    tour_code = tour.get("tour_code_real")
+    airline = tour.get("airline")
+    days = tour.get("days")
     price = _format_money(tour.get("price") or tour.get("base_price"))
     url = tour.get("url") or ""
 
-    lines = [
-        f"{rank}) {name}",
-        f"รหัสทัวร์: {tour_code} | รหัสเว็บ: {web_code}",
-        f"{days} วัน | สายการบิน {airline} | ราคาเริ่ม {price} บาท",
-    ]
+    lines = [f"{rank}) {name}"]
+    code_parts = []
+    if _present(tour_code):
+        code_parts.append(f"รหัสทัวร์: {tour_code}")
+    if _present(web_code):
+        code_parts.append(f"รหัสเว็บ: {web_code}")
+    if code_parts:
+        lines.append(" | ".join(code_parts))
+
+    meta_parts = []
+    if _present(days):
+        meta_parts.append(f"{days} วัน")
+    if _present(airline):
+        meta_parts.append(f"สายการบิน {airline}")
+    if price != "-":
+        meta_parts.append(f"ราคาเริ่ม {price} บาท")
+    if meta_parts:
+        lines.append(" | ".join(meta_parts))
     if url:
         lines.append(str(url))
     return "\n".join(lines)
@@ -196,6 +213,13 @@ def _format_search_tours_reply(tool_results: dict, customer_memory: dict) -> Opt
     tours = search_result.get("tours") or []
     tours = filter_customer_visible_tours(tours)
     if not tours:
+        country = _country_label(search_result, customer_memory)
+        if country:
+            text = (
+                f"มีทัวร์{country}ค่ะ แต่ตอนนี้ระบบยังดึงรายการที่พร้อมแสดงไม่ได้ครบ\n"
+                "เดี๋ยวให้ทีมงานเช็กโปรแกรมล่าสุดให้สักครู่นะคะ 😊"
+            )
+            return _truncate(text, limit=500)
         return None
 
     country = _country_label(search_result, customer_memory)

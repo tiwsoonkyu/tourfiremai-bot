@@ -153,6 +153,81 @@ class TestSearchToursDeterministicReply:
         rendered_codes = [tour["web_code"] for tour in snapshots[0]["tour_list"]]
         assert rendered_codes == ["ap910001", "ap910002", "ap910003"]
 
+    def test_country_request_falls_back_to_live_listing_when_db_only_has_fixtures(
+        self, orch, supabase, monkeypatch
+    ):
+        from v2.scraper.scrape_tours import ParsedTour
+
+        for suffix in ("a3649c", "d9f764", "b73af8"):
+            supabase.table("tours_canonical").insert({
+                "web_code": f"ap_itest_lock_{suffix}",
+                "tour_code_real": None,
+                "name": "T",
+                "country": "à¸à¸µà¹ˆà¸›à¸¸à¹ˆà¸™",
+                "country_id": 2,
+                "days": 5,
+                "airline": None,
+                "base_price": 1000,
+                "url": "https://x",
+                "is_active": True,
+            })
+
+        def fake_fetch(country_id, country_name, *, http=None):
+            assert country_id == 2
+            assert country_name
+            return [
+                ParsedTour(
+                    web_code="ap920001",
+                    name="Tokyo Live Value",
+                    country=country_name,
+                    country_id=country_id,
+                    days=5,
+                    base_price=18999,
+                    airline="XJ",
+                    url="https://www.tourfiremai.com/tour/ap920001",
+                ),
+                ParsedTour(
+                    web_code="ap920002",
+                    name="Osaka Live Standard",
+                    country=country_name,
+                    country_id=country_id,
+                    days=5,
+                    base_price=19999,
+                    airline="VZ",
+                    url="https://www.tourfiremai.com/tour/ap920002",
+                ),
+                ParsedTour(
+                    web_code="ap920003",
+                    name="Fuji Live Upgrade",
+                    country=country_name,
+                    country_id=country_id,
+                    days=5,
+                    base_price=21999,
+                    airline="XJ",
+                    url="https://www.tourfiremai.com/tour/ap920003",
+                ),
+            ]
+
+        monkeypatch.setattr("v2.scraper.scrape_tours.fetch_country_listing", fake_fetch)
+
+        result = orch.handle_turn(
+            psid="PSID_SEARCH_LIVE_FALLBACK",
+            text="มีทัวร์ไปญี่ปุ่นไหมครับ",
+            meta_message_id="fb:search_live_fallback_1",
+        )
+
+        assert result.reply_text is not None
+        assert "ap_itest" not in result.reply_text
+        assert "https://x" not in result.reply_text
+        assert "ap920001" in result.reply_text
+        snapshots = supabase.table("offer_snapshots").select_all({
+            "psid": "PSID_SEARCH_LIVE_FALLBACK",
+        })
+        assert len(snapshots) == 1
+        assert [tour["web_code"] for tour in snapshots[0]["tour_list"]] == [
+            "ap920001", "ap920002", "ap920003",
+        ]
+
 
 class TestSilencePath:
     def test_attachment_triggers_waiting_team(self, orch, supabase):

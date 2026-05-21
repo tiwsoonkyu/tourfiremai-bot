@@ -251,6 +251,57 @@ class TestCannedPaths:
         assert "ap333" in rd.text
         assert "JP-REAL-3" in rd.text
 
+    def test_search_tours_empty_known_country_returns_contextual_reply_no_llm(self):
+        llm = _DummyLLM("LLM fallback should not appear")
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_country",
+            tool_results={
+                "search_tours": {
+                    "tours": [],
+                    "query_echo": {"country_id": 2},
+                }
+            },
+            customer_memory={},
+            llm=llm,
+        )
+        assert rd.used_canned is True
+        assert rd.used_llm is False
+        assert rd.decision == "canned_search_results"
+        assert llm.call_log == []
+        assert "LLM fallback" not in rd.text
+        assert "ทีมงาน" in rd.text
+
+    def test_search_tours_omits_missing_dash_fields(self):
+        llm = _DummyLLM()
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_country",
+            tool_results={
+                "search_tours": {
+                    "tours": [
+                        {
+                            "rank": 1,
+                            "web_code": "ap444",
+                            "tour_code_real": None,
+                            "name": "Tokyo Real 5D",
+                            "price": 19999,
+                            "days": 5,
+                            "airline": None,
+                            "url": "https://www.tourfiremai.com/tour/ap444",
+                        }
+                    ],
+                    "query_echo": {"country_id": 2},
+                }
+            },
+            customer_memory={},
+            llm=llm,
+        )
+        assert rd.used_canned is True
+        assert "ap444" in rd.text
+        assert "รหัสทัวร์: -" not in rd.text
+        assert "สายการบิน -" not in rd.text
+
 
 # --- LLM-path tests -----------------------------------------------------------
 
