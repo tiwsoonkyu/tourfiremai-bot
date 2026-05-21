@@ -96,16 +96,19 @@ def create_app(*, test_config=None, test_supabase=None, test_redis=None,
     app.config["V2_ADMIN_ALLOW_LIST"] = test_admin_allow_list
     app.config["V2_ADMIN_TOKEN"] = test_admin_token
     app.config["V2_LLM_CLIENT"] = test_llm
-    app.config["V2_HTTP_CLIENT"] = test_http_client
-    app.config["V2_META_SENDER"] = (
-        test_meta_sender if test_meta_sender is not None
-        else MetaMessengerSender(getattr(config, "fb_page_access_token", None))
-    )
     app.config["V2_ADMIN_OUTBOUND_ENABLED"] = test_admin_outbound_enabled
     if test_admin_only_mode is not None:
         app.config["V2_ADMIN_ONLY_TEST_MODE"] = test_admin_only_mode
     if test_admin_test_psids is not None:
         app.config["V2_ADMIN_TEST_PSID_ALLOW_LIST"] = test_admin_test_psids
+    app.config["V2_HTTP_CLIENT"] = (
+        test_http_client if test_http_client is not None
+        else _make_live_listing_http_client(app)
+    )
+    app.config["V2_META_SENDER"] = (
+        test_meta_sender if test_meta_sender is not None
+        else MetaMessengerSender(getattr(config, "fb_page_access_token", None))
+    )
 
     _register_routes(app)
 
@@ -160,12 +163,40 @@ def _truthy_env(name: str, *, default: bool = True) -> bool:
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _admin_outbound_enabled(app: Flask, psid: str) -> bool:
-    """Allow outbound only during admin-only testing and only to allowlisted PSIDs."""
+def _admin_outbound_explicitly_enabled(app: Flask) -> bool:
     explicit = app.config.get("V2_ADMIN_OUTBOUND_ENABLED")
     if explicit is None:
         explicit = _truthy_env("V2_STAGING_ADMIN_OUTBOUND_ENABLED", default=False)
-    if not explicit:
+    return bool(explicit)
+
+
+def _live_listing_fallback_enabled(app: Flask) -> bool:
+    """
+    Decide whether the staging webhook may fetch live SSR listing pages.
+
+    This keeps live HTTP unavailable by default, but enables it for the
+    admin-only real-chat path where outbound replies are already allowlisted.
+    Operators can force it on/off with V2_STAGING_LIVE_LISTING_FALLBACK.
+    """
+    if os.environ.get("V2_STAGING_LIVE_LISTING_FALLBACK") is not None:
+        return _truthy_env("V2_STAGING_LIVE_LISTING_FALLBACK", default=False)
+    return _admin_outbound_explicitly_enabled(app) and admin_only_enabled(config=app.config)
+
+
+def _make_live_listing_http_client(app: Flask) -> Any | None:
+    if not _live_listing_fallback_enabled(app):
+        return None
+    try:
+        from ..scraper.scrape_tours import _RequestsAdapter
+    except Exception as exc:  # pragma: no cover - defensive against optional deps
+        logger.warning("Live listing fallback unavailable: %s", exc)
+        return None
+    return _RequestsAdapter()
+
+
+def _admin_outbound_enabled(app: Flask, psid: str) -> bool:
+    """Allow outbound only during admin-only testing and only to allowlisted PSIDs."""
+    if not _admin_outbound_explicitly_enabled(app):
         return False
     if not admin_only_enabled(config=app.config):
         return False

@@ -115,6 +115,76 @@ class TestHealthz:
         assert data["llm"]["live_ready"] is False
 
 
+class TestLiveListingFallbackHttpClient:
+    def test_default_app_has_no_live_listing_http_client(self, fake_config, supabase, redis, monkeypatch):
+        from v2.webhook.app import create_app
+
+        monkeypatch.delenv("V2_STAGING_LIVE_LISTING_FALLBACK", raising=False)
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+        )
+
+        assert app.config["V2_HTTP_CLIENT"] is None
+
+    def test_admin_outbound_admin_only_auto_enables_live_listing_http_client(
+        self,
+        fake_config,
+        supabase,
+        redis,
+        monkeypatch,
+    ):
+        from v2.webhook.app import create_app
+
+        monkeypatch.delenv("V2_STAGING_LIVE_LISTING_FALLBACK", raising=False)
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+            test_admin_only_mode=True,
+            test_admin_test_psids=["PSID_ADMIN"],
+            test_admin_outbound_enabled=True,
+        )
+
+        assert app.config["V2_HTTP_CLIENT"] is not None
+        assert hasattr(app.config["V2_HTTP_CLIENT"], "get")
+
+    def test_live_listing_env_false_overrides_admin_auto_enable(
+        self,
+        fake_config,
+        supabase,
+        redis,
+        monkeypatch,
+    ):
+        from v2.webhook.app import create_app
+
+        monkeypatch.setenv("V2_STAGING_LIVE_LISTING_FALLBACK", "false")
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+            test_admin_only_mode=True,
+            test_admin_test_psids=["PSID_ADMIN"],
+            test_admin_outbound_enabled=True,
+        )
+
+        assert app.config["V2_HTTP_CLIENT"] is None
+
+    def test_live_listing_env_true_enables_explicit_fallback(self, fake_config, supabase, redis, monkeypatch):
+        from v2.webhook.app import create_app
+
+        monkeypatch.setenv("V2_STAGING_LIVE_LISTING_FALLBACK", "true")
+        app = create_app(
+            test_config=fake_config,
+            test_supabase=supabase,
+            test_redis=redis,
+        )
+
+        assert app.config["V2_HTTP_CLIENT"] is not None
+        assert hasattr(app.config["V2_HTTP_CLIENT"], "get")
+
+
 class TestSignature:
     def test_reject_invalid_signature(self, client):
         body = json.dumps(_event("PSID1", "hi")).encode()
@@ -169,9 +239,13 @@ class TestProcessing:
 
 
 class TestAdminOnlyOutbound:
-    def test_allowlisted_admin_gets_messenger_reply(self, fake_config, supabase, redis):
+    def test_allowlisted_admin_gets_messenger_reply(self, fake_config, supabase, redis, monkeypatch):
         from v2.lib.llm import MockLLMClient
         from v2.webhook.app import create_app
+
+        # This test verifies the outbound send path, not live SSR listing fetch.
+        # Keep it fast and deterministic while separate tests cover the fallback gate.
+        monkeypatch.setenv("V2_STAGING_LIVE_LISTING_FALLBACK", "false")
 
         fake_config.openai_test_mode = "live"
         fake_config.openai_api_key = "sk-test"
