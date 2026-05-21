@@ -31,18 +31,70 @@ class TestNewLeadGreeting:
 
 
 class TestStateTransition:
-    def test_ask_country_moves_to_collecting(self, orch, supabase):
+    def test_ask_country_moves_to_options_presented(self, orch, supabase):
         result = orch.handle_turn(
             psid="PSID_TRANS_1", text="อยากไปญี่ปุ่น",
             meta_message_id="fb:s3_test_2",
         )
         assert result.state_before == "new_lead"
-        assert result.state_after == "collecting_preferences"
+        assert result.state_after == "options_presented"
         # Verify conversation_events row
         events = supabase.table("conversation_events").select_all({"psid": "PSID_TRANS_1"})
         state_changes = [e for e in events if e["event_type"] == "state_change"]
         assert len(state_changes) == 1
-        assert state_changes[0]["event_data"]["to"] == "collecting_preferences"
+        assert state_changes[0]["event_data"]["to"] == "options_presented"
+
+
+class TestSearchToursDeterministicReply:
+    def test_country_request_returns_top3_and_saves_snapshot(self, orch, supabase, make_tour):
+        make_tour(
+            web_code="ap900001",
+            name="Tokyo Value",
+            price=18999,
+            airline="XJ",
+            tour_code_real="JP-TYO-001",
+            country_id=2,
+        )
+        make_tour(
+            web_code="ap900002",
+            name="Osaka Standard",
+            price=25900,
+            airline="VZ",
+            tour_code_real="JP-OSA-002",
+            country_id=2,
+        )
+        make_tour(
+            web_code="ap900003",
+            name="Hokkaido Upgrade",
+            price=32900,
+            airline="TG",
+            tour_code_real="JP-HKD-003",
+            country_id=2,
+        )
+        make_tour(
+            web_code="ap900004",
+            name="Korea Value",
+            price=15900,
+            airline="BX",
+            tour_code_real="KR-SEL-004",
+            country_id=1,
+        )
+
+        result = orch.handle_turn(
+            psid="PSID_SEARCH_JP",
+            text="มีทัวร์ไปญี่ปุ่นไหมครับ",
+            meta_message_id="fb:search_jp_1",
+        )
+
+        assert result.state_after == "options_presented"
+        assert result.reply_text is not None
+        assert "ap900001" in result.reply_text
+        assert "JP-TYO-001" in result.reply_text
+        assert "ap900004" not in result.reply_text
+        assert "ขอข้อมูลเพิ่มเติม" not in result.reply_text
+        snapshots = supabase.table("offer_snapshots").select_all({"psid": "PSID_SEARCH_JP"})
+        assert len(snapshots) == 1
+        assert len(snapshots[0]["tour_list"]) == 3
 
 
 class TestSilencePath:

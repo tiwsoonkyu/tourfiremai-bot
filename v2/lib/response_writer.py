@@ -139,6 +139,82 @@ def _planning_to_compact_note(planning) -> dict:
     }
 
 
+def _format_money(value: Any) -> str:
+    try:
+        return f"{int(value):,}"
+    except Exception:
+        return "-"
+
+
+def _country_label(search_result: dict, customer_memory: dict) -> str:
+    query_echo = search_result.get("query_echo") or {}
+    country = (
+        query_echo.get("country")
+        or customer_memory.get("latest_country")
+        or customer_memory.get("country")
+    )
+    country_id = str(query_echo.get("country_id") or customer_memory.get("country_id") or "")
+    if country:
+        return str(country)
+    return {
+        "1": "เกาหลี",
+        "2": "ญี่ปุ่น",
+        "3": "ฮ่องกง",
+        "4": "สิงคโปร์",
+        "5": "จีน",
+        "6": "มาเลเซีย",
+        "7": "เวียดนาม",
+        "19": "ไต้หวัน",
+    }.get(country_id, "")
+
+
+def _format_tour_option_line(tour: dict, fallback_rank: int) -> str:
+    rank = tour.get("rank") or fallback_rank
+    name = tour.get("name") or "โปรแกรมทัวร์"
+    web_code = tour.get("web_code") or "-"
+    tour_code = tour.get("tour_code_real") or "-"
+    airline = tour.get("airline") or "-"
+    days = tour.get("days") or "-"
+    price = _format_money(tour.get("price") or tour.get("base_price"))
+    url = tour.get("url") or ""
+
+    lines = [
+        f"{rank}) {name}",
+        f"รหัสทัวร์: {tour_code} | รหัสเว็บ: {web_code}",
+        f"{days} วัน | สายการบิน {airline} | ราคาเริ่ม {price} บาท",
+    ]
+    if url:
+        lines.append(str(url))
+    return "\n".join(lines)
+
+
+def _format_search_tours_reply(tool_results: dict, customer_memory: dict) -> Optional[str]:
+    search_result = tool_results.get("search_tours")
+    if not isinstance(search_result, dict):
+        return None
+    tours = search_result.get("tours") or []
+    if not tours:
+        return None
+
+    country = _country_label(search_result, customer_memory)
+    title_country = country or "ที่สนใจ"
+    lines = [
+        f"มีทัวร์{title_country}ค่ะ 😊 คัดมาให้ 3 ตัวเลือกก่อนนะคะ",
+        "",
+    ]
+    for idx, tour in enumerate(tours[:3], start=1):
+        lines.append(_format_tour_option_line(tour, idx))
+        if idx < min(len(tours), 3):
+            lines.append("")
+    lines.extend(["", "สนใจตัวไหนเป็นพิเศษคะ?"])
+
+    text = "\n".join(lines).strip()
+    if _has_brand_leak(text):
+        logger.warning("Deterministic search reply blocked by brand leak check")
+        return None
+    return _truncate(text, limit=900)
+
+
 # --- Main entry ---------------------------------------------------------------
 
 def write_response(
@@ -219,6 +295,15 @@ def write_response(
 
     # 3) Sanitize tool_results before passing to LLM
     clean_tools = _strip_wholesale(tool_results)
+    search_reply = _format_search_tours_reply(clean_tools, customer_memory)
+    if search_reply:
+        return ResponseDecision(
+            text=search_reply,
+            decision="canned_search_results",
+            used_canned=True,
+            notes=["search_tours_deterministic"],
+        )
+
     planning_note = _planning_to_compact_note(planning)
     if planning_note:
         clean_tools = {**clean_tools, "page_post_planning_note": planning_note}

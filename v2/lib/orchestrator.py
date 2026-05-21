@@ -874,7 +874,24 @@ class Orchestrator:
             return None
 
         if tool_name == "search_tours":
-            return self._search_tours_simple(intent)
+            result = self._search_tours_simple(intent)
+            tours = result.get("tours") or []
+            if tours:
+                try:
+                    snapshot = self.memory.save_offer_snapshot(
+                        psid,
+                        tours,
+                        search_context=result.get("query_echo") or {},
+                        conversation_id=conv.get("id"),
+                    )
+                    result["offer_snapshot_id"] = getattr(snapshot, "id", None)
+                except Exception as e:
+                    logger.warning(
+                        "[%s] save_offer_snapshot failed after search_tours: %s",
+                        conv.get("trace_id") or conv.get("id") or psid,
+                        e,
+                    )
+            return result
 
         if tool_name == "get_latest_offer_snapshot":
             snap = self.memory.get_latest_offer_snapshot(psid)
@@ -911,7 +928,8 @@ class Orchestrator:
         if intent.country_id:
             where["country_id"] = intent.country_id
 
-        with self.supabase.table("tours_canonical")._cursor() as cur:
+        table = self.supabase.table("tours_canonical")
+        with table._cursor() as cur:
             sql_parts = ['SELECT id, web_code, tour_code_real, name, base_price, days, airline, url '
                           'FROM "tours_canonical" WHERE is_active = TRUE']
             args = []
@@ -921,6 +939,17 @@ class Orchestrator:
             sql_parts.append(' ORDER BY base_price ASC LIMIT 3')
             cur.execute(" ".join(sql_parts), args)
             rows = cur.fetchall() if hasattr(cur, "fetchall") else []
+        if not rows and hasattr(table, "select_all"):
+            rows = table.select_all({"is_active": True})
+            if intent.country_id:
+                rows = [
+                    row for row in rows
+                    if str(row.get("country_id")) == str(intent.country_id)
+                ]
+            rows = sorted(
+                rows,
+                key=lambda row: int(row.get("base_price") or row.get("price") or 999999999),
+            )[:3]
         # Normalize cursor returns (psycopg vs fake)
         if rows and isinstance(rows[0], dict):
             items = rows
@@ -934,7 +963,8 @@ class Orchestrator:
             TourOption(
                 rank=i + 1, web_code=row.get("web_code", ""),
                 tour_code_real=row.get("tour_code_real"),
-                name=row.get("name", ""), price=int(row.get("price") or 0),
+                name=row.get("name", ""),
+                price=int(row.get("price") or row.get("base_price") or 0),
                 days=int(row.get("days") or 0), airline=row.get("airline"),
                 url=row.get("url"),
             )

@@ -162,6 +162,50 @@ class TestCannedPaths:
         assert "สักครู่" in rd.text or "ทีมงาน" in rd.text
         assert llm.call_log == []
 
+    def test_search_tours_returns_deterministic_reply_no_llm(self):
+        llm = _DummyLLM()
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_country",
+            tool_results={
+                "search_tours": {
+                    "tours": [
+                        {
+                            "rank": 1,
+                            "web_code": "ap111",
+                            "tour_code_real": "JP-REAL-1",
+                            "name": "Tokyo Value 5D",
+                            "price": 18999,
+                            "days": 5,
+                            "airline": "XJ",
+                            "url": "https://www.tourfiremai.com/tour/ap111",
+                        },
+                        {
+                            "rank": 2,
+                            "web_code": "ap222",
+                            "tour_code_real": "JP-REAL-2",
+                            "name": "Osaka 5D",
+                            "price": 25900,
+                            "days": 5,
+                            "airline": "VZ",
+                            "url": "https://www.tourfiremai.com/tour/ap222",
+                        },
+                    ],
+                    "query_echo": {"country_id": 2},
+                }
+            },
+            customer_memory={},
+            llm=llm,
+        )
+        assert rd.used_canned is True
+        assert rd.used_llm is False
+        assert rd.decision == "canned_search_results"
+        assert llm.call_log == []
+        assert "ap111" in rd.text
+        assert "JP-REAL-1" in rd.text
+        assert "18,999" in rd.text
+        assert "สนใจตัวไหน" in rd.text
+
 
 # --- LLM-path tests -----------------------------------------------------------
 

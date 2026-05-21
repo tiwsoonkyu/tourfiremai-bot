@@ -162,7 +162,7 @@ class TestOrchestratorBlocksFullCandidate:
 
 
 class TestOrchestratorAllowsUnblockedCandidate:
-    def test_unblocked_passes_compact_note_to_llm(self, supabase, redis, make_tour):
+    def test_unblocked_search_tours_uses_deterministic_reply_no_caption_leak(self, supabase, redis, make_tour):
         make_tour(
             web_code="ap777003", name="ทัวร์ปกติ",
             price=19900, country="ญี่ปุ่น", country_id=2,
@@ -199,14 +199,13 @@ class TestOrchestratorAllowsUnblockedCandidate:
         )
 
         assert result.silent is False
-        # LLM must have been called for the response tier.
-        assert len(llm.response_calls) >= 1
-        payload = llm.last_user_payload or ""
-        # Compact note injected — but raw caption must NEVER leak.
-        assert "page_post_planning_note" in payload
-        assert long_caption not in payload
-        # Reply is the LLM text, not a canned block.
-        assert result.decision == "llm_reply"
+        # Search results are now answered deterministically from canonical data.
+        assert len(llm.response_calls) == 0
+        assert result.decision == "canned_search_results"
+        assert result.reply_text
+        assert "ap777003" in result.reply_text
+        # Raw page-post captions must never leak into customer-facing text.
+        assert long_caption not in result.reply_text
 
 
 # ---------------------------------------------------------------------------

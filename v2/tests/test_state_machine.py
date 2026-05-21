@@ -40,7 +40,8 @@ class TestNewLead:
 
     def test_ask_country_with_country_moves(self):
         result = transition(State.NEW_LEAD, _i("ask_country", country="ญี่ปุ่น"))
-        assert result.next_state == State.COLLECTING_PREFERENCES
+        assert result.next_state == State.OPTIONS_PRESENTED
+        assert "search_tours" in result.tool_hints
 
     def test_ask_country_without_country_stays(self):
         result = transition(State.NEW_LEAD, _i("ask_country"))
@@ -48,9 +49,15 @@ class TestNewLead:
 
 
 class TestCollectingPreferences:
+    def test_ask_country_with_country_presents(self):
+        result = transition(State.COLLECTING_PREFERENCES, _i("ask_country", country="ญี่ปุ่น"))
+        assert result.next_state == State.OPTIONS_PRESENTED
+        assert "search_tours" in result.tool_hints
+
     def test_ask_tour_detail_with_country_presents(self):
         result = transition(State.COLLECTING_PREFERENCES, _i("ask_tour_detail", country="ญี่ปุ่น"))
         assert result.next_state == State.OPTIONS_PRESENTED
+        assert "search_tours" in result.tool_hints
 
     def test_select_tour_blocked(self):
         result = transition(State.COLLECTING_PREFERENCES, _i("select_tour", selected_index=2))

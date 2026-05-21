@@ -103,21 +103,21 @@ def _from_new_lead(intent: Intent) -> Transition:
         return Transition(State.NEW_LEAD, "ack_greeting", ["update_customer_memory"])
     if intent.type in ("ask_country", "ask_tour_detail") and intent.country:
         return Transition(
-            State.COLLECTING_PREFERENCES,
-            "got_country",
-            ["search_tours", "update_customer_memory"],
+            State.OPTIONS_PRESENTED,
+            "present_top_n",
+            ["update_customer_memory", "search_tours"],
         )
     return Transition(State.NEW_LEAD, "still_unknown", [])
 
 
 def _from_collecting(intent: Intent) -> Transition:
-    if intent.type in ("ask_tour_detail",) and intent.country:
+    if intent.type in ("ask_country", "ask_tour_detail") and intent.country:
         return Transition(
             State.OPTIONS_PRESENTED,
             "present_top_n",
-            ["search_tours", "save_offer_snapshot"],
+            ["update_customer_memory", "search_tours"],
         )
-    if intent.type in ("ask_country", "ask_budget", "ask_pax", "ask_period"):
+    if intent.type in ("ask_budget", "ask_pax", "ask_period"):
         return Transition(
             State.COLLECTING_PREFERENCES,
             "accumulate_criteria",
