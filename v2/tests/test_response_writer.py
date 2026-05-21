@@ -207,6 +207,51 @@ class TestCannedPaths:
         assert "สนใจตัวไหน" in rd.text
 
 
+    def test_search_tours_filters_fixture_rows_before_rendering(self):
+        llm = _DummyLLM()
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_country",
+            tool_results={
+                "search_tours": {
+                    "tours": [
+                        {
+                            "rank": 1,
+                            "web_code": "ap_itest_lock_a3649c",
+                            "tour_code_real": None,
+                            "name": "T",
+                            "price": 1000,
+                            "days": 5,
+                            "airline": None,
+                            "url": "https://x",
+                        },
+                        {
+                            "rank": 2,
+                            "web_code": "ap333",
+                            "tour_code_real": "JP-REAL-3",
+                            "name": "Tokyo Real 5D",
+                            "price": 19999,
+                            "days": 5,
+                            "airline": "XJ",
+                            "url": "https://www.tourfiremai.com/tour/ap333",
+                        },
+                    ],
+                    "query_echo": {"country_id": 2},
+                }
+            },
+            customer_memory={},
+            llm=llm,
+        )
+        assert rd.used_canned is True
+        assert rd.used_llm is False
+        assert llm.call_log == []
+        assert "ap_itest" not in rd.text
+        assert "https://x" not in rd.text
+        assert "1,000" not in rd.text
+        assert "ap333" in rd.text
+        assert "JP-REAL-3" in rd.text
+
+
 # --- LLM-path tests -----------------------------------------------------------
 
 class TestLLMPath:

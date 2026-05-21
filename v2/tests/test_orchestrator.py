@@ -96,6 +96,63 @@ class TestSearchToursDeterministicReply:
         assert len(snapshots) == 1
         assert len(snapshots[0]["tour_list"]) == 3
 
+    def test_country_request_filters_staging_fixture_rows(self, orch, supabase, make_tour):
+        for suffix in ("a3649c", "d9f764", "b73af8"):
+            supabase.table("tours_canonical").insert({
+                "web_code": f"ap_itest_lock_{suffix}",
+                "tour_code_real": None,
+                "name": "T",
+                "country": "ญี่ปุ่น",
+                "country_id": 2,
+                "days": 5,
+                "airline": None,
+                "base_price": 1000,
+                "url": "https://x",
+                "is_active": True,
+            })
+        make_tour(
+            web_code="ap910001",
+            name="Tokyo Real Value",
+            price=18999,
+            airline="XJ",
+            tour_code_real="JP-REAL-001",
+            country_id=2,
+        )
+        make_tour(
+            web_code="ap910002",
+            name="Kawaguchiko Real",
+            price=19999,
+            airline="VZ",
+            tour_code_real="JP-REAL-002",
+            country_id=2,
+        )
+        make_tour(
+            web_code="ap910003",
+            name="Osaka Real",
+            price=20999,
+            airline="XJ",
+            tour_code_real="JP-REAL-003",
+            country_id=2,
+        )
+
+        result = orch.handle_turn(
+            psid="PSID_SEARCH_FIXTURE_FILTER",
+            text="มีทัวร์ไปญี่ปุ่นไหมครับ",
+            meta_message_id="fb:search_fixture_filter_1",
+        )
+
+        assert result.reply_text is not None
+        assert "ap_itest" not in result.reply_text
+        assert "https://x" not in result.reply_text
+        assert "1,000" not in result.reply_text
+        assert "ap910001" in result.reply_text
+        snapshots = supabase.table("offer_snapshots").select_all({
+            "psid": "PSID_SEARCH_FIXTURE_FILTER",
+        })
+        assert len(snapshots) == 1
+        rendered_codes = [tour["web_code"] for tour in snapshots[0]["tour_list"]]
+        assert rendered_codes == ["ap910001", "ap910002", "ap910003"]
+
 
 class TestSilencePath:
     def test_attachment_triggers_waiting_team(self, orch, supabase):

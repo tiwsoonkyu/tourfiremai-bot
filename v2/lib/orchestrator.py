@@ -33,6 +33,7 @@ from .memory import MemoryService, TourOption
 from .response_writer import write_response, ResponseDecision
 from .llm import LLMClient
 from . import redactor
+from .catalog_safety import filter_customer_visible_tours
 # NB: page_post_context is imported lazily inside _build_planning_context to
 # keep import-time deps minimal and avoid surprising side effects in tests that
 # stub the supabase fake before importing the orchestrator.
@@ -931,7 +932,11 @@ class Orchestrator:
         table = self.supabase.table("tours_canonical")
         with table._cursor() as cur:
             sql_parts = ['SELECT id, web_code, tour_code_real, name, base_price, days, airline, url '
-                          'FROM "tours_canonical" WHERE is_active = TRUE']
+                          'FROM "tours_canonical" WHERE is_active = TRUE '
+                          "AND web_code ~ '^ap[0-9]+$' "
+                          "AND url LIKE 'https://www.tourfiremai.com/%' "
+                          "AND length(btrim(name)) >= 4 "
+                          "AND COALESCE(base_price, 0) >= 3000"]
             args = []
             if intent.country_id:
                 sql_parts.append(' AND country_id = %s')
@@ -946,6 +951,7 @@ class Orchestrator:
                     row for row in rows
                     if str(row.get("country_id")) == str(intent.country_id)
                 ]
+            rows = filter_customer_visible_tours(rows)
             rows = sorted(
                 rows,
                 key=lambda row: int(row.get("base_price") or row.get("price") or 999999999),
@@ -959,6 +965,7 @@ class Orchestrator:
                  "name": r[3], "price": r[4], "days": r[5], "airline": r[6], "url": r[7]}
                 for r in rows
             ]
+        items = filter_customer_visible_tours(items)
         top3 = [
             TourOption(
                 rank=i + 1, web_code=row.get("web_code", ""),

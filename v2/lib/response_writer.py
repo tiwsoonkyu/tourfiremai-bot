@@ -35,6 +35,7 @@ from .fee_answer_policy import (
     decide_fee_answer, detect_asked_field, format_fee_answer,
     FeeAnswerDecision,
 )
+from .catalog_safety import filter_customer_visible_tours
 # NOTE: page_post_context is imported lazily inside write_response to avoid a
 # circular import path (page_post_context imports _WHOLESALE_BLACKLIST from
 # this module). The `planning` kwarg uses a forward reference.
@@ -193,6 +194,7 @@ def _format_search_tours_reply(tool_results: dict, customer_memory: dict) -> Opt
     if not isinstance(search_result, dict):
         return None
     tours = search_result.get("tours") or []
+    tours = filter_customer_visible_tours(tours)
     if not tours:
         return None
 
