@@ -964,6 +964,12 @@ class Orchestrator:
         country_name = self._country_name_for_intent(intent)
         if not country_name:
             return []
+        if self.http_client is None:
+            logger.info(
+                "Live listing fallback skipped for country_id=%s: no injected HTTP client",
+                intent.country_id,
+            )
+            return []
         try:
             from ..scraper.scrape_tours import fetch_country_listing
 

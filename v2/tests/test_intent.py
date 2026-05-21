@@ -50,6 +50,14 @@ class TestCriteria:
         assert i.country_id == 2
         assert i.type in ("ask_country", "ask_tour_detail")
 
+    def test_country_with_budget_searches_country_first(self):
+        i = classify_rule_based("มีทัวร์ไปญี่ปุ่นไหมครับ งบไม่เกิน 30000")
+        assert i.type == "ask_country"
+        assert i.country == "ญี่ปุ่น"
+        assert i.country_id == 2
+        assert i.budget == 30000
+        assert i.budget_type == "strict"
+
     def test_budget_strict(self):
         i = classify_rule_based("ไม่เกิน 25000")
         assert i.budget == 25000

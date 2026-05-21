@@ -38,7 +38,7 @@ ALLOWED_TOOLS: dict[State, frozenset[str]] = {
     }),
     State.OPTIONS_PRESENTED: frozenset({
         "get_latest_offer_snapshot", "lock_selected_tour",
-        "search_tours", "get_tour_detail",
+        "search_tours", "get_tour_detail", "update_customer_memory",
         "append_conversation_event", "notify_team_line", "mark_waiting_team",
     }),
     State.TOUR_SELECTED: frozenset({

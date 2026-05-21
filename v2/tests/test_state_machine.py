@@ -131,6 +131,12 @@ class TestAllowedTools:
     def test_options_presented_can_lock(self):
         tools = allowed_tools(State.OPTIONS_PRESENTED)
         assert "lock_selected_tour" in tools
+        assert "update_customer_memory" in tools
+
+    def test_present_top_n_hints_are_allowed_after_transition(self):
+        result = transition(State.NEW_LEAD, _i("ask_country", country="JP"))
+        assert result.next_state == State.OPTIONS_PRESENTED
+        assert set(result.tool_hints).issubset(allowed_tools(result.next_state))
 
     def test_closed_has_no_tools(self):
         assert allowed_tools(State.CLOSED) == frozenset()

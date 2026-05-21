@@ -283,10 +283,26 @@ def _low_risk_llm_fallback(
         return None
 
     status = tool_results.get("safe_search_status") if isinstance(tool_results, dict) else {}
+    search_result = tool_results.get("search_tours") if isinstance(tool_results, dict) else {}
+    query_echo = search_result.get("query_echo") if isinstance(search_result, dict) else {}
     country = ""
     if isinstance(status, dict):
         country = status.get("country") or ""
+    if not country and isinstance(search_result, dict):
+        country = _country_label(search_result, customer_memory)
     country = country or customer_memory.get("latest_country") or customer_memory.get("country") or ""
+    budget = (
+        customer_memory.get("budget_per_person")
+        or customer_memory.get("budget")
+        or query_echo.get("budget")
+        or query_echo.get("budget_per_person")
+    )
+
+    if country and budget:
+        return (
+            f"มีทัวร์{country}ในงบประมาณ {_format_money(budget)} บาทค่ะ เดี๋ยวช่วยคัดให้ตรงใจนะคะ\n"
+            "ขอทราบช่วงเดือนที่อยากเดินทางเพิ่มเติมนิดนึงค่ะ 😊"
+        )
 
     if country:
         return (

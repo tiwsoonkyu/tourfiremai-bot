@@ -233,10 +233,12 @@ def classify_rule_based(
     intent.travel_period = period_m.group(0) if period_m else None
     intent.pax_count = int(pax_m.group(1)) if pax_m else None
 
-    # 8) Type from strongest signal
-    if country and not budget:
+    # 8) Type from strongest signal.
+    # Country is the search anchor; budget/pax/period are filters that
+    # should travel with the search instead of blocking it.
+    if country:
         intent.type = "ask_country"
-        intent.confidence = 0.85
+        intent.confidence = 0.9 if (budget or intent.pax_count is not None or intent.travel_period) else 0.85
     elif budget:
         intent.type = "ask_budget"
         intent.confidence = 0.9

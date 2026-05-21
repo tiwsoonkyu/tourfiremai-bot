@@ -154,9 +154,10 @@ class TestSearchToursDeterministicReply:
         assert rendered_codes == ["ap910001", "ap910002", "ap910003"]
 
     def test_country_request_falls_back_to_live_listing_when_db_only_has_fixtures(
-        self, orch, supabase, monkeypatch
+        self, supabase, redis, monkeypatch
     ):
         from v2.scraper.scrape_tours import ParsedTour
+        orch = Orchestrator(supabase, redis, MockLLMClient(), http_client=object())
 
         for suffix in ("a3649c", "d9f764", "b73af8"):
             supabase.table("tours_canonical").insert({
@@ -229,9 +230,10 @@ class TestSearchToursDeterministicReply:
         ]
 
     def test_country_request_tops_up_partial_db_results_from_live_listing(
-        self, orch, supabase, make_tour, monkeypatch
+        self, supabase, redis, make_tour, monkeypatch
     ):
         from v2.scraper.scrape_tours import ParsedTour
+        orch = Orchestrator(supabase, redis, MockLLMClient(), http_client=object())
 
         make_tour(
             web_code="ap930001",

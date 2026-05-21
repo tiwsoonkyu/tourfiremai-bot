@@ -344,6 +344,27 @@ class TestCannedPaths:
         assert "15" not in rd.text
         assert "low_risk_llm_fallback" in rd.notes
 
+    def test_llm_error_for_known_country_and_budget_does_not_ask_budget_again(self):
+        llm = _FailingLLM()
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_country",
+            tool_results={
+                "search_tours": {
+                    "tours": [],
+                    "query_echo": {"country_id": 2, "budget": 30000},
+                }
+            },
+            customer_memory={"budget_per_person": 30000},
+            llm=llm,
+        )
+        assert rd.decision == "fallback_safe_conversation"
+        assert rd.used_canned is True
+        assert rd.used_llm is False
+        assert "30,000" in rd.text
+        assert "ขอทราบงบ" not in rd.text
+        assert "ช่วงเดือน" in rd.text
+
     def test_search_tours_omits_missing_dash_fields(self):
         llm = _DummyLLM()
         rd = write_response(
