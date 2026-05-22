@@ -173,6 +173,60 @@ def _present(value: Any) -> bool:
     return value is not None and str(value).strip() not in ("", "-")
 
 
+def _search_context_inputs(search_result: dict, customer_memory: dict) -> dict:
+    """Return already-known search inputs so fallback replies do not ask twice."""
+    if not isinstance(search_result, dict):
+        search_result = {}
+    if not isinstance(customer_memory, dict):
+        customer_memory = {}
+
+    query_echo = search_result.get("query_echo")
+    if not isinstance(query_echo, dict):
+        query_echo = {}
+
+    country = (
+        query_echo.get("country")
+        or _country_label(search_result, customer_memory)
+        or customer_memory.get("latest_country")
+        or customer_memory.get("country")
+        or ""
+    )
+    budget = (
+        query_echo.get("budget")
+        or query_echo.get("budget_per_person")
+        or customer_memory.get("budget_per_person")
+        or customer_memory.get("budget")
+    )
+    travel_period = (
+        query_echo.get("travel_period")
+        or query_echo.get("travel_month")
+        or customer_memory.get("travel_period")
+        or customer_memory.get("travel_month")
+        or customer_memory.get("latest_travel_period")
+    )
+
+    known_inputs = {}
+    if _present(country):
+        known_inputs["country"] = str(country)
+    if _present(budget):
+        known_inputs["budget_per_person"] = _format_money(budget)
+    if _present(travel_period):
+        known_inputs["travel_period"] = str(travel_period)
+
+    missing_inputs = [
+        key
+        for key in ("country", "budget_per_person", "travel_period")
+        if key not in known_inputs
+    ]
+    return {
+        "country": country,
+        "budget": budget,
+        "travel_period": travel_period,
+        "known_inputs": known_inputs,
+        "missing_inputs": missing_inputs,
+    }
+
+
 def _format_tour_option_line(tour: dict, fallback_rank: int) -> str:
     rank = tour.get("rank") or fallback_rank
     name = tour.get("name") or "โปรแกรมทัวร์"
@@ -257,14 +311,21 @@ def _sanitize_search_tours_for_llm(tool_results: dict, customer_memory: dict) ->
     clean_tools = {**tool_results, "search_tours": clean_search}
 
     if not safe_tours:
-        country = _country_label(search_result, customer_memory)
+        context_inputs = _search_context_inputs(search_result, customer_memory)
         clean_tools["safe_search_status"] = {
             "status": "no_customer_visible_tours",
-            "country": country or None,
+            "country": context_inputs["country"] or None,
+            "known_inputs": context_inputs["known_inputs"],
+            "missing_inputs": context_inputs["missing_inputs"],
             "unsafe_rows_dropped": max(0, len(original_tours) - len(safe_tours)),
             "safe_reply_rule": (
-                "Acknowledge the route and ask exactly one useful preference "
-                "question. Do not list tour names, codes, prices, dates, or URLs."
+                "No customer-visible tour rows are available. Do not invent tours. "
+                "Do not ask again for values already present in known_inputs. "
+                "Ask at most one useful value from missing_inputs. If country, "
+                "budget_per_person, and travel_period are all known, say the "
+                "system cannot show verified tour options yet and offer a "
+                "team/manual check. Do not list tour names, codes, prices, dates, "
+                "or URLs."
             ),
         }
 
@@ -281,6 +342,42 @@ def _low_risk_llm_fallback(
     allowed_states = {State.NEW_LEAD, State.COLLECTING_PREFERENCES, State.OPTIONS_PRESENTED}
     if state not in allowed_states:
         return None
+
+    search_result = tool_results.get("search_tours") if isinstance(tool_results, dict) else {}
+    context_inputs = _search_context_inputs(search_result, customer_memory)
+    country = context_inputs["country"]
+    budget = context_inputs["budget"]
+    travel_period = context_inputs["travel_period"]
+
+    if country and budget and travel_period:
+        return (
+            f"รับทราบค่ะ {country} งบประมาณ {_format_money(budget)} บาท ช่วง{travel_period}\n"
+            "ตอนนี้ระบบยังไม่พบโปรแกรมที่ตรวจสอบแล้วพร้อมแสดงอัตโนมัติค่ะ "
+            "เดี๋ยวส่งให้ทีมงานช่วยเช็กตัวเลือกจริงให้ก่อนนะคะ"
+        )
+
+    if country and budget:
+        return (
+            f"มีทัวร์{country}ในงบประมาณ {_format_money(budget)} บาทค่ะ\n"
+            "ขอทราบช่วงเดือนที่อยากเดินทางอีกนิดนะคะ จะได้คัดรอบเดินทางจริงให้ตรงที่สุด 😊"
+        )
+
+    if country and travel_period:
+        return (
+            f"รับทราบค่ะ {country} ช่วง{travel_period}\n"
+            "ขอทราบงบต่อคนโดยประมาณอีกนิดนะคะ จะได้คัดตัวเลือกให้ตรงที่สุด 😊"
+        )
+
+    if country:
+        return (
+            f"มีทัวร์{country}ค่ะ เดี๋ยวช่วยคัดให้ตรงใจนะคะ\n"
+            "ขอทราบงบต่อคน หรือช่วงเดือนที่อยากเดินทางก่อนค่ะ 😊"
+        )
+
+    return (
+        "ได้ค่ะ เดี๋ยวช่วยดูทัวร์ให้ตรงใจนะคะ\n"
+        "สนใจประเทศหรือสไตล์ทริปแบบไหนเป็นพิเศษคะ? 😊"
+    )
 
     status = tool_results.get("safe_search_status") if isinstance(tool_results, dict) else {}
     search_result = tool_results.get("search_tours") if isinstance(tool_results, dict) else {}

@@ -286,6 +286,39 @@ class TestCannedPaths:
         assert rd.text != CANNED_HANDOFF_GENERIC
         assert "15" not in rd.text
 
+    def test_search_tours_empty_known_inputs_tells_llm_not_to_repeat_known_fields(self):
+        llm = _DummyLLM("smart safe reply")
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_period",
+            tool_results={
+                "search_tours": {
+                    "tours": [],
+                    "query_echo": {
+                        "country": "ญี่ปุ่น",
+                        "country_id": 2,
+                        "budget": 30000,
+                        "travel_period": "เดือนหน้า",
+                    },
+                }
+            },
+            customer_memory={
+                "latest_country": "ญี่ปุ่น",
+                "budget_per_person": 30000,
+                "travel_month": "เดือนหน้า",
+            },
+            llm=llm,
+        )
+        assert rd.used_llm is True
+        sent = llm.last_user_text
+        assert "safe_search_status" in sent
+        assert "known_inputs" in sent
+        assert "budget_per_person" in sent
+        assert "30,000" in sent
+        assert "travel_period" in sent
+        assert "Do not ask again" in sent
+        assert "missing_inputs" in sent
+
     def test_search_tours_all_fixture_rows_hidden_from_llm_and_llm_used(self):
         llm = _DummyLLM("smart safe reply")
         rd = write_response(
