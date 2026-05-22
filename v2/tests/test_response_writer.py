@@ -365,6 +365,38 @@ class TestCannedPaths:
         assert "ขอทราบงบ" not in rd.text
         assert "ช่วงเดือน" in rd.text
 
+    def test_llm_error_for_known_country_budget_and_period_does_not_ask_period_again(self):
+        llm = _FailingLLM()
+        country = "ญี่ปุ่น"
+        period = "เดือนหน้า"
+        rd = write_response(
+            state=State.OPTIONS_PRESENTED,
+            intent_type="ask_period",
+            tool_results={
+                "search_tours": {
+                    "tours": [],
+                    "query_echo": {
+                        "country_id": 2,
+                        "country": country,
+                        "budget": 30000,
+                        "travel_period": period,
+                    },
+                }
+            },
+            customer_memory={
+                "latest_country": country,
+                "budget_per_person": 30000,
+                "travel_month": period,
+            },
+            llm=llm,
+        )
+        assert rd.decision == "fallback_safe_conversation"
+        assert rd.used_canned is True
+        assert rd.used_llm is False
+        assert "30,000" in rd.text
+        assert period in rd.text
+        assert "ขอทราบช่วงเดือน" not in rd.text
+
     def test_search_tours_omits_missing_dash_fields(self):
         llm = _DummyLLM()
         rd = write_response(

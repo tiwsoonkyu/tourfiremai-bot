@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -107,6 +107,73 @@ class Orchestrator:
         # Injectable clock for tests — defaults to datetime.utcnow.
         self._now = now or (lambda: datetime.now(timezone.utc))
 
+    @staticmethod
+    def _coerce_int(value: Any) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        try:
+            return int(str(value).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _memory_value(memory_view: Any, key: str) -> Any:
+        if isinstance(memory_view, dict):
+            return memory_view.get(key)
+        return getattr(memory_view, key, None)
+
+    @staticmethod
+    def _country_id_from_name(country: Optional[str]) -> Optional[int]:
+        if not country:
+            return None
+        country_s = str(country).strip()
+        for cid, name in COUNTRY_NAMES.items():
+            if country_s == str(name).strip():
+                return cid
+        return None
+
+    def _merge_intent_with_memory_view(self, intent: Intent, memory_view: Any) -> Intent:
+        merged = replace(intent)
+        latest_country = self._memory_value(memory_view, "latest_country")
+        if not merged.country and latest_country:
+            merged.country = str(latest_country)
+        if not merged.country_id:
+            mem_country_id = self._coerce_int(self._memory_value(memory_view, "country_id"))
+            if mem_country_id:
+                merged.country_id = mem_country_id
+        if not merged.country_id:
+            cid = self._country_id_from_name(merged.country)
+            if cid is not None:
+                merged.country_id = cid
+        if not merged.budget:
+            merged.budget = self._coerce_int(self._memory_value(memory_view, "budget_per_person"))
+        if not merged.budget_type and self._memory_value(memory_view, "budget_type"):
+            merged.budget_type = str(self._memory_value(memory_view, "budget_type"))
+        if not merged.pax_count:
+            merged.pax_count = self._coerce_int(self._memory_value(memory_view, "pax_count"))
+        if not merged.travel_period:
+            mem_period = (
+                self._memory_value(memory_view, "travel_month")
+                or self._memory_value(memory_view, "travel_period")
+            )
+            if mem_period:
+                merged.travel_period = str(mem_period)
+        return merged
+
+    def _intent_with_current_memory(self, psid: str, intent: Intent) -> Intent:
+        return self._merge_intent_with_memory_view(
+            intent,
+            self.memory.get_customer_memory(psid),
+        )
+
+    def _should_search_after_preference_update(self, intent: Intent, memory_view: Any) -> bool:
+        if intent.type in {"greeting", "ask_human", "send_attachment"}:
+            return False
+        if not (intent.budget or intent.pax_count or intent.travel_period):
+            return False
+        merged = self._merge_intent_with_memory_view(intent, memory_view)
+        return bool(merged.country_id or merged.country)
+
     def handle_turn(
         self, *,
         psid: str,
@@ -170,6 +237,32 @@ class Orchestrator:
         blocked_tools = [t for t in tool_hints if t not in whitelist]
         if blocked_tools:
             logger.warning("[%s] blocked tools by whitelist: %s", trace_id, blocked_tools)
+
+        pre_tool_memory = self.memory.get_customer_memory(psid)
+        if (
+            state_after in {
+                State.NEW_LEAD,
+                State.COLLECTING_PREFERENCES,
+                State.OPTIONS_PRESENTED,
+            }
+            and self._should_search_after_preference_update(intent, pre_tool_memory)
+        ):
+            if state_after != State.OPTIONS_PRESENTED:
+                state_after = State.OPTIONS_PRESENTED
+            whitelist = allowed_tools(state_after)
+            approved_tools = [t for t in approved_tools if t in whitelist]
+            forced_tools = [
+                t for t in ("update_customer_memory", "search_tours")
+                if t in whitelist
+            ]
+            approved_tools = forced_tools + [
+                t for t in approved_tools
+                if t not in forced_tools and t in whitelist
+            ]
+            logger.info(
+                "[%s] preference follow-up completed from memory; forcing search_tours",
+                trace_id,
+            )
 
         # 7) Execute approved tools, gather tool_results
         tool_results: dict = {"raw_customer_text": text}
@@ -886,7 +979,8 @@ class Orchestrator:
             return None
 
         if tool_name == "search_tours":
-            result = self._search_tours_simple(intent, text=intent.raw_text)
+            search_intent = self._intent_with_current_memory(psid, intent)
+            result = self._search_tours_simple(search_intent, text=intent.raw_text)
             tours = result.get("tours") or []
             if tours:
                 try:
@@ -1098,6 +1192,9 @@ class Orchestrator:
                 "country_id": intent.country_id,
                 "country": self._country_name_for_intent(intent),
                 "budget": intent.budget,
+                "budget_type": intent.budget_type,
+                "pax_count": intent.pax_count,
+                "travel_period": intent.travel_period,
                 "source": source,
             },
         }

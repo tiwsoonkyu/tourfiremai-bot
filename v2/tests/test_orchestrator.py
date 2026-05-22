@@ -1,7 +1,7 @@
 """Sprint 3 test: orchestrator end-to-end with InMemory deps + MockLLM."""
 
 import pytest
-from v2.lib.orchestrator import Orchestrator
+from v2.lib.orchestrator import COUNTRY_NAMES, Orchestrator
 from v2.lib.llm import MockLLMClient
 from v2.lib.state_machine import State
 
@@ -310,6 +310,46 @@ class TestSearchToursDeterministicReply:
         assert [tour["web_code"] for tour in snapshots[0]["tour_list"]] == [
             "ap930001", "ap930002", "ap930003",
         ]
+
+
+class TestMemoryAwarePreferenceFollowup:
+    def test_period_followup_uses_country_budget_memory_and_searches(self, orch, supabase, make_tour):
+        period = "เดือนหน้า"
+        make_tour(
+            web_code="ap940001",
+            name="Tokyo Memory Followup",
+            price=18999,
+            airline="XJ",
+            tour_code_real="JP-MEM-001",
+            country_id=2,
+        )
+        psid = "PSID_MEMORY_FOLLOWUP"
+        supabase.table("customers").insert({"psid": psid})
+        orch.memory.update_customer_memory(
+            psid,
+            {
+                "latest_country": COUNTRY_NAMES[2],
+                "budget_per_person": 30000,
+                "budget_type": "strict",
+            },
+            reason="test_seed",
+        )
+
+        result = orch.handle_turn(
+            psid=psid,
+            text=period,
+            meta_message_id="fb:mem_follow_1",
+        )
+
+        assert result.state_after == "options_presented"
+        tool_names = [t["tool"] for t in result.tool_calls_made]
+        assert "update_customer_memory" in tool_names
+        assert "search_tours" in tool_names
+        memory = orch.memory.get_customer_memory(psid)
+        assert memory.travel_month == period
+        snapshots = supabase.table("offer_snapshots").select_all({"psid": psid})
+        assert len(snapshots) == 1
+        assert any(tour["web_code"] == "ap940001" for tour in snapshots[0]["tour_list"])
 
 
 class TestSilencePath:

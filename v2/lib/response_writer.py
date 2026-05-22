@@ -297,6 +297,18 @@ def _low_risk_llm_fallback(
         or query_echo.get("budget")
         or query_echo.get("budget_per_person")
     )
+    travel_period = (
+        customer_memory.get("travel_month")
+        or customer_memory.get("travel_period")
+        or query_echo.get("travel_period")
+        or query_echo.get("travel_month")
+    )
+
+    if country and budget and travel_period:
+        return (
+            f"มีทัวร์{country}ในงบประมาณ {_format_money(budget)} บาท ช่วง{travel_period}ค่ะ\n"
+            "เดี๋ยวช่วยเช็กตัวเลือกที่ตรงที่สุดให้นะคะ 😊"
+        )
 
     if country and budget:
         return (
